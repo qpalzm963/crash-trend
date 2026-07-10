@@ -13,3 +13,13 @@ services:
       - ~/.config/crash-trend:/root/.config/crash-trend:ro
     # GEMINI_API_KEY / GEMINI_MODEL 放 repo 根目錄 .env（gitignored），
     # weekly_sync.sh 會自行 source，不需在此宣告
+
+  # 儀表板靜態服務：http://<主機>:8787（bind mount，週同步重產後自動生效）
+  dashboard:
+    image: nginx:alpine
+    container_name: crash-trend-dashboard
+    restart: unless-stopped
+    ports:
+      - "8787:80"
+    volumes:
+      - ./dashboard.html:/usr/share/nginx/html/index.html:ro
