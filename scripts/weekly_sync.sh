@@ -38,6 +38,14 @@ done
 echo "--- build_dashboard"
 $PY "$CT/crash_trend/build_dashboard.py" || FAILED="$FAILED dashboard"
 
+# 有設 CRASH_REPORT_URL 才發卡到聊天室（chat 整合，見 DEPLOY.md）
+if [ -n "${CRASH_REPORT_URL:-}" ]; then
+  for app in $apps; do
+    echo "--- post_report: $app"
+    $PY "$CT/crash_trend/post_report.py" --app "$app" || FAILED="$FAILED post:$app"
+  done
+fi
+
 cd "$CT"
 if [ -n "$(git status --porcelain)" ]; then
   git add -A

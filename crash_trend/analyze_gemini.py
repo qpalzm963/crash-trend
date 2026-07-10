@@ -66,10 +66,22 @@ def source_snippet(source_repo: Path, subtitle: str, max_lines: int = 50) -> str
     return f"// {hits[0].relative_to(source_repo)}\n{body}"
 
 
-def call_gemini(payload_text: str) -> dict:
+def resolve_api_key() -> str:
+    """取 key 順序：GEMINI_API_KEY env → 聊天服務後台（GEMINI_KEY_URL ＋ INTERNAL_API_TOKEN）。"""
     key = os.environ.get("GEMINI_API_KEY")
-    if not key:
-        sys.exit("[錯誤] 未設定 GEMINI_API_KEY 環境變數")
+    if key:
+        return key
+    key_url = os.environ.get("GEMINI_KEY_URL")
+    if key_url:
+        r = requests.get(key_url, headers={"x-internal-token": os.environ.get("INTERNAL_API_TOKEN", "")}, timeout=15)
+        if r.status_code == 200:
+            return r.json()["api_key"]
+        sys.exit(f"[錯誤] 向後台取 Gemini key 失敗 {r.status_code}：{r.text[:200]}（後台是否已設定？）")
+    sys.exit("[錯誤] 未設定 GEMINI_API_KEY，也未設定 GEMINI_KEY_URL（後台取用）")
+
+
+def call_gemini(payload_text: str) -> dict:
+    key = resolve_api_key()
     model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
     body = {
         "contents": [{"parts": [{"text": payload_text}]}],
