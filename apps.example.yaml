@@ -1,0 +1,18 @@
+# crash-trend 設定範例 —— 複製為 apps.yaml 後填入實值
+# 新公司移植：只要改這份 + 跑 scripts/create_sa.sh，其他都不用動（見 README「移植到新環境」）
+
+credentials:
+  # BigQuery 服務帳號 json 路徑（用 scripts/create_sa.sh 產生；筆電與伺服器共用同一把）
+  bq_service_account: ~/.config/crash-trend/sa.json
+
+apps:
+  my_app:                              # app 代號（英文，當目錄名用）
+    display_name: 我的 App             # 儀表板分頁顯示名
+    firebase_project: my-app-12345     # Firebase 專案 ID（Console 專案設定可查）
+    bq_dataset: firebase_crashlytics   # 預設值，通常不用改
+    source_repo: ~/develop/my_app      # 原始碼位置（AI 對映堆疊用；沒有可留空）
+    core_paths:                        # 核心業務關鍵字（優先級評分 ×3；檔名/路徑/中文皆可）
+      - checkout
+      - 付款
+    custom_keys:                       # app 有埋的 Crashlytics 自訂 keys（沒埋就整段省略）
+      - user_role

@@ -1,0 +1,3 @@
+PyYAML
+google-cloud-bigquery
+requests

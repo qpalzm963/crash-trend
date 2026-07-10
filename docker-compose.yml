@@ -1,0 +1,15 @@
+services:
+  crash-trend:
+    build: .
+    container_name: crash-trend
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Taipei
+    volumes:
+      # 整個 repo 掛進去：程式碼、apps.yaml、reports/、dashboard.html 都留在 host（git 可管）
+      - .:/app
+      # 憑證 read-only 掛載 —— 絕不進 image / registry
+      # host 端放：~/.config/crash-trend/sa.json（BigQuery SA）
+      - ~/.config/crash-trend:/root/.config/crash-trend:ro
+    # GEMINI_API_KEY / GEMINI_MODEL 放 repo 根目錄 .env（gitignored），
+    # weekly_sync.sh 會自行 source，不需在此宣告

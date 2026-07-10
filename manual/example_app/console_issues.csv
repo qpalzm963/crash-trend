@@ -1,0 +1,5 @@
+platform,issue_id,issue_title,issue_subtitle,fatal,events,users,first_seen_version,last_seen_version,top_devices,top_os,version_dist,notes
+# 來源：Firebase Console → Crashlytics。issue 列表填前 9 欄；點進各 issue 詳頁把「裝置/作業系統/版本」分布填後 3 欄。
+# 分布欄格式：label:數量;label:數量（數量省略則該項不入圖表，僅供報告文字參考）。
+# 範例（請刪除本列）：
+# android,abc123,NullPointerException,CheckoutViewModel.submit (checkout_view_model.dart:88),yes,42,17,2.1.0,2.2.0,Pixel 6:20;Galaxy S21:8,Android 14:30;Android 13:12,2.2.0:30;2.1.0:12,結帳流程

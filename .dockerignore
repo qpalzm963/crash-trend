@@ -1,0 +1,11 @@
+# 憑證與機敏設定 —— 絕不進 image
+.env
+*service_account*.json
+*.p8
+
+# 執行期產物（由 bind mount 提供，不屬於 image）
+out/
+logs/
+.venv/
+.git/
+__pycache__/

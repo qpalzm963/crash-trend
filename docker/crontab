@@ -1,0 +1,2 @@
+# 每週一 09:37（Asia/Taipei，由容器 TZ 決定）
+37 9 * * 1 /bin/bash /app/scripts/weekly_sync.sh

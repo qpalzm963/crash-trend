@@ -1,0 +1,14 @@
+# 原始匯出資料（可能含使用者識別資訊）
+out/
+
+# 憑證 — 絕不進版控
+*.p8
+*service_account*.json
+*play_store_key*.json
+.env
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+apps.yaml
