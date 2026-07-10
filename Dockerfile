@@ -19,4 +19,5 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 ENV TZ=Asia/Taipei
-CMD ["supercronic", "-passthrough-logs", "/app/docker/crontab"]
+# 絕對路徑必要：supercronic 為 PID 1 時以 argv[0] re-exec 自身（raw syscall 不查 PATH）
+CMD ["/usr/local/bin/supercronic", "-passthrough-logs", "/app/docker/crontab"]
