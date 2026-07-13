@@ -51,7 +51,7 @@ open dashboard.html
 | 檔案 | 內容 | 版控 |
 |---|---|---|
 | `apps.yaml` | 各 app 的 Firebase 專案、core_paths（評分加權）、custom_keys | 建議放你的私有 instance repo |
-| `.env` | `GEMINI_API_KEY`、`GEMINI_MODEL`（預設 gemini-2.5-flash） | ✗ 永不 |
+| `.env` | `GEMINI_API_KEY`、`GEMINI_MODEL`（預設 gemini-flash-latest） | ✗ 永不 |
 | `~/.config/crash-trend/sa.json` | BigQuery 唯讀 SA 金鑰（`create_sa.sh` 產生） | ✗ 永不（Docker 以 read-only 掛載，不進 image） |
 
 **多公司使用模式**：本 repo 當 `upstream`（引擎），每家公司 fork/clone 成私有 instance repo 放自己的 `apps.yaml` 與月報；引擎更新 `git pull upstream main`。

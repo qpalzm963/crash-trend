@@ -4,7 +4,7 @@
   Python：優先級評分、與上月比較的趨勢標記、原始碼片段擷取、md 排版、priority_list 回填
   Gemini：每個 top issue 的 root cause 推測 / 建議修法 / 工作量估計，與總覽/分布洞察文字
 
-環境變數：GEMINI_API_KEY（必要）、GEMINI_MODEL（預設 gemini-2.5-flash）
+環境變數：GEMINI_API_KEY（必要）、GEMINI_MODEL（預設 gemini-flash-latest）
 用法：analyze_gemini.py --app <name>；資料為空時直接產出「無資料」月報，不呼叫 API。
 """
 
@@ -82,7 +82,7 @@ def resolve_api_key() -> str:
 
 def call_gemini(payload_text: str) -> dict:
     key = resolve_api_key()
-    model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+    model = os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
     body = {
         "contents": [{"parts": [{"text": payload_text}]}],
         "generationConfig": {"responseMimeType": "application/json", "temperature": 0.2},
@@ -166,7 +166,7 @@ def render_md(app_name: str, display_name: str, month: str, s: dict, ai: dict, p
             "",
         ]
     lines += ["## 資料侷限", ai.get("data_limitations", ""), "",
-              f"---", f"*由 crash-trend 產生於 {dt.date.today().isoformat()}；分析模型：{os.environ.get('GEMINI_MODEL', 'gemini-2.5-flash')}*"]
+              f"---", f"*由 crash-trend 產生於 {dt.date.today().isoformat()}；分析模型：{os.environ.get('GEMINI_MODEL', 'gemini-flash-latest')}*"]
     return "\n".join(lines)
 
 
