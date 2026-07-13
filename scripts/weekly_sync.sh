@@ -11,7 +11,8 @@ LOG="$CT/logs/weekly_sync.log"
 mkdir -p "$CT/logs"
 exec >>"$LOG" 2>&1
 # 機敏設定（GEMINI_API_KEY 等）放 $CT/.env，gitignored；launchd/cron 不繼承 shell 環境
-[ -f "$CT/.env" ] && . "$CT/.env"
+# set -a：source 進來的變數自動 export，子行程（python）才看得到
+if [ -f "$CT/.env" ]; then set -a; . "$CT/.env"; set +a; fi
 
 echo "===== weekly_sync $(date '+%F %T')（$($PY --version 2>&1)）====="
 FAILED=""
