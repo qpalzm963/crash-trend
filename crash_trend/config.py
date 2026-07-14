@@ -38,6 +38,16 @@ def write_json(path: Path, data) -> None:
     print(f"  ✓ 寫入 {path.relative_to(ROOT)}")
 
 
+def load_prev_month(app_name: str, month: str) -> dict | None:
+    """載入 reports/data/<app>/ 中早於 month 的最近一個月快照（無則 None）。
+    不能假設本月檔已存在（normalize 首次跑該月時就還沒有），故用 < month 過濾。"""
+    data_dir = ROOT / "reports" / "data" / app_name
+    prevs = sorted(p.stem for p in data_dir.glob("*.json") if p.stem < month)
+    if not prevs:
+        return None
+    return json.loads((data_dir / f"{prevs[-1]}.json").read_text(encoding="utf-8"))
+
+
 def app_argparser(desc: str) -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=desc)
     p.add_argument("--app", required=True, help="apps.yaml 中的 app 名稱")

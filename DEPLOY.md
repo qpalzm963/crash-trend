@@ -8,6 +8,10 @@
    `create_sa.sh <專案> --grant-only <sa_email>`）。
 2. **Gemini API key**：Google AI Studio 產生。
 3. 把你的 instance repo（含 apps.yaml）推到私有 Git。
+4. **（可選）真實 stack trace**：容器已內建 `firebase-tools`；在部署機跑一次 `firebase login`
+   （user token，**非** service account——SA 打 Crashlytics 會 404），token 存於
+   `~/.config/configstore/firebase-tools.json`，由 compose 掛入容器供 `fetch_stacktraces.py` 用。
+   不做則該步 fail loud 略過堆疊、不影響其餘流程。
 
 ## 安裝（Docker，建議）
 
@@ -15,7 +19,7 @@
 git clone <你的 instance repo> && cd crash-trend
 mkdir -p ~/.config/crash-trend && cp <SA json> ~/.config/crash-trend/sa.json && chmod 600 ~/.config/crash-trend/sa.json
 printf 'GEMINI_API_KEY=...\n' > .env
-docker compose up -d --build                 # supercronic 每週一 09:37（TZ=Asia/Taipei，compose 可改）
+docker compose up -d --build                 # supercronic 每週三 10:00（TZ=Asia/Taipei，compose 可改）
 docker compose run --rm crash-trend /bin/bash /app/scripts/weekly_sync.sh   # 手動試跑驗證
 tail -30 logs/weekly_sync.log
 ```

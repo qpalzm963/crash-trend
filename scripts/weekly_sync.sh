@@ -28,6 +28,9 @@ for app in $apps; do
   echo "--- fetch_bigquery: $app"
   # BQ 未連結/無資料時腳本會以非零碼結束並說明原因（屬預期，不算失敗）
   $PY "$CT/crash_trend/fetch_bigquery.py" --app "$app" || echo "    （$app 本次無 BQ 資料，原因見上）"
+  echo "--- fetch_stacktraces: $app"
+  # 需 firebase CLI ≥15.23 ＋ firebase login user token；失敗只影響 root cause 品質，不擋流程
+  $PY "$CT/crash_trend/fetch_stacktraces.py" --app "$app" || echo "    （$app 本次無 stack trace，原因見上）"
   echo "--- normalize: $app"
   $PY "$CT/crash_trend/normalize.py" --app "$app" || FAILED="$FAILED normalize:$app"
   if [ -n "${GEMINI_API_KEY:-}" ]; then

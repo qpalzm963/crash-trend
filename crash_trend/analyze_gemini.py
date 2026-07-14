@@ -15,15 +15,18 @@ import json
 import os
 import re
 import sys
+import time
 from pathlib import Path
 
 import requests
 
 from config import ROOT, app_argparser, get_app, write_json
+from versions import max_version
 
 API = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
-# 評分權重：P = U×3 ＋ fatal×2 ＋ 惡化×2 ＋ 最新版仍現×2 ＋ 核心路徑×3 ＋ E×1
+# 評分權重：P = U×3 ＋ fatal或ANR×2 ＋ 惡化×2 ＋ 最新版仍現×2 ＋ 核心路徑×3 ＋ E×1
+# （ANR＝畫面卡死無回應，體感等同當機，與 fatal 同權）
 # U/E 先按當期最大值正規化 0–10，其餘為 0/1；滿分 49，取整數。
 
 
@@ -32,17 +35,18 @@ def score_issues(issues: list[dict], prev_issues: list[dict], core_paths: list[s
         return []
     max_u = max((i["users"] for i in issues), default=0) or 1
     max_e = max((i["events"] for i in issues), default=0) or 1
-    latest_ver = max((i.get("last_seen_version") or "" for i in issues), default="")
+    latest_ver = max_version(i.get("last_seen_version") or "" for i in issues) or ""
+    prev_by_id = {p["issue_id"]: p for p in prev_issues if p.get("issue_id")}
     prev_by_title = {p["title"]: p for p in prev_issues}
     scored = []
     for i in issues:
-        prev = prev_by_title.get(i["title"])
+        prev = prev_by_id.get(i.get("issue_id")) or prev_by_title.get(i["title"])
         worse = prev is None or i["events"] > prev.get("events", 0) * 1.2
         core = any(k.lower() in f"{i['title']} {i.get('subtitle', '')}".lower() for k in core_paths)
         p = (
             (i["users"] / max_u * 10) * 3
             + (i["events"] / max_e * 10) * 1
-            + (2 if i["fatal"] else 0)
+            + (2 if i["fatal"] or i.get("error_type") == "ANR" else 0)
             + (2 if worse else 0)
             + (2 if latest_ver and i.get("last_seen_version") == latest_ver else 0)
             + (3 if core else 0)
@@ -80,27 +84,60 @@ def resolve_api_key() -> str:
     sys.exit("[錯誤] 未設定 GEMINI_API_KEY，也未設定 GEMINI_KEY_URL（後台取用）")
 
 
-def call_gemini(payload_text: str) -> dict:
+# 約束解碼（structured output）：欄位名、必填、effort enum 在生成時強制，
+# JSON mode 只保證合法 JSON、不保證 schema。
+RESPONSE_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "overview": {"type": "STRING"},
+        "distribution_insights": {"type": "STRING"},
+        "items": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "issue_id": {"type": "STRING"},
+                    "root_cause": {"type": "STRING"},
+                    "suggested_fix": {"type": "STRING"},
+                    "effort": {"type": "STRING", "enum": ["S", "M", "L"]},
+                },
+                "required": ["issue_id", "root_cause", "suggested_fix", "effort"],
+            },
+        },
+        "data_limitations": {"type": "STRING"},
+    },
+    "required": ["overview", "distribution_insights", "items", "data_limitations"],
+}
+
+
+def call_gemini(payload_text: str, schema: dict | None = None) -> dict:
     key = resolve_api_key()
     model = os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
     body = {
         "contents": [{"parts": [{"text": payload_text}]}],
-        "generationConfig": {"responseMimeType": "application/json", "temperature": 0.2},
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "responseSchema": schema or RESPONSE_SCHEMA,
+            "temperature": 0.2,
+        },
     }
-    for attempt in (1, 2):
+    for attempt in (1, 2, 3):
         r = requests.post(API.format(model=model), params={"key": key}, json=body, timeout=120)
+        if r.status_code in (429, 500, 503) and attempt < 3:  # 暫時性限流/過載 → 退避重試
+            time.sleep(5 * attempt)
+            continue
         if r.status_code != 200:
             sys.exit(f"[錯誤] Gemini API {r.status_code}：{r.text[:400]}")
         text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
         try:
             return json.loads(text)
         except json.JSONDecodeError:
-            if attempt == 2:
-                sys.exit(f"[錯誤] Gemini 回傳非合法 JSON（已重試一次）：{text[:300]}")
+            if attempt == 3:
+                sys.exit(f"[錯誤] Gemini 回傳非合法 JSON（已重試）：{text[:300]}")
     raise AssertionError
 
 
-PROMPT = """你是資深 Flutter 團隊的 crash 分析師。以下是「{display_name}」本期 crash 資料與相關原始碼片段。
+PROMPT = """你是資深 Flutter 團隊的 crash 分析師。以下是「{display_name}」本期 crash 資料、真實 stack trace 與相關原始碼片段。
 針對每個 top issue 推測 root cause、給建議修法與工作量（S/M/L），並寫總覽與分布洞察。
 
 規則：
@@ -108,11 +145,11 @@ PROMPT = """你是資深 Flutter 團隊的 crash 分析師。以下是「{displa
 - suggested_fix 要具體可執行（指出改哪裡、怎麼改），不要泛泛而談。
 - 全部用繁體中文。
 
-回傳 JSON（不要其他文字）：
-{{"overview": "2-3 句本期總覽（對比上期）",
-  "distribution_insights": "機型/OS/版本/自訂 keys 的重點發現，1-3 句；無資料寫「本期無分布資料」",
-  "items": [{{"issue_id": "...", "root_cause": "...", "suggested_fix": "...", "effort": "S|M|L"}}],
-  "data_limitations": "資料缺口與侷限，1-2 句"}}
+回傳欄位語意（格式由 response schema 強制）：
+- overview：2-3 句本期總覽（對比上期）
+- distribution_insights：機型/OS/版本/自訂 keys 的重點發現，1-3 句；無資料寫「本期無分布資料」
+- items：每個 top issue 一項，issue_id 對應輸入資料
+- data_limitations：資料缺口與侷限，1-2 句
 
 ## 本期 KPI
 {kpis}
@@ -124,12 +161,46 @@ PROMPT = """你是資深 Flutter 團隊的 crash 分析師。以下是「{displa
 {dists}
 ## 自訂 keys 分布（Crashlytics custom keys）
 {custom_keys}
-## 原始碼片段
+## 週趨勢（事件數；BQ 精確或 MCP 近似）
+{weekly}
+## Stack trace／原始碼片段
 {snippets}
 """
 
 
-def render_md(app_name: str, display_name: str, month: str, s: dict, ai: dict, prio: list[dict]) -> str:
+FIX_STATUS_ZH = {"resolved": "✅ 本期未再出現", "old_versions_only": "🟡 僅舊版仍出現", "still_occurring": "🔴 最新版仍出現"}
+
+
+def render_fix_review(fr: dict | None) -> list[str]:
+    """「上期清單回顧」md 區塊；無上期資料回空列表（整節省略）。"""
+    if not fr or not fr.get("items"):
+        return []
+    lines = [
+        f"## 上期清單回顧（{fr.get('prev_month', '?')} → 本期驗證）",
+        "| # | 標題 | 上期 事件/用戶 | 本期 事件/用戶 | 版本 | 狀態 |",
+        "|---|---|---|---|---|---|",
+    ]
+    for n, it in enumerate(fr["items"], 1):
+        prev, cur = it.get("prev", {}), it.get("cur", {})
+        if it["status"] == "resolved":
+            ver = "—"
+        elif not it.get("version_known"):
+            ver = "版本不明"
+        else:
+            ver = f"最新見 {it.get('cur_last_seen_version') or '?'}（全域最新 {it.get('latest_app_version') or '?'}）"
+        lines.append(
+            f"| {n} | {it.get('title', '')} | {prev.get('events', 0)}/{prev.get('users', 0)} "
+            f"| {cur.get('events', 0)}/{cur.get('users', 0)} | {ver} | {FIX_STATUS_ZH.get(it['status'], it['status'])} |"
+        )
+    src = "上期優先修復清單" if fr.get("source") == "priority_list" else "上期 Top Issues（上期無 AI 清單）"
+    note = f"（來源：{src}"
+    if dt.date.today().day < 15:
+        note += "；本月資料未滿月，「未再出現」僅供參考"
+    lines += [note + "）", ""]
+    return lines
+
+
+def render_md(app_name: str, display_name: str, month: str, s: dict, ai: dict, prio: list[dict], fix_review: dict | None = None) -> str:
     k, pk = s.get("kpis", {}), (s.get("prev_kpis") or {})
     fatal_pct = "—" if k.get("fatal_share") is None else f"{round(k['fatal_share'] * 100)}%"
     lines = [
@@ -145,14 +216,17 @@ def render_md(app_name: str, display_name: str, month: str, s: dict, ai: dict, p
         f"| Fatal 佔比 | {fatal_pct} | — |",
         f"| Issue 數 | {k.get('issue_count', 0)} | {pk.get('issue_count', '—')} |",
         "",
+    ] + render_fix_review(fix_review) + [
         "## Top Patterns",
         "| # | 標題 | 層級 | 事件/用戶 | 首見→最新見 | 趨勢 |",
         "|---|---|---|---|---|---|",
     ]
     trend_zh = {"new": "🆕 新增", "worse": "📈 惡化", "stable": "穩定"}
+    level_zh = {"FATAL": "閃退", "ANR": "凍結(ANR)", "NON_FATAL": "非致命"}
     for n, i in enumerate(prio, 1):
+        level = level_zh.get(i.get("error_type"), "閃退" if i["fatal"] else "非致命")
         lines.append(
-            f"| {n} | {i['title']} | {'fatal' if i['fatal'] else 'non-fatal'} | {i['events']}/{i['users']} "
+            f"| {n} | {i['title']} | {level} | {i['events']}/{i['users']} "
             f"| {i.get('first_seen_version', '')}→{i.get('last_seen_version', '')} | {trend_zh.get(i.get('trend'), '')} |"
         )
     lines += ["", "## 分布交叉", ai.get("distribution_insights", ""), "", "## 優先修復清單"]
@@ -206,9 +280,21 @@ def main() -> None:
     scored = score_issues(issues, prev.get("top_issues", []), app.get("core_paths", []))[: args.top]
 
     repo = Path(app.get("source_repo", "")).expanduser()
+    # 真實 stack trace（fetch_stacktraces.py 抓的）優先；沒有才 fallback 用 subtitle 反猜原始碼位置
+    st_path = ROOT / "out" / args.app / "stacktraces.json"
+    stacks = json.loads(st_path.read_text(encoding="utf-8")).get("issues", {}) if st_path.exists() else {}
     snippets = []
-    if repo.is_dir():
-        for i in scored[:5]:
+    for i in scored[:5]:
+        st = stacks.get(i.get("issue_id") or "")
+        if st and st.get("stack_trace"):
+            parts = [f"[issue {i['issue_id']}]（Crashlytics 真實 stack trace）", st["stack_trace"]]
+            bf = st.get("blame_frame") or {}
+            if repo.is_dir() and bf.get("file"):
+                snip = source_snippet(repo, f"{bf['file']}:{bf.get('line', '')}")
+                if snip:
+                    parts.append(f"元兇 frame 對應原始碼：\n{snip}")
+            snippets.append("\n".join(parts))
+        elif repo.is_dir():
             snip = source_snippet(repo, i.get("subtitle", ""))
             if snip:
                 snippets.append(f"[issue {i['issue_id']}]\n{snip}")
@@ -220,6 +306,7 @@ def main() -> None:
         issues=json.dumps([{k: v for k, v in i.items() if k != "version_dist"} for i in scored], ensure_ascii=False),
         dists=json.dumps(u.get("distributions", {}), ensure_ascii=False)[:4000],
         custom_keys=json.dumps(u.get("custom_keys", []), ensure_ascii=False)[:2000],
+        weekly=json.dumps(u.get("weekly_trend", []), ensure_ascii=False)[:2000] or "（無週趨勢資料）",
         snippets="\n\n".join(snippets)[:12000] or "（無可用原始碼片段）",
     ))
 
@@ -227,17 +314,27 @@ def main() -> None:
     prio = []
     for i in scored:
         note = ai_by_id.get(i["issue_id"], {})
+        # MCP 抓的真實 stack trace 與元兇 frame（file:line）——供儀表板「複製給 agent」用
+        st = stacks.get(i.get("issue_id") or "") or {}
+        bf = st.get("blame_frame") or {}
         prio.append({
-            "title": i["title"], "fatal": i["fatal"], "score": i["score"],
+            "issue_id": i.get("issue_id", ""), "platform": i.get("platform", ""),
+            "title": i["title"], "fatal": i["fatal"],
+            "error_type": i.get("error_type", "FATAL" if i["fatal"] else "NON_FATAL"), "score": i["score"],
             "users": i["users"], "events": i["events"], "trend": i["trend"],
+            "first_seen_version": i.get("first_seen_version", ""),
+            "last_seen_version": i.get("last_seen_version", ""),
             "root_cause": note.get("root_cause", "需人工確認"),
             "code_location": i.get("subtitle", ""),
             "suggested_fix": note.get("suggested_fix", "—"),
             "effort": note.get("effort", "?"),
+            "stack_trace": st.get("stack_trace", ""),
+            "blame_file": bf.get("file", ""),
+            "blame_line": str(bf.get("line", "")),
         })
 
     report_path.write_text(
-        render_md(args.app, u.get("display_name", args.app), month, {"kpis": summary.get("kpis", {}), "prev_kpis": prev.get("kpis")}, ai, prio),
+        render_md(args.app, u.get("display_name", args.app), month, {"kpis": summary.get("kpis", {}), "prev_kpis": prev.get("kpis")}, ai, prio, summary.get("fix_review")),
         encoding="utf-8",
     )
     print(f"  ✓ 月報 {report_path.relative_to(ROOT)}")

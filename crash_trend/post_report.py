@@ -50,6 +50,7 @@ def main() -> None:
         "prev_kpis": prev_kpis,
         "top_issues": summary.get("top_issues", [])[:10],
         "priority_list": summary.get("priority_list", []),
+        "fix_review": summary.get("fix_review"),
     }
     r = requests.post(url, json=payload, headers={"x-internal-token": token}, timeout=30)
     if r.status_code == 404:

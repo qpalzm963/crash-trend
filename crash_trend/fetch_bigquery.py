@@ -67,6 +67,13 @@ SQLS = {
         FROM `{table}`
         WHERE event_timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {days} DAY)
         GROUP BY 1 ORDER BY events DESC LIMIT 30""",
+    # 逐 issue 版本分布（修復驗證用：判斷某 issue 是否僅剩舊版出現）
+    "issue_versions": """
+        SELECT issue_id, application.display_version AS app_version,
+               COUNT(*) AS events, COUNT(DISTINCT installation_uuid) AS users
+        FROM `{table}`
+        WHERE event_timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {days} DAY)
+        GROUP BY 1, 2 ORDER BY events DESC LIMIT 500""",
     # custom_keys 查詢在 main() 依 apps.yaml 該 app 的 custom_keys 動態組出（沒設定就跳過）
     "weekly_trend": """
         SELECT FORMAT_TIMESTAMP('%Y-%W', event_timestamp) AS week,

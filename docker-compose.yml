@@ -11,6 +11,9 @@ services:
       # 憑證 read-only 掛載 —— 絕不進 image / registry
       # host 端放：~/.config/crash-trend/sa.json（BigQuery SA）
       - ~/.config/crash-trend:/root/.config/crash-trend:ro
+      # firebase user token（fetch_stacktraces.py 用；SA 打 Crashlytics 一律 404 只能 user token）。
+      # rw：CLI 會寫回 motd 快取／token 更新；host 端此目錄只放 firebase-tools.json
+      - ~/.config/configstore:/root/.config/configstore
     # GEMINI_API_KEY / GEMINI_MODEL 放 repo 根目錄 .env（gitignored），
     # weekly_sync.sh 會自行 source，不需在此宣告
 
