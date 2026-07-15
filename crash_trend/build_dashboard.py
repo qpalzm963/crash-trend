@@ -280,6 +280,8 @@ TEMPLATE = r"""<!DOCTYPE html>
 const DATA = __DATA__;
 const appNames = Object.keys(DATA.apps);
 let curApp = appNames[0], charts = [], sortKey = "users", sortAsc = false;
+// URL hash 直達分頁（聊天卡「開儀表板」按鈕帶 #<app>）
+if (DATA.apps[location.hash.slice(1)]) curApp = location.hash.slice(1);
 
 /* 主題：預設日間，◐ 切換並記住選擇（file:// 下 localStorage 不可用時靜默略過） */
 try { document.documentElement.dataset.theme = localStorage.getItem("ct-theme") || "light"; } catch (e) {}

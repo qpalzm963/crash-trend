@@ -1,6 +1,6 @@
 #!/bin/bash
 # 每週 crash 資料同步（launchd 或容器內 supercronic 呼叫；手動跑也行）
-# 自動部分：各 app 的 BigQuery 拉取 → normalize →（有 GEMINI_API_KEY 時）Gemini 月報 → 儀表板 → commit
+# 自動部分：各 app 的 BigQuery 拉取 → normalize →（有 Gemini key 時）Gemini 月報 → 儀表板 → commit
 # 無法自動的：console 快照（需使用者登入態）→ macOS 上發通知提醒（容器內自動略過）
 set -u
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
@@ -33,7 +33,12 @@ for app in $apps; do
   $PY "$CT/crash_trend/fetch_stacktraces.py" --app "$app" || echo "    （$app 本次無 stack trace，原因見上）"
   echo "--- normalize: $app"
   $PY "$CT/crash_trend/normalize.py" --app "$app" || FAILED="$FAILED normalize:$app"
-  if [ -n "${GEMINI_API_KEY:-}" ]; then
+  echo "--- check_surge: $app"
+  # 暴增偵測每週跑（不受發卡月頻 gate）；失敗只記不擋
+  $PY "$CT/crash_trend/check_surge.py" --app "$app" || FAILED="$FAILED surge:$app"
+  # 有 Gemini key 就跑 AI 分析——GEMINI_API_KEY（直接）或 GEMINI_KEY_URL（後台取 key）任一即可。
+  # 少了這個 analyze 不跑 → priority_list 空 → 聊天卡退化成「其他 N 個 issue」而非優先修復 TOP 3。
+  if [ -n "${GEMINI_API_KEY:-}${GEMINI_KEY_URL:-}" ]; then
     echo "--- analyze_gemini: $app"
     $PY "$CT/crash_trend/analyze_gemini.py" --app "$app" || FAILED="$FAILED analyze:$app"
   fi
@@ -42,12 +47,23 @@ done
 echo "--- build_dashboard"
 $PY "$CT/crash_trend/build_dashboard.py" || FAILED="$FAILED dashboard"
 
-# 有設 CRASH_REPORT_URL 才發卡到聊天室（chat 整合，見 DEPLOY.md）
+# 發卡到聊天室（chat 整合，見 DEPLOY.md）：資料每週同步，但卡片「每月一次」——
+# 用當月標記檔 gate（out/ 已 gitignore）。當月未發過才發；全部成功才記為已發，
+# 失敗則不記、下週自動補發，同月最多一張。
+CARD_MARK="$CT/out/.card_sent_month"
+THIS_MONTH="$(date '+%Y-%m')"
 if [ -n "${CRASH_REPORT_URL:-}" ]; then
-  for app in $apps; do
-    echo "--- post_report: $app"
-    $PY "$CT/crash_trend/post_report.py" --app "$app" || FAILED="$FAILED post:$app"
-  done
+  mkdir -p "$CT/out"
+  if [ "$(cat "$CARD_MARK" 2>/dev/null)" = "$THIS_MONTH" ]; then
+    echo "--- post_report: 本月（$THIS_MONTH）已發過卡，跳過（月頻）"
+  else
+    CARD_OK=1
+    for app in $apps; do
+      echo "--- post_report: $app（每月一次）"
+      $PY "$CT/crash_trend/post_report.py" --app "$app" || { FAILED="$FAILED post:$app"; CARD_OK=0; }
+    done
+    [ "$CARD_OK" = 1 ] && echo "$THIS_MONTH" > "$CARD_MARK" && echo "--- 本月發卡完成，已記 $THIS_MONTH"
+  fi
 fi
 
 cd "$CT"

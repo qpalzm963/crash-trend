@@ -4,7 +4,7 @@
   Python：優先級評分、與上月比較的趨勢標記、原始碼片段擷取、md 排版、priority_list 回填
   Gemini：每個 top issue 的 root cause 推測 / 建議修法 / 工作量估計，與總覽/分布洞察文字
 
-環境變數：GEMINI_API_KEY（必要）、GEMINI_MODEL（預設 gemini-flash-latest）
+環境變數：GEMINI_API_KEY 或 GEMINI_KEY_URL（後台代管）擇一、GEMINI_MODEL（預設 gemini-flash-latest）
 用法：analyze_gemini.py --app <name>；資料為空時直接產出「無資料」月報，不呼叫 API。
 """
 
@@ -122,7 +122,14 @@ def call_gemini(payload_text: str, schema: dict | None = None) -> dict:
         },
     }
     for attempt in (1, 2, 3):
-        r = requests.post(API.format(model=model), params={"key": key}, json=body, timeout=120)
+        try:
+            # 富 prompt（含 stack trace/週趨勢/分布）生成較久 → 300s；逾時/連線錯誤也退避重試
+            r = requests.post(API.format(model=model), params={"key": key}, json=body, timeout=300)
+        except (requests.Timeout, requests.ConnectionError) as e:
+            if attempt < 3:
+                time.sleep(5 * attempt)
+                continue
+            sys.exit(f"[錯誤] Gemini API 連線逾時（已重試）：{str(e)[:200]}")
         if r.status_code in (429, 500, 503) and attempt < 3:  # 暫時性限流/過載 → 退避重試
             time.sleep(5 * attempt)
             continue
@@ -246,7 +253,8 @@ def render_md(app_name: str, display_name: str, month: str, s: dict, ai: dict, p
 
 def main() -> None:
     p = app_argparser("Gemini 月報分析")
-    p.add_argument("--top", type=int, default=10, help="送分析的 top issues 數（預設 10）")
+    # 預設 5：10 個 issue 的結構化生成（含 stack trace）常超過 API timeout；卡片只取 3、月報 5 筆已足
+    p.add_argument("--top", type=int, default=5, help="送分析的 top issues 數（預設 5）")
     args = p.parse_args()
     app = get_app(args.app)
     month = dt.date.today().strftime("%Y-%m")

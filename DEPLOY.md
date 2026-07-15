@@ -39,9 +39,21 @@ launchctl load ~/Library/LaunchAgents/com.crash-trend.weekly-sync.plist
 
 ## 與聊天系統整合（可選）
 
-`weekly_sync.sh` 產出的 `reports/data/<app>/<月>.json` 就是現成的通知 payload：
-在腳本尾端 `curl -X POST` 到你的 bot/webhook（Google Chat、Slack…），
-內容建議：KPI 對比上期、新增/惡化 top 3、儀表板連結。
+已內建兩種發送（`.env` 設定即啟用，未設＝跳過）：
+
+- **月度摘要卡** `post_report.py`：KPI 對比上期、優先修復 TOP 3、儀表板連結（帶 `#<app>` 錨點）。
+  每月只發一張（`out/.card_sent_month` gate，失敗下週自動補發）。
+- **暴增告警** `check_surge.py`：每週偵測，最近完整週事件 ≥`SURGE_RATIO` 倍（預設 2）且
+  ≥`SURGE_MIN_EVENTS` 件（預設 500）→ 立即發 `type=surge_alert` 告警（同週去重）。
+
+```
+CRASH_REPORT_URL=http://host.docker.internal:3000/api/crash-report
+INTERNAL_API_TOKEN=<與接收端共享的 service-to-service token>
+DASHBOARD_URL=http://<主機>:8787
+```
+
+接收端自行實作：驗 `x-internal-token`、依 payload 的 `app` 找到對應頻道發卡
+（payload 欄位見兩支腳本 docstring）。
 
 ## 驗收清單
 

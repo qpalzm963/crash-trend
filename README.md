@@ -16,8 +16,8 @@ Crashlytics MCP ─┘（真實 stack trace）                          └→ d
 
 - **優先修復清單**：`P = 影響用戶×3 ＋ fatal或ANR×2 ＋ 新增/惡化×2 ＋ 最新版仍現×2 ＋ 核心路徑×3 ＋ 事件×1`（評分是確定性程式；AI 只負責 root cause 推測、修法建議與工作量估計，並吃真實 stack trace 定位）
 - **真實 stack trace**：BQ 只有彙總數字，堆疊走 Firebase MCP（`fetch_stacktraces.py`，見下）餵 AI；BQ 未接的 app 還能用 MCP 報表當 issue 來源
-- **儀表板**：單一 HTML 檔、Chart.js 內嵌、零 CDN，雙擊即開；亮/暗雙主題；跨月／週趨勢、機型/OS/版本／層級分布、可排序 issue 表。層級三態白話（**閃退**/**凍結** ANR/**非致命**），每個修復項有 **COPY** 按鈕，一鍵複製含 stack trace 的「修復請求」貼給 coding agent
-- **週排程**：Docker（supercronic）或 launchd，完成後可發通知
+- **儀表板**：單一 HTML 檔、Chart.js 內嵌、零 CDN，雙擊即開；亮/暗雙主題；跨月／週趨勢、機型/OS/版本／層級分布、可排序 issue 表；URL 帶 `#<app>` 直達分頁。層級三態白話（**閃退**/**凍結** ANR/**非致命**），每個修復項有 **COPY** 按鈕，一鍵複製含 stack trace 的「修復請求」貼給 coding agent
+- **三層節奏**：資料同步每週（Docker supercronic 或 launchd）；**暴增告警**即時（`check_surge.py`：最近完整週事件 ≥2 倍前一週且 ≥500 件 → 發告警，`SURGE_RATIO`/`SURGE_MIN_EVENTS` 可調、同週去重）；聊天摘要卡每月一張（`out/.card_sent_month` gate，失敗下週補發）
 
 ## 快速開始
 
@@ -64,7 +64,7 @@ BQ export 沒有堆疊。本工具 spawn `firebase experimental:mcp`（`firebase
 
 ## AI 分析
 
-- **自動**（排程）：`analyze_gemini.py` — 空資料月份不呼叫 API；`custom_keys` 有埋的 app 會做族群交叉（例如「crash 是否集中在某種用戶角色」）
+- **自動**（排程）：`analyze_gemini.py` — 空資料月份不呼叫 API；預設分析 top 5（更多會讓結構化生成逾時）；key 走 `GEMINI_API_KEY` 或 `GEMINI_KEY_URL`（後台代管）任一；`custom_keys` 有埋的 app 會做族群交叉（例如「crash 是否集中在某種用戶角色」）
 - **互動**：搭配 Claude Code 等 agent 直接讀 `out/<app>/unified.json` 做深度分析與現場修復
 - **給 PM 的白話簡報**：`pm_brief.py --app <name> [--top 1|--issue N]` — 把優先清單 issue 轉成非工程師看得懂的白話說明。白話文字用到才呼叫 Gemini（省 token），生成後回寫快照快取
 
@@ -76,6 +76,8 @@ crash_trend/
   fetch_stacktraces.py  # 真實 stack trace（headless 驅動 Firebase MCP）
   normalize.py          # 多來源 → 統一 schema ＋ 月度摘要
   analyze_gemini.py     # 評分（程式）＋ 註解（Gemini）→ 月報 md
+  check_surge.py        # 暴增偵測（週跑，觸發即發告警）
+  post_report.py        # 月度摘要卡發送（聊天整合，可選）
   pm_brief.py           # 優先 issue → 給 PM 的白話簡報
   build_dashboard.py    # 自包含儀表板產生器（含複製給 agent）
 scripts/

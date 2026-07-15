@@ -41,11 +41,13 @@ def main() -> None:
     if len(months) > 1 and months[-1] == month:
         prev_kpis = json.loads((data_dir / f"{months[-2]}.json").read_text(encoding="utf-8")).get("kpis")
 
+    dashboard = os.environ.get("DASHBOARD_URL", "")
     payload = {
         "app": args.app,
         "display_name": app.get("display_name", args.app),
         "month": month,
-        "dashboard_url": os.environ.get("DASHBOARD_URL", ""),
+        # 帶 #<app> 錨點：儀表板讀 hash 直接切到該 app 分頁
+        "dashboard_url": f"{dashboard}#{args.app}" if dashboard else "",
         "kpis": summary.get("kpis", {}),
         "prev_kpis": prev_kpis,
         "top_issues": summary.get("top_issues", [])[:10],
