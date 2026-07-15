@@ -3,7 +3,7 @@
 環境變數（放 .env）：
   CRASH_REPORT_URL    例 http://host.docker.internal:3000/api/crash-report；未設＝跳過（不算失敗）
   INTERNAL_API_TOKEN  與聊天服務共享的 service-to-service token
-  DASHBOARD_URL       卡片按鈕連結（例 http://172.16.65.61:8787）；未設則卡片不放按鈕
+  DASHBOARD_URL       卡片按鈕連結（例 http://<主機>:8787）；未設則卡片不放按鈕
 """
 
 from __future__ import annotations
