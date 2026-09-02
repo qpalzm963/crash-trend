@@ -8,9 +8,16 @@
         "app_id": "shop_app",
         "display_name": "E-Commerce Shop",
         "firebase_project_id": "shop-app-prod-12345",
-        "platforms": ["android", "ios"],
+        "platforms": [
+          "android",
+          "ios"
+        ],
         "source_repo": "~/projects/shop_app",
-        "custom_keys_monitored": ["user_tier", "screen_name", "network_type"]
+        "custom_keys_monitored": [
+          "user_tier",
+          "screen_name",
+          "network_type"
+        ]
       },
       "period": {
         "days": 30,
@@ -94,108 +101,633 @@
       },
       "daily_trend": [
         {
-          "date": "2026-08-27",
-          "crash_events": 430,
-          "affected_users": 150,
-          "fatal_events": 280,
-          "anr_events": 50,
-          "non_fatal_events": 100,
-          "sessions_total": 115000,
-          "crashed_sessions": 90,
+          "date": "2026-08-04",
+          "crash_events": 392,
+          "affected_users": 133,
+          "fatal_events": 259,
+          "anr_events": 42,
+          "non_fatal_events": 91,
+          "sessions_total": 117600,
+          "crashed_sessions": 78,
+          "crash_free_sessions_rate": 0.9993,
+          "by_platform": {
+            "android": {
+              "events": 227,
+              "users": 77
+            },
+            "ios": {
+              "events": 165,
+              "users": 56
+            }
+          }
+        },
+        {
+          "date": "2026-08-05",
+          "crash_events": 392,
+          "affected_users": 133,
+          "fatal_events": 259,
+          "anr_events": 42,
+          "non_fatal_events": 91,
+          "sessions_total": 117600,
+          "crashed_sessions": 78,
+          "crash_free_sessions_rate": 0.9993,
+          "by_platform": {
+            "android": {
+              "events": 227,
+              "users": 77
+            },
+            "ios": {
+              "events": 165,
+              "users": 56
+            }
+          }
+        },
+        {
+          "date": "2026-08-06",
+          "crash_events": 392,
+          "affected_users": 133,
+          "fatal_events": 259,
+          "anr_events": 42,
+          "non_fatal_events": 91,
+          "sessions_total": 117600,
+          "crashed_sessions": 78,
+          "crash_free_sessions_rate": 0.9993,
+          "by_platform": {
+            "android": {
+              "events": 227,
+              "users": 77
+            },
+            "ios": {
+              "events": 165,
+              "users": 56
+            }
+          }
+        },
+        {
+          "date": "2026-08-07",
+          "crash_events": 392,
+          "affected_users": 133,
+          "fatal_events": 259,
+          "anr_events": 42,
+          "non_fatal_events": 91,
+          "sessions_total": 117600,
+          "crashed_sessions": 78,
+          "crash_free_sessions_rate": 0.9993,
+          "by_platform": {
+            "android": {
+              "events": 227,
+              "users": 77
+            },
+            "ios": {
+              "events": 165,
+              "users": 56
+            }
+          }
+        },
+        {
+          "date": "2026-08-08",
+          "crash_events": 476,
+          "affected_users": 161,
+          "fatal_events": 314,
+          "anr_events": 51,
+          "non_fatal_events": 111,
+          "sessions_total": 119200,
+          "crashed_sessions": 95,
           "crash_free_sessions_rate": 0.9992,
           "by_platform": {
-            "android": { "events": 250, "users": 90 },
-            "ios": { "events": 180, "users": 60 }
+            "android": {
+              "events": 276,
+              "users": 93
+            },
+            "ios": {
+              "events": 200,
+              "users": 68
+            }
+          }
+        },
+        {
+          "date": "2026-08-09",
+          "crash_events": 476,
+          "affected_users": 161,
+          "fatal_events": 314,
+          "anr_events": 51,
+          "non_fatal_events": 111,
+          "sessions_total": 119200,
+          "crashed_sessions": 95,
+          "crash_free_sessions_rate": 0.9992,
+          "by_platform": {
+            "android": {
+              "events": 276,
+              "users": 93
+            },
+            "ios": {
+              "events": 200,
+              "users": 68
+            }
+          }
+        },
+        {
+          "date": "2026-08-10",
+          "crash_events": 392,
+          "affected_users": 133,
+          "fatal_events": 259,
+          "anr_events": 42,
+          "non_fatal_events": 91,
+          "sessions_total": 117600,
+          "crashed_sessions": 78,
+          "crash_free_sessions_rate": 0.9993,
+          "by_platform": {
+            "android": {
+              "events": 227,
+              "users": 77
+            },
+            "ios": {
+              "events": 165,
+              "users": 56
+            }
+          }
+        },
+        {
+          "date": "2026-08-11",
+          "crash_events": 392,
+          "affected_users": 133,
+          "fatal_events": 259,
+          "anr_events": 42,
+          "non_fatal_events": 91,
+          "sessions_total": 117600,
+          "crashed_sessions": 78,
+          "crash_free_sessions_rate": 0.9993,
+          "by_platform": {
+            "android": {
+              "events": 227,
+              "users": 77
+            },
+            "ios": {
+              "events": 165,
+              "users": 56
+            }
+          }
+        },
+        {
+          "date": "2026-08-12",
+          "crash_events": 392,
+          "affected_users": 133,
+          "fatal_events": 259,
+          "anr_events": 42,
+          "non_fatal_events": 91,
+          "sessions_total": 117600,
+          "crashed_sessions": 78,
+          "crash_free_sessions_rate": 0.9993,
+          "by_platform": {
+            "android": {
+              "events": 227,
+              "users": 77
+            },
+            "ios": {
+              "events": 165,
+              "users": 56
+            }
+          }
+        },
+        {
+          "date": "2026-08-13",
+          "crash_events": 392,
+          "affected_users": 133,
+          "fatal_events": 259,
+          "anr_events": 42,
+          "non_fatal_events": 91,
+          "sessions_total": 117600,
+          "crashed_sessions": 78,
+          "crash_free_sessions_rate": 0.9993,
+          "by_platform": {
+            "android": {
+              "events": 227,
+              "users": 77
+            },
+            "ios": {
+              "events": 165,
+              "users": 56
+            }
+          }
+        },
+        {
+          "date": "2026-08-14",
+          "crash_events": 392,
+          "affected_users": 133,
+          "fatal_events": 259,
+          "anr_events": 42,
+          "non_fatal_events": 91,
+          "sessions_total": 117600,
+          "crashed_sessions": 78,
+          "crash_free_sessions_rate": 0.9993,
+          "by_platform": {
+            "android": {
+              "events": 227,
+              "users": 77
+            },
+            "ios": {
+              "events": 165,
+              "users": 56
+            }
+          }
+        },
+        {
+          "date": "2026-08-15",
+          "crash_events": 476,
+          "affected_users": 161,
+          "fatal_events": 314,
+          "anr_events": 51,
+          "non_fatal_events": 111,
+          "sessions_total": 119200,
+          "crashed_sessions": 95,
+          "crash_free_sessions_rate": 0.9992,
+          "by_platform": {
+            "android": {
+              "events": 276,
+              "users": 93
+            },
+            "ios": {
+              "events": 200,
+              "users": 68
+            }
+          }
+        },
+        {
+          "date": "2026-08-16",
+          "crash_events": 476,
+          "affected_users": 161,
+          "fatal_events": 314,
+          "anr_events": 51,
+          "non_fatal_events": 111,
+          "sessions_total": 119200,
+          "crashed_sessions": 95,
+          "crash_free_sessions_rate": 0.9992,
+          "by_platform": {
+            "android": {
+              "events": 276,
+              "users": 93
+            },
+            "ios": {
+              "events": 200,
+              "users": 68
+            }
+          }
+        },
+        {
+          "date": "2026-08-17",
+          "crash_events": 392,
+          "affected_users": 133,
+          "fatal_events": 259,
+          "anr_events": 42,
+          "non_fatal_events": 91,
+          "sessions_total": 117600,
+          "crashed_sessions": 78,
+          "crash_free_sessions_rate": 0.9993,
+          "by_platform": {
+            "android": {
+              "events": 227,
+              "users": 77
+            },
+            "ios": {
+              "events": 165,
+              "users": 56
+            }
+          }
+        },
+        {
+          "date": "2026-08-18",
+          "crash_events": 392,
+          "affected_users": 133,
+          "fatal_events": 259,
+          "anr_events": 42,
+          "non_fatal_events": 91,
+          "sessions_total": 117600,
+          "crashed_sessions": 78,
+          "crash_free_sessions_rate": 0.9993,
+          "by_platform": {
+            "android": {
+              "events": 227,
+              "users": 77
+            },
+            "ios": {
+              "events": 165,
+              "users": 56
+            }
+          }
+        },
+        {
+          "date": "2026-08-19",
+          "crash_events": 392,
+          "affected_users": 133,
+          "fatal_events": 259,
+          "anr_events": 42,
+          "non_fatal_events": 91,
+          "sessions_total": 117600,
+          "crashed_sessions": 78,
+          "crash_free_sessions_rate": 0.9993,
+          "by_platform": {
+            "android": {
+              "events": 227,
+              "users": 77
+            },
+            "ios": {
+              "events": 165,
+              "users": 56
+            }
+          }
+        },
+        {
+          "date": "2026-08-20",
+          "crash_events": 392,
+          "affected_users": 133,
+          "fatal_events": 259,
+          "anr_events": 42,
+          "non_fatal_events": 91,
+          "sessions_total": 117600,
+          "crashed_sessions": 78,
+          "crash_free_sessions_rate": 0.9993,
+          "by_platform": {
+            "android": {
+              "events": 227,
+              "users": 77
+            },
+            "ios": {
+              "events": 165,
+              "users": 56
+            }
+          }
+        },
+        {
+          "date": "2026-08-21",
+          "crash_events": 392,
+          "affected_users": 133,
+          "fatal_events": 259,
+          "anr_events": 42,
+          "non_fatal_events": 91,
+          "sessions_total": 117600,
+          "crashed_sessions": 78,
+          "crash_free_sessions_rate": 0.9993,
+          "by_platform": {
+            "android": {
+              "events": 227,
+              "users": 77
+            },
+            "ios": {
+              "events": 165,
+              "users": 56
+            }
+          }
+        },
+        {
+          "date": "2026-08-22",
+          "crash_events": 476,
+          "affected_users": 161,
+          "fatal_events": 314,
+          "anr_events": 51,
+          "non_fatal_events": 111,
+          "sessions_total": 119200,
+          "crashed_sessions": 95,
+          "crash_free_sessions_rate": 0.9992,
+          "by_platform": {
+            "android": {
+              "events": 276,
+              "users": 93
+            },
+            "ios": {
+              "events": 200,
+              "users": 68
+            }
+          }
+        },
+        {
+          "date": "2026-08-23",
+          "crash_events": 476,
+          "affected_users": 161,
+          "fatal_events": 314,
+          "anr_events": 51,
+          "non_fatal_events": 111,
+          "sessions_total": 119200,
+          "crashed_sessions": 95,
+          "crash_free_sessions_rate": 0.9992,
+          "by_platform": {
+            "android": {
+              "events": 276,
+              "users": 93
+            },
+            "ios": {
+              "events": 200,
+              "users": 68
+            }
+          }
+        },
+        {
+          "date": "2026-08-24",
+          "crash_events": 392,
+          "affected_users": 133,
+          "fatal_events": 259,
+          "anr_events": 42,
+          "non_fatal_events": 91,
+          "sessions_total": 117600,
+          "crashed_sessions": 78,
+          "crash_free_sessions_rate": 0.9993,
+          "by_platform": {
+            "android": {
+              "events": 227,
+              "users": 77
+            },
+            "ios": {
+              "events": 165,
+              "users": 56
+            }
+          }
+        },
+        {
+          "date": "2026-08-25",
+          "crash_events": 392,
+          "affected_users": 133,
+          "fatal_events": 259,
+          "anr_events": 42,
+          "non_fatal_events": 91,
+          "sessions_total": 117600,
+          "crashed_sessions": 78,
+          "crash_free_sessions_rate": 0.9993,
+          "by_platform": {
+            "android": {
+              "events": 227,
+              "users": 77
+            },
+            "ios": {
+              "events": 165,
+              "users": 56
+            }
+          }
+        },
+        {
+          "date": "2026-08-26",
+          "crash_events": 392,
+          "affected_users": 133,
+          "fatal_events": 259,
+          "anr_events": 42,
+          "non_fatal_events": 91,
+          "sessions_total": 117600,
+          "crashed_sessions": 78,
+          "crash_free_sessions_rate": 0.9993,
+          "by_platform": {
+            "android": {
+              "events": 227,
+              "users": 77
+            },
+            "ios": {
+              "events": 165,
+              "users": 56
+            }
+          }
+        },
+        {
+          "date": "2026-08-27",
+          "crash_events": 392,
+          "affected_users": 133,
+          "fatal_events": 259,
+          "anr_events": 42,
+          "non_fatal_events": 91,
+          "sessions_total": 117600,
+          "crashed_sessions": 78,
+          "crash_free_sessions_rate": 0.9993,
+          "by_platform": {
+            "android": {
+              "events": 227,
+              "users": 77
+            },
+            "ios": {
+              "events": 165,
+              "users": 56
+            }
           }
         },
         {
           "date": "2026-08-28",
-          "crash_events": 410,
-          "affected_users": 142,
-          "fatal_events": 270,
-          "anr_events": 40,
-          "non_fatal_events": 100,
-          "sessions_total": 118000,
-          "crashed_sessions": 85,
+          "crash_events": 392,
+          "affected_users": 133,
+          "fatal_events": 259,
+          "anr_events": 42,
+          "non_fatal_events": 91,
+          "sessions_total": 117600,
+          "crashed_sessions": 78,
           "crash_free_sessions_rate": 0.9993,
           "by_platform": {
-            "android": { "events": 240, "users": 82 },
-            "ios": { "events": 170, "users": 60 }
+            "android": {
+              "events": 227,
+              "users": 77
+            },
+            "ios": {
+              "events": 165,
+              "users": 56
+            }
           }
         },
         {
           "date": "2026-08-29",
-          "crash_events": 520,
-          "affected_users": 180,
-          "fatal_events": 350,
-          "anr_events": 60,
-          "non_fatal_events": 110,
-          "sessions_total": 122000,
-          "crashed_sessions": 110,
-          "crash_free_sessions_rate": 0.9991,
+          "crash_events": 476,
+          "affected_users": 161,
+          "fatal_events": 314,
+          "anr_events": 51,
+          "non_fatal_events": 111,
+          "sessions_total": 119200,
+          "crashed_sessions": 95,
+          "crash_free_sessions_rate": 0.9992,
           "by_platform": {
-            "android": { "events": 320, "users": 110 },
-            "ios": { "events": 200, "users": 70 }
+            "android": {
+              "events": 276,
+              "users": 93
+            },
+            "ios": {
+              "events": 200,
+              "users": 68
+            }
           }
         },
         {
           "date": "2026-08-30",
-          "crash_events": 480,
-          "affected_users": 165,
-          "fatal_events": 320,
-          "anr_events": 45,
-          "non_fatal_events": 115,
-          "sessions_total": 120000,
+          "crash_events": 476,
+          "affected_users": 161,
+          "fatal_events": 314,
+          "anr_events": 51,
+          "non_fatal_events": 111,
+          "sessions_total": 119200,
           "crashed_sessions": 95,
           "crash_free_sessions_rate": 0.9992,
           "by_platform": {
-            "android": { "events": 290, "users": 100 },
-            "ios": { "events": 190, "users": 65 }
+            "android": {
+              "events": 276,
+              "users": 93
+            },
+            "ios": {
+              "events": 200,
+              "users": 68
+            }
           }
         },
         {
           "date": "2026-08-31",
-          "crash_events": 390,
-          "affected_users": 130,
-          "fatal_events": 250,
-          "anr_events": 35,
-          "non_fatal_events": 105,
-          "sessions_total": 112000,
+          "crash_events": 392,
+          "affected_users": 133,
+          "fatal_events": 259,
+          "anr_events": 42,
+          "non_fatal_events": 91,
+          "sessions_total": 117600,
           "crashed_sessions": 78,
           "crash_free_sessions_rate": 0.9993,
           "by_platform": {
-            "android": { "events": 230, "users": 75 },
-            "ios": { "events": 160, "users": 55 }
+            "android": {
+              "events": 227,
+              "users": 77
+            },
+            "ios": {
+              "events": 165,
+              "users": 56
+            }
           }
         },
         {
           "date": "2026-09-01",
-          "crash_events": 412,
-          "affected_users": 140,
-          "fatal_events": 270,
+          "crash_events": 392,
+          "affected_users": 133,
+          "fatal_events": 259,
           "anr_events": 42,
-          "non_fatal_events": 100,
-          "sessions_total": 114000,
-          "crashed_sessions": 82,
+          "non_fatal_events": 91,
+          "sessions_total": 117600,
+          "crashed_sessions": 78,
           "crash_free_sessions_rate": 0.9993,
           "by_platform": {
-            "android": { "events": 242, "users": 85 },
-            "ios": { "events": 170, "users": 55 }
+            "android": {
+              "events": 227,
+              "users": 77
+            },
+            "ios": {
+              "events": 165,
+              "users": 56
+            }
           }
         },
         {
           "date": "2026-09-02",
-          "crash_events": 380,
-          "affected_users": 125,
-          "fatal_events": 240,
-          "anr_events": 40,
-          "non_fatal_events": 100,
-          "sessions_total": 110000,
-          "crashed_sessions": 75,
+          "crash_events": 410,
+          "affected_users": 139,
+          "fatal_events": 249,
+          "anr_events": 60,
+          "non_fatal_events": 101,
+          "sessions_total": 117600,
+          "crashed_sessions": 82,
           "crash_free_sessions_rate": 0.9993,
           "by_platform": {
-            "android": { "events": 220, "users": 70 },
-            "ios": { "events": 160, "users": 55 }
+            "android": {
+              "events": 237,
+              "users": 80
+            },
+            "ios": {
+              "events": 173,
+              "users": 59
+            }
           }
         }
       ],
@@ -232,36 +764,122 @@
           "affected_users": 470,
           "crash_free_users_rate": 0.9991,
           "crash_free_sessions_rate": 0.9996,
-          "adoption_rate": 0.10,
+          "adoption_rate": 0.1,
           "status": "maintenance",
           "trend": "improving"
         }
       ],
       "distributions": {
         "platform": [
-          { "name": "android", "events": 7200, "users": 2450, "share": 0.578 },
-          { "name": "ios", "events": 5250, "users": 1670, "share": 0.422 }
+          {
+            "name": "android",
+            "events": 7200,
+            "users": 2450,
+            "share": 0.578
+          },
+          {
+            "name": "ios",
+            "events": 5250,
+            "users": 1670,
+            "share": 0.422
+          }
         ],
         "device_models": [
-          { "model": "Pixel 8", "platform": "android", "events": 1420, "users": 480, "share": 0.114 },
-          { "model": "iPhone 15 Pro", "platform": "ios", "events": 1200, "users": 410, "share": 0.096 },
-          { "model": "Galaxy S24", "platform": "android", "events": 980, "users": 340, "share": 0.078 },
-          { "model": "iPhone 14", "platform": "ios", "events": 850, "users": 290, "share": 0.068 }
+          {
+            "model": "Pixel 8",
+            "platform": "android",
+            "events": 1420,
+            "users": 480,
+            "share": 0.114
+          },
+          {
+            "model": "iPhone 15 Pro",
+            "platform": "ios",
+            "events": 1200,
+            "users": 410,
+            "share": 0.096
+          },
+          {
+            "model": "Galaxy S24",
+            "platform": "android",
+            "events": 980,
+            "users": 340,
+            "share": 0.078
+          },
+          {
+            "model": "iPhone 14",
+            "platform": "ios",
+            "events": 850,
+            "users": 290,
+            "share": 0.068
+          }
         ],
         "os_versions": [
-          { "os_version": "Android 14", "platform": "android", "events": 4500, "users": 1520, "share": 0.361 },
-          { "os_version": "iOS 18.0.1", "platform": "ios", "events": 3100, "users": 1050, "share": 0.249 },
-          { "os_version": "Android 13", "platform": "android", "events": 2700, "users": 930, "share": 0.217 },
-          { "os_version": "iOS 17.6.1", "platform": "ios", "events": 2150, "users": 620, "share": 0.173 }
+          {
+            "os_version": "Android 14",
+            "platform": "android",
+            "events": 4500,
+            "users": 1520,
+            "share": 0.361
+          },
+          {
+            "os_version": "iOS 18.0.1",
+            "platform": "ios",
+            "events": 3100,
+            "users": 1050,
+            "share": 0.249
+          },
+          {
+            "os_version": "Android 13",
+            "platform": "android",
+            "events": 2700,
+            "users": 930,
+            "share": 0.217
+          },
+          {
+            "os_version": "iOS 17.6.1",
+            "platform": "ios",
+            "events": 2150,
+            "users": 620,
+            "share": 0.173
+          }
         ],
         "app_versions": [
-          { "app_version": "3.2.0", "platform": "all", "events": 6800, "users": 2300, "share": 0.546 },
-          { "app_version": "3.1.2", "platform": "all", "events": 4100, "users": 1350, "share": 0.329 },
-          { "app_version": "3.1.0", "platform": "all", "events": 1550, "users": 470, "share": 0.125 }
+          {
+            "app_version": "3.2.0",
+            "platform": "all",
+            "events": 6800,
+            "users": 2300,
+            "share": 0.546
+          },
+          {
+            "app_version": "3.1.2",
+            "platform": "all",
+            "events": 4100,
+            "users": 1350,
+            "share": 0.329
+          },
+          {
+            "app_version": "3.1.0",
+            "platform": "all",
+            "events": 1550,
+            "users": 470,
+            "share": 0.125
+          }
         ],
         "custom_keys": [
-          { "key": "user_tier", "value": "vip", "platform": "all", "events": 4500 },
-          { "key": "user_tier", "value": "standard", "platform": "all", "events": 7950 }
+          {
+            "key": "user_tier",
+            "value": "vip",
+            "platform": "all",
+            "events": 4500
+          },
+          {
+            "key": "user_tier",
+            "value": "standard",
+            "platform": "all",
+            "events": 7950
+          }
         ]
       },
       "top_issues": [
@@ -291,7 +909,11 @@
           "first_seen_version": "3.2.0",
           "last_seen_version": "3.2.0",
           "version_distribution": [
-            { "version": "3.2.0", "events": 3420, "users": 2100 }
+            {
+              "version": "3.2.0",
+              "events": 3420,
+              "users": 2100
+            }
           ],
           "blame_frame": {
             "file": "app/src/main/java/com/example/shop/CheckoutActivity.kt",
@@ -308,7 +930,11 @@
             "suggested_fix": "於 processPayment 入口處加入 userProfile 空值檢查，並在未載入完成時顯示 Loading 狀態而非直接取值。",
             "effort": "S",
             "confidence": "high",
-            "reasoning_sources": ["stack_trace", "blame_frame", "version_concentration"]
+            "reasoning_sources": [
+              "stack_trace",
+              "blame_frame",
+              "version_concentration"
+            ]
           },
           "detail": {
             "stack_trace": "java.lang.NullPointerException: Attempt to invoke virtual method 'java.lang.String com.example.shop.model.UserProfile.getId()' on a null object reference\n\tat com.example.shop.CheckoutActivity.processPayment(CheckoutActivity.kt:142)\n\tat com.example.shop.CheckoutActivity.access$processPayment(CheckoutActivity.kt:28)\n\tat com.example.shop.CheckoutActivity$onCreate$1.onClick(CheckoutActivity.kt:65)",
@@ -333,8 +959,14 @@
               }
             ],
             "logs": [
-              { "timestamp": "2026-09-02T13:39:58Z", "message": "[CheckoutActivity] Initializing checkout view" },
-              { "timestamp": "2026-09-02T13:40:00Z", "message": "[PaymentGateway] Triggering payment flow" }
+              {
+                "timestamp": "2026-09-02T13:39:58Z",
+                "message": "[CheckoutActivity] Initializing checkout view"
+              },
+              {
+                "timestamp": "2026-09-02T13:40:00Z",
+                "message": "[PaymentGateway] Triggering payment flow"
+              }
             ],
             "custom_keys": {
               "user_tier": "vip",
@@ -342,11 +974,20 @@
               "network_type": "WIFI"
             },
             "top_devices": [
-              { "model": "Pixel 8", "events": 1420 },
-              { "model": "Galaxy S24", "events": 980 }
+              {
+                "model": "Pixel 8",
+                "events": 1420
+              },
+              {
+                "model": "Galaxy S24",
+                "events": 980
+              }
             ],
             "top_os": [
-              { "os_version": "Android 14", "events": 3420 }
+              {
+                "os_version": "Android 14",
+                "events": 3420
+              }
             ]
           }
         },
@@ -376,8 +1017,16 @@
           "first_seen_version": "3.1.2",
           "last_seen_version": "3.2.0",
           "version_distribution": [
-            { "version": "3.2.0", "events": 950, "users": 680 },
-            { "version": "3.1.2", "events": 400, "users": 270 }
+            {
+              "version": "3.2.0",
+              "events": 950,
+              "users": 680
+            },
+            {
+              "version": "3.1.2",
+              "events": 400,
+              "users": 270
+            }
           ],
           "blame_frame": {
             "file": "app/src/main/java/com/example/shop/data/AppDatabase_Impl.kt",
@@ -394,15 +1043,30 @@
             "suggested_fix": "將資料庫初始預熱與 Migration 操作移至 Dispatchers.IO 協程中非同步執行。",
             "effort": "M",
             "confidence": "high",
-            "reasoning_sources": ["stack_trace", "blame_frame"]
+            "reasoning_sources": [
+              "stack_trace",
+              "blame_frame"
+            ]
           },
           "detail": {
             "stack_trace": "\"main\" prio=5 tid=1 Blocked\n  | group=\"main\" sCount=1 ucsCount=0 flags=1 obj=0x73295840\n  at com.example.shop.data.AppDatabase_Impl.createOpenHelper(AppDatabase_Impl.kt:88)\n  at androidx.room.RoomDatabase.init(RoomDatabase.kt:145)",
             "breadcrumbs": [],
             "logs": [],
-            "custom_keys": { "screen_name": "splash" },
-            "top_devices": [{ "model": "Galaxy A54", "events": 600 }],
-            "top_os": [{ "os_version": "Android 14", "events": 1100 }]
+            "custom_keys": {
+              "screen_name": "splash"
+            },
+            "top_devices": [
+              {
+                "model": "Galaxy A54",
+                "events": 600
+              }
+            ],
+            "top_os": [
+              {
+                "os_version": "Android 14",
+                "events": 1100
+              }
+            ]
           }
         },
         {
@@ -431,8 +1095,16 @@
           "first_seen_version": "3.1.0",
           "last_seen_version": "3.1.2",
           "version_distribution": [
-            { "version": "3.1.2", "events": 180, "users": 120 },
-            { "version": "3.1.0", "events": 800, "users": 500 }
+            {
+              "version": "3.1.2",
+              "events": 180,
+              "users": 120
+            },
+            {
+              "version": "3.1.0",
+              "events": 800,
+              "users": 500
+            }
           ],
           "blame_frame": {
             "file": "ShopApp/Services/ImageLoader.swift",
@@ -449,7 +1121,9 @@
             "suggested_fix": "3.2.0 已修復，建議透過強制更新或推播提醒用戶升級。",
             "effort": "S",
             "confidence": "high",
-            "reasoning_sources": ["version_concentration"]
+            "reasoning_sources": [
+              "version_concentration"
+            ]
           },
           "detail": null
         }
@@ -491,9 +1165,14 @@
         "app_id": "rider_app",
         "display_name": "Delivery Rider App",
         "firebase_project_id": "rider-app-prod-9988",
-        "platforms": ["android"],
+        "platforms": [
+          "android"
+        ],
         "source_repo": "~/projects/rider_app",
-        "custom_keys_monitored": ["city_id", "battery_level"]
+        "custom_keys_monitored": [
+          "city_id",
+          "battery_level"
+        ]
       },
       "period": {
         "days": 30,
@@ -504,7 +1183,9 @@
       "sources": {
         "crashlytics_bq": {
           "status": "available",
-          "tables_queried": ["com_example_rider_ANDROID"],
+          "tables_queried": [
+            "com_example_rider_ANDROID"
+          ],
           "last_sync_timestamp": "2026-09-02T14:00:00Z",
           "error_message": null
         },
@@ -570,31 +1251,513 @@
       },
       "daily_trend": [
         {
-          "date": "2026-09-01",
-          "crash_events": 60,
-          "affected_users": 12,
-          "fatal_events": 45,
-          "anr_events": 5,
-          "non_fatal_events": 10,
-          "sessions_total": 31000,
-          "crashed_sessions": 33,
+          "date": "2026-08-04",
+          "crash_events": 56,
+          "affected_users": 14,
+          "fatal_events": 44,
+          "anr_events": 3,
+          "non_fatal_events": 9,
+          "sessions_total": 31920,
+          "crashed_sessions": 30,
+          "crash_free_sessions_rate": 0.9991,
+          "by_platform": {
+            "android": {
+              "events": 56,
+              "users": 14
+            }
+          }
+        },
+        {
+          "date": "2026-08-05",
+          "crash_events": 56,
+          "affected_users": 14,
+          "fatal_events": 44,
+          "anr_events": 3,
+          "non_fatal_events": 9,
+          "sessions_total": 31920,
+          "crashed_sessions": 30,
+          "crash_free_sessions_rate": 0.9991,
+          "by_platform": {
+            "android": {
+              "events": 56,
+              "users": 14
+            }
+          }
+        },
+        {
+          "date": "2026-08-06",
+          "crash_events": 56,
+          "affected_users": 14,
+          "fatal_events": 44,
+          "anr_events": 3,
+          "non_fatal_events": 9,
+          "sessions_total": 31920,
+          "crashed_sessions": 30,
+          "crash_free_sessions_rate": 0.9991,
+          "by_platform": {
+            "android": {
+              "events": 56,
+              "users": 14
+            }
+          }
+        },
+        {
+          "date": "2026-08-07",
+          "crash_events": 56,
+          "affected_users": 14,
+          "fatal_events": 44,
+          "anr_events": 3,
+          "non_fatal_events": 9,
+          "sessions_total": 31920,
+          "crashed_sessions": 30,
+          "crash_free_sessions_rate": 0.9991,
+          "by_platform": {
+            "android": {
+              "events": 56,
+              "users": 14
+            }
+          }
+        },
+        {
+          "date": "2026-08-08",
+          "crash_events": 66,
+          "affected_users": 16,
+          "fatal_events": 51,
+          "anr_events": 4,
+          "non_fatal_events": 11,
+          "sessions_total": 32200,
+          "crashed_sessions": 36,
           "crash_free_sessions_rate": 0.9989,
           "by_platform": {
-            "android": { "events": 60, "users": 12 }
+            "android": {
+              "events": 66,
+              "users": 16
+            }
+          }
+        },
+        {
+          "date": "2026-08-09",
+          "crash_events": 66,
+          "affected_users": 16,
+          "fatal_events": 51,
+          "anr_events": 4,
+          "non_fatal_events": 11,
+          "sessions_total": 32200,
+          "crashed_sessions": 36,
+          "crash_free_sessions_rate": 0.9989,
+          "by_platform": {
+            "android": {
+              "events": 66,
+              "users": 16
+            }
+          }
+        },
+        {
+          "date": "2026-08-10",
+          "crash_events": 56,
+          "affected_users": 14,
+          "fatal_events": 44,
+          "anr_events": 3,
+          "non_fatal_events": 9,
+          "sessions_total": 31920,
+          "crashed_sessions": 30,
+          "crash_free_sessions_rate": 0.9991,
+          "by_platform": {
+            "android": {
+              "events": 56,
+              "users": 14
+            }
+          }
+        },
+        {
+          "date": "2026-08-11",
+          "crash_events": 56,
+          "affected_users": 14,
+          "fatal_events": 44,
+          "anr_events": 3,
+          "non_fatal_events": 9,
+          "sessions_total": 31920,
+          "crashed_sessions": 30,
+          "crash_free_sessions_rate": 0.9991,
+          "by_platform": {
+            "android": {
+              "events": 56,
+              "users": 14
+            }
+          }
+        },
+        {
+          "date": "2026-08-12",
+          "crash_events": 56,
+          "affected_users": 14,
+          "fatal_events": 44,
+          "anr_events": 3,
+          "non_fatal_events": 9,
+          "sessions_total": 31920,
+          "crashed_sessions": 30,
+          "crash_free_sessions_rate": 0.9991,
+          "by_platform": {
+            "android": {
+              "events": 56,
+              "users": 14
+            }
+          }
+        },
+        {
+          "date": "2026-08-13",
+          "crash_events": 56,
+          "affected_users": 14,
+          "fatal_events": 44,
+          "anr_events": 3,
+          "non_fatal_events": 9,
+          "sessions_total": 31920,
+          "crashed_sessions": 30,
+          "crash_free_sessions_rate": 0.9991,
+          "by_platform": {
+            "android": {
+              "events": 56,
+              "users": 14
+            }
+          }
+        },
+        {
+          "date": "2026-08-14",
+          "crash_events": 56,
+          "affected_users": 14,
+          "fatal_events": 44,
+          "anr_events": 3,
+          "non_fatal_events": 9,
+          "sessions_total": 31920,
+          "crashed_sessions": 30,
+          "crash_free_sessions_rate": 0.9991,
+          "by_platform": {
+            "android": {
+              "events": 56,
+              "users": 14
+            }
+          }
+        },
+        {
+          "date": "2026-08-15",
+          "crash_events": 66,
+          "affected_users": 16,
+          "fatal_events": 51,
+          "anr_events": 4,
+          "non_fatal_events": 11,
+          "sessions_total": 32200,
+          "crashed_sessions": 36,
+          "crash_free_sessions_rate": 0.9989,
+          "by_platform": {
+            "android": {
+              "events": 66,
+              "users": 16
+            }
+          }
+        },
+        {
+          "date": "2026-08-16",
+          "crash_events": 66,
+          "affected_users": 16,
+          "fatal_events": 51,
+          "anr_events": 4,
+          "non_fatal_events": 11,
+          "sessions_total": 32200,
+          "crashed_sessions": 36,
+          "crash_free_sessions_rate": 0.9989,
+          "by_platform": {
+            "android": {
+              "events": 66,
+              "users": 16
+            }
+          }
+        },
+        {
+          "date": "2026-08-17",
+          "crash_events": 56,
+          "affected_users": 14,
+          "fatal_events": 44,
+          "anr_events": 3,
+          "non_fatal_events": 9,
+          "sessions_total": 31920,
+          "crashed_sessions": 30,
+          "crash_free_sessions_rate": 0.9991,
+          "by_platform": {
+            "android": {
+              "events": 56,
+              "users": 14
+            }
+          }
+        },
+        {
+          "date": "2026-08-18",
+          "crash_events": 56,
+          "affected_users": 14,
+          "fatal_events": 44,
+          "anr_events": 3,
+          "non_fatal_events": 9,
+          "sessions_total": 31920,
+          "crashed_sessions": 30,
+          "crash_free_sessions_rate": 0.9991,
+          "by_platform": {
+            "android": {
+              "events": 56,
+              "users": 14
+            }
+          }
+        },
+        {
+          "date": "2026-08-19",
+          "crash_events": 56,
+          "affected_users": 14,
+          "fatal_events": 44,
+          "anr_events": 3,
+          "non_fatal_events": 9,
+          "sessions_total": 31920,
+          "crashed_sessions": 30,
+          "crash_free_sessions_rate": 0.9991,
+          "by_platform": {
+            "android": {
+              "events": 56,
+              "users": 14
+            }
+          }
+        },
+        {
+          "date": "2026-08-20",
+          "crash_events": 56,
+          "affected_users": 14,
+          "fatal_events": 44,
+          "anr_events": 3,
+          "non_fatal_events": 9,
+          "sessions_total": 31920,
+          "crashed_sessions": 30,
+          "crash_free_sessions_rate": 0.9991,
+          "by_platform": {
+            "android": {
+              "events": 56,
+              "users": 14
+            }
+          }
+        },
+        {
+          "date": "2026-08-21",
+          "crash_events": 56,
+          "affected_users": 14,
+          "fatal_events": 44,
+          "anr_events": 3,
+          "non_fatal_events": 9,
+          "sessions_total": 31920,
+          "crashed_sessions": 30,
+          "crash_free_sessions_rate": 0.9991,
+          "by_platform": {
+            "android": {
+              "events": 56,
+              "users": 14
+            }
+          }
+        },
+        {
+          "date": "2026-08-22",
+          "crash_events": 66,
+          "affected_users": 16,
+          "fatal_events": 51,
+          "anr_events": 4,
+          "non_fatal_events": 11,
+          "sessions_total": 32200,
+          "crashed_sessions": 36,
+          "crash_free_sessions_rate": 0.9989,
+          "by_platform": {
+            "android": {
+              "events": 66,
+              "users": 16
+            }
+          }
+        },
+        {
+          "date": "2026-08-23",
+          "crash_events": 66,
+          "affected_users": 16,
+          "fatal_events": 51,
+          "anr_events": 4,
+          "non_fatal_events": 11,
+          "sessions_total": 32200,
+          "crashed_sessions": 36,
+          "crash_free_sessions_rate": 0.9989,
+          "by_platform": {
+            "android": {
+              "events": 66,
+              "users": 16
+            }
+          }
+        },
+        {
+          "date": "2026-08-24",
+          "crash_events": 56,
+          "affected_users": 14,
+          "fatal_events": 44,
+          "anr_events": 3,
+          "non_fatal_events": 9,
+          "sessions_total": 31920,
+          "crashed_sessions": 30,
+          "crash_free_sessions_rate": 0.9991,
+          "by_platform": {
+            "android": {
+              "events": 56,
+              "users": 14
+            }
+          }
+        },
+        {
+          "date": "2026-08-25",
+          "crash_events": 56,
+          "affected_users": 14,
+          "fatal_events": 44,
+          "anr_events": 3,
+          "non_fatal_events": 9,
+          "sessions_total": 31920,
+          "crashed_sessions": 30,
+          "crash_free_sessions_rate": 0.9991,
+          "by_platform": {
+            "android": {
+              "events": 56,
+              "users": 14
+            }
+          }
+        },
+        {
+          "date": "2026-08-26",
+          "crash_events": 56,
+          "affected_users": 14,
+          "fatal_events": 44,
+          "anr_events": 3,
+          "non_fatal_events": 9,
+          "sessions_total": 31920,
+          "crashed_sessions": 30,
+          "crash_free_sessions_rate": 0.9991,
+          "by_platform": {
+            "android": {
+              "events": 56,
+              "users": 14
+            }
+          }
+        },
+        {
+          "date": "2026-08-27",
+          "crash_events": 56,
+          "affected_users": 14,
+          "fatal_events": 44,
+          "anr_events": 3,
+          "non_fatal_events": 9,
+          "sessions_total": 31920,
+          "crashed_sessions": 30,
+          "crash_free_sessions_rate": 0.9991,
+          "by_platform": {
+            "android": {
+              "events": 56,
+              "users": 14
+            }
+          }
+        },
+        {
+          "date": "2026-08-28",
+          "crash_events": 56,
+          "affected_users": 14,
+          "fatal_events": 44,
+          "anr_events": 3,
+          "non_fatal_events": 9,
+          "sessions_total": 31920,
+          "crashed_sessions": 30,
+          "crash_free_sessions_rate": 0.9991,
+          "by_platform": {
+            "android": {
+              "events": 56,
+              "users": 14
+            }
+          }
+        },
+        {
+          "date": "2026-08-29",
+          "crash_events": 66,
+          "affected_users": 16,
+          "fatal_events": 51,
+          "anr_events": 4,
+          "non_fatal_events": 11,
+          "sessions_total": 32200,
+          "crashed_sessions": 36,
+          "crash_free_sessions_rate": 0.9989,
+          "by_platform": {
+            "android": {
+              "events": 66,
+              "users": 16
+            }
+          }
+        },
+        {
+          "date": "2026-08-30",
+          "crash_events": 66,
+          "affected_users": 16,
+          "fatal_events": 51,
+          "anr_events": 4,
+          "non_fatal_events": 11,
+          "sessions_total": 32200,
+          "crashed_sessions": 36,
+          "crash_free_sessions_rate": 0.9989,
+          "by_platform": {
+            "android": {
+              "events": 66,
+              "users": 16
+            }
+          }
+        },
+        {
+          "date": "2026-08-31",
+          "crash_events": 56,
+          "affected_users": 14,
+          "fatal_events": 44,
+          "anr_events": 3,
+          "non_fatal_events": 9,
+          "sessions_total": 31920,
+          "crashed_sessions": 30,
+          "crash_free_sessions_rate": 0.9991,
+          "by_platform": {
+            "android": {
+              "events": 56,
+              "users": 14
+            }
+          }
+        },
+        {
+          "date": "2026-09-01",
+          "crash_events": 56,
+          "affected_users": 14,
+          "fatal_events": 44,
+          "anr_events": 3,
+          "non_fatal_events": 9,
+          "sessions_total": 31920,
+          "crashed_sessions": 30,
+          "crash_free_sessions_rate": 0.9991,
+          "by_platform": {
+            "android": {
+              "events": 56,
+              "users": 14
+            }
           }
         },
         {
           "date": "2026-09-02",
-          "crash_events": 55,
-          "affected_users": 10,
-          "fatal_events": 40,
-          "anr_events": 5,
-          "non_fatal_events": 10,
-          "sessions_total": 30500,
-          "crashed_sessions": 30,
-          "crash_free_sessions_rate": 0.9990,
+          "crash_events": 116,
+          "affected_users": 29,
+          "fatal_events": 68,
+          "anr_events": 25,
+          "non_fatal_events": 23,
+          "sessions_total": 31920,
+          "crashed_sessions": 63,
+          "crash_free_sessions_rate": 0.998,
           "by_platform": {
-            "android": { "events": 55, "users": 10 }
+            "android": {
+              "events": 116,
+              "users": 29
+            }
           }
         }
       ],
@@ -614,19 +1777,47 @@
       ],
       "distributions": {
         "platform": [
-          { "name": "android", "events": 1820, "users": 310, "share": 1.0 }
+          {
+            "name": "android",
+            "events": 1820,
+            "users": 310,
+            "share": 1.0
+          }
         ],
         "device_models": [
-          { "model": "Redmi Note 12", "platform": "android", "events": 900, "users": 150, "share": 0.495 }
+          {
+            "model": "Redmi Note 12",
+            "platform": "android",
+            "events": 900,
+            "users": 150,
+            "share": 0.495
+          }
         ],
         "os_versions": [
-          { "os_version": "Android 13", "platform": "android", "events": 1200, "users": 200, "share": 0.659 }
+          {
+            "os_version": "Android 13",
+            "platform": "android",
+            "events": 1200,
+            "users": 200,
+            "share": 0.659
+          }
         ],
         "app_versions": [
-          { "app_version": "1.8.0", "platform": "android", "events": 1820, "users": 310, "share": 1.0 }
+          {
+            "app_version": "1.8.0",
+            "platform": "android",
+            "events": 1820,
+            "users": 310,
+            "share": 1.0
+          }
         ],
         "custom_keys": [
-          { "key": "city_id", "value": "TPE", "platform": "android", "events": 1100 }
+          {
+            "key": "city_id",
+            "value": "TPE",
+            "platform": "android",
+            "events": 1100
+          }
         ]
       },
       "top_issues": [
@@ -656,7 +1847,11 @@
           "first_seen_version": "1.8.0",
           "last_seen_version": "1.8.0",
           "version_distribution": [
-            { "version": "1.8.0", "events": 1400, "users": 250 }
+            {
+              "version": "1.8.0",
+              "events": 1400,
+              "users": 250
+            }
           ],
           "blame_frame": {
             "file": "app/src/main/java/com/example/rider/LocationTracker.kt",
@@ -673,7 +1868,10 @@
             "suggested_fix": "於 LocationTracker 增加 try-catch 並降級使用基地台最後已知位置。",
             "effort": "S",
             "confidence": "high",
-            "reasoning_sources": ["stack_trace", "blame_frame"]
+            "reasoning_sources": [
+              "stack_trace",
+              "blame_frame"
+            ]
           },
           "detail": null
         }

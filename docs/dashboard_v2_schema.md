@@ -11,13 +11,15 @@
    UI 僅消費本 Schema 定義的聚合資料與結構化分析，不得直接解析 BigQuery raw JSON 或自行在前端執行重度聚合。
 2. **多 App 與跨平台（Multi-App & Cross-Platform）一等支援**：
    原生支援包含 iOS / Android 雙平台或多 App 切換，具備平台特定過濾與全域彙總能力。
-3. **正確的聚合語意（Accurate Aggregations）**：
+3. **正確的聚合語意與資料一致性（Accurate Aggregations & Consistency）**：
    - `crash_events`：期間內所有崩潰事件全量統計（`COUNT(*)`）。
    - `affected_users`：期間內去重受影響用戶（`COUNT(DISTINCT installation_uuid)`），**禁止跨 Issue 加總造成重複計數**。
+   - `daily_trend` 一致性：`sum(daily_trend[i].crash_events) == kpi.crash_events.value`；`daily_trend[i].fatal_events + daily_trend[i].anr_events + daily_trend[i].non_fatal_events == daily_trend[i].crash_events`。
+   - `affected_users` 在 daily trend 中為當日 distinct users，各日相加可能大於期間總 distinct users（正常現象）。
 4. **顯式狀態與空值語意（Explicit Availability Semantics）**：
    對外部依賴（如 Firebase Sessions 導出、Gemini AI 分析）提供顯式的 `status`（`available` / `unavailable` / `disabled` / `error`）。當 Sessions 未啟用時，Crash-free 指標呈現 `unavailable`，**嚴禁顯示假 0% 或假 0**。
-5. **標準化時間戳（Standardized Timestamps）**：
-   所有時間戳一律使用 **ISO 8601 UTC** 字串（例：`2026-09-02T14:30:00Z`）。
+5. **嚴格時間戳規範（Strict ISO 8601 UTC Timestamps）**：
+   所有時間戳一律使用標準 **ISO 8601 UTC** 字串（例：`2026-09-02T14:30:00Z`），必須以 `Z` 或 `+00:00` 結尾，且為真實有效之曆法時間。
 
 ---
 
@@ -87,7 +89,7 @@ classDiagram
 | 欄位名稱 | 型別 | 必填 | 說明 | 範例 |
 | :--- | :--- | :--- | :--- | :--- |
 | `schema_version` | string | 是 | Schema 版本號，固定為 `"2.0"` | `"2.0"` |
-| `generated_at` | string (ISO 8601) | 是 | 報表產生時間（UTC） | `"2026-09-02T14:00:00Z"` |
+| `generated_at` | string (ISO 8601 UTC) | 是 | 報表產生時間（UTC，結尾為 `Z`） | `"2026-09-02T14:00:00Z"` |
 | `default_app` | string | 是 | 預設開啟的 App key | `"my_app"` |
 | `apps` | object | 是 | Key 為 app ID，Value 為 `AppDashboardV2Data` | `{ "my_app": { ... } }` |
 
@@ -98,16 +100,16 @@ classDiagram
 | `display_name` | string | 是 | UI 顯示名稱 | `"My App (Taiwan)"` |
 | `firebase_project_id` | string | 是 | Firebase 專案代碼 | `"my-app-prod-1234"` |
 | `platforms` | array[string] | 是 | 支援之平台列表（`"ios"`, `"android"`） | `["ios", "android"]` |
-| `source_repo` | string \| null | 否 | 本地/遠端原始碼路徑或 Git 網址 | `"~/projects/my_app"` |
+| `source_repo` | string \| null | 是 (可為 null) | 本地/遠端原始碼路徑或 Git 網址 | `"~/projects/my_app"` |
 | `custom_keys_monitored`| array[string] | 是 | 監控中自訂鍵值列表 | `["user_tier", "screen_name"]` |
 
 #### `PeriodInfo`
 | 欄位名稱 | 型別 | 必填 | 說明 | 範例 |
 | :--- | :--- | :--- | :--- | :--- |
 | `days` | integer | 是 | 統計回溯天數 | `30` |
-| `start_time` | string (ISO 8601) | 是 | 區間開始時間（UTC） | `"2026-08-03T14:00:00Z"` |
-| `end_time` | string (ISO 8601) | 是 | 區間結束時間（UTC） | `"2026-09-02T14:00:00Z"` |
-| `comparison_period` | object \| null | 否 | 上期對比時間範圍資訊 | `{ "days": 30, "start_time": "...", "end_time": "..." }` |
+| `start_time` | string (ISO 8601 UTC) | 是 | 區間開始時間（UTC） | `"2026-08-03T14:00:00Z"` |
+| `end_time` | string (ISO 8601 UTC) | 是 | 區間結束時間（UTC） | `"2026-09-02T14:00:00Z"` |
+| `comparison_period` | object \| null | 是 (可為 null) | 上期對比時間範圍資訊 | `{ "days": 30, "start_time": "...", "end_time": "..." }` |
 
 ---
 
@@ -151,20 +153,20 @@ classDiagram
 | 欄位名稱 | 型別 | 必填 | 說明 | 範例 |
 | :--- | :--- | :--- | :--- | :--- |
 | `value` | integer | 是 | 當期計數 | `12450` |
-| `previous_value` | integer \| null | 否 | 上期計數（無基期則為 `null`） | `15600` |
-| `change_pct` | float \| null | 否 | 變化百分比（%）（例：-20.19 代表下降 20.19%） | `-20.19` |
-| `status` | string | 是 | 狀態（`"available"`, `"insufficient_data"`） | `"available"` |
+| `previous_value` | integer \| null | 是 (可為 null) | 上期計數（無基期則為 `null`） | `15600` |
+| `change_pct` | float \| null | 是 (可為 null) | 變化百分比（%）（例：-20.19 代表下降 20.19%） | `-20.19` |
+| `status` | string | 是 | 狀態（`"available"`, `"insufficient_data"`, `"error"`） | `"available"` |
 
 #### `CrashFreeMetric`（Crash-free 率指標，由 Firebase Sessions 提供）
 | 欄位名稱 | 型別 | 必填 | 說明 | 範例 |
 | :--- | :--- | :--- | :--- | :--- |
-| `rate` | float \| null | 是 | Crash-free 比率（**0.0 ～ 1.0**，例如 0.9985 代表 99.85%） | `0.9985` |
-| `total` | integer \| null | 是 | 總數（總用戶數或總 Session 數） | `500000` |
-| `crashed` | integer \| null | 是 | 崩潰數（崩潰用戶數或崩潰 Session 數） | `750` |
-| `previous_rate` | float \| null | 否 | 上期 Crash-free 比率 | `0.9972` |
-| `change_pct_points`| float \| null | 否 | 百分點變化（例：`+0.13` 代表提高 0.13%） | `0.13` |
-| `status` | string | 是 | `"available"` \| `"unavailable"` \| `"insufficient_data"` | `"available"` |
-| `unavailable_reason` | string \| null | 否 | 若為 `unavailable` 時的原因說明 | `"Firebase Sessions export 未開啟"` |
+| `rate` | float \| null | 是 (可為 null) | Crash-free 比率（**0.0 ～ 1.0**，例如 0.9985 代表 99.85%） | `0.9985` |
+| `total` | integer \| null | 是 (可為 null) | 總數（總用戶數或總 Session 數） | `500000` |
+| `crashed` | integer \| null | 是 (可為 null) | 崩潰數（崩潰用戶數或崩潰 Session 數） | `750` |
+| `previous_rate` | float \| null | 是 (可為 null) | 上期 Crash-free 比率 | `0.9972` |
+| `change_pct_points`| float \| null | 是 (可為 null) | 百分點變化（例：`+0.13` 代表提高 0.13%） | `0.13` |
+| `status` | string | 是 | `"available"` \| `"unavailable"` \| `"insufficient_data"` \| `"error"` | `"available"` |
+| `unavailable_reason` | string \| null | 是 (可為 null) | 若為 `unavailable` 時的原因說明 | `"Firebase Sessions export 未開啟"` |
 
 #### `EventsByErrorType`
 | 欄位名稱 | 型別 | 必填 | 說明 | 範例 |
@@ -177,7 +179,7 @@ classDiagram
 
 ### 3.4 每日趨勢（Daily Trend）
 
-`daily_trend` 為陣列，按日期升冪排序（`date: YYYY-MM-DD`）：
+`daily_trend` 為陣列，依日期由舊至新升冪排序（`date: YYYY-MM-DD`），天數長度應涵蓋 `period.days`。
 ```json
 {
   "date": "2026-09-01",
@@ -205,12 +207,12 @@ classDiagram
 | :--- | :--- | :--- | :--- | :--- |
 | `version` | string | 是 | 應用程式版本字串 | `"3.2.0"` |
 | `platform` | string | 是 | `"ios"` \| `"android"` \| `"all"` | `"all"` |
-| `release_date` | string \| null | 否 | 發布日期（YYYY-MM-DD） | `"2026-08-20"` |
+| `release_date` | string \| null | 是 (可為 null) | 發布日期（YYYY-MM-DD） | `"2026-08-20"` |
 | `crash_events` | integer | 是 | 該版本在此期間的崩潰事件數 | `1250` |
 | `affected_users` | integer | 是 | 該版本在此期間受影響用戶數 | `820` |
-| `crash_free_users_rate` | float \| null | 否 | 該版本 Crash-free 用戶率（若有 Sessions） | `0.9991` |
-| `crash_free_sessions_rate`| float \| null | 否 | 該版本 Crash-free Sessions 率 | `0.9994` |
-| `adoption_rate` | float \| null | 否 | 該版本佔總活躍 Session / User 佔比（0.0～1.0） | `0.65` |
+| `crash_free_users_rate` | float \| null | 是 (可為 null) | 該版本 Crash-free 用戶率（若有 Sessions） | `0.9991` |
+| `crash_free_sessions_rate`| float \| null | 是 (可為 null) | 該版本 Crash-free Sessions 率 | `0.9994` |
+| `adoption_rate` | float \| null | 是 (可為 null) | 該版本佔總活躍 Session / User 佔比（0.0～1.0） | `0.65` |
 | `status` | string | 是 | `"latest"` \| `"active"` \| `"maintenance"` \| `"deprecated"` | `"latest"` |
 | `trend` | string | 是 | `"improving"` \| `"degrading"` \| `"stable"` \| `"new"` | `"stable"` |
 
@@ -257,14 +259,14 @@ classDiagram
 | `priority` | PriorityInfo | 是 | 程式計算之優先級分數與等級 | 見下方 `PriorityInfo` |
 | `events` | integer | 是 | 該 Issue 在期間內之事件總數 | `3420` |
 | `affected_users` | integer | 是 | 該 Issue 在期間內受影響之用戶數 | `2100` |
-| `first_seen_timestamp` | string (ISO 8601) | 是 | 該 Issue 首次出現時間戳 | `"2026-08-12T09:15:00Z"` |
-| `last_seen_timestamp` | string (ISO 8601) | 是 | 該 Issue 最近出現時間戳 | `"2026-09-02T13:40:00Z"` |
+| `first_seen_timestamp` | string (ISO 8601 UTC) | 是 | 該 Issue 首次出現時間戳 | `"2026-08-12T09:15:00Z"` |
+| `last_seen_timestamp` | string (ISO 8601 UTC) | 是 | 該 Issue 最近出現時間戳 | `"2026-09-02T13:40:00Z"` |
 | `first_seen_version` | string | 是 | 該 Issue 最早出現之版本 | `"3.1.0"` |
 | `last_seen_version` | string | 是 | 該 Issue 最新出現之版本 | `"3.2.0"` |
 | `version_distribution` | array[object] | 是 | 依版本細分之 events/users 列表 | `[{"version":"3.2.0","events":2800,"users":1700}]` |
-| `blame_frame` | BlameFrame \| null | 否 | 元兇 Stack Frame 資訊 | 見下方 `BlameFrame` |
+| `blame_frame` | BlameFrame \| null | 是 (可為 null) | 元兇 Stack Frame 資訊 | 見下方 `BlameFrame` |
 | `ai_analysis` | AIIssueAnalysis | 是 | AI 針對該 Issue 之分析摘要 | 見下方 `AIIssueAnalysis` |
-| `detail` | IssueDetail \| null | 否 | 深度診斷資料（若有抓取） | 見下方 `IssueDetail` |
+| `detail` | IssueDetail \| null | 是 (可為 null) | 深度診斷資料（若有抓取） | 見下方 `IssueDetail` |
 
 #### `PriorityInfo`
 ```json
@@ -282,8 +284,6 @@ classDiagram
   }
 }
 ```
-- `level`：`"P0"`（重大崩潰/核心路徑）、`"P1"`（高影響）、`"P2"`（中影響）、`"P3"`（低影響/非致命）。
-- `trend`：`"new"`（新出現）、`"worsening"`（惡化 >20%）、`"stable"`（持平）、`"improving"`（收斂改善）。
 
 #### `BlameFrame`
 ```json
@@ -309,7 +309,6 @@ classDiagram
   "reasoning_sources": ["stack_trace", "blame_frame", "version_concentration"]
 }
 ```
-- `effort`：`"S"`（< 0.5 天）、`"M"`（0.5～2 天）、`"L"`（> 2 天）。
 
 #### `IssueDetail`
 ```json
@@ -321,12 +320,6 @@ classDiagram
       "category": "navigation",
       "message": "User entered /checkout",
       "level": "info"
-    },
-    {
-      "timestamp": "2026-09-02T13:40:00Z",
-      "category": "ui_click",
-      "message": "Click button: #btn_submit_order",
-      "level": "info"
     }
   ],
   "logs": [
@@ -337,8 +330,7 @@ classDiagram
     "cart_items_count": 3
   },
   "top_devices": [
-    { "model": "Pixel 8", "events": 1400 },
-    { "model": "Galaxy S23", "events": 900 }
+    { "model": "Pixel 8", "events": 1400 }
   ],
   "top_os": [
     { "os_version": "Android 14", "events": 2300 }
@@ -350,7 +342,6 @@ classDiagram
 
 ### 3.8 AI 策略摘要（AI Summary）
 
-#### `AISummary`
 ```json
 {
   "status": "available",
@@ -364,8 +355,7 @@ classDiagram
   ],
   "distribution_insights": "崩潰高度集中於 Android 平台（佔 58%）及 3.2.0 版本。iOS 平台表現穩定。",
   "recommended_actions": [
-    { "priority": "P0", "issue_id": "8a7f1b2c", "action": "修復 CheckoutActivity 空值指標保護", "effort": "S" },
-    { "priority": "P1", "issue_id": "3b2e9d1a", "action": "將 DB 初始化移出 Main Thread 降低 ANR", "effort": "M" }
+    { "priority": "P0", "issue_id": "8a7f1b2c", "action": "修復 CheckoutActivity 空值指標保護", "effort": "S" }
   ],
   "data_limitations": "Firebase Sessions 僅收集最近 30 天數據；部分 MCP stack trace 缺去符號化資訊。"
 }
@@ -389,7 +379,7 @@ classDiagram
 
 1. **#3 BigQuery Query V2**：
    - 產出 `kpi.crash_events`、`kpi.affected_users`、`kpi.events_by_error_type`、`daily_trend`、`distributions`、`top_issues`。
-   - 保證 `first_seen_timestamp` 與 `last_seen_timestamp` 填入 ISO 8601 時間字串。
+   - 保證 `first_seen_timestamp` 與 `last_seen_timestamp` 填入標準 ISO 8601 UTC 時間字串（以 `Z` 結尾）。
 2. **#4 Firebase Sessions**：
    - 填入 `kpi.crash_free_users` 與 `kpi.crash_free_sessions`。
    - 若 Sessions table 不存在，將 `sources.firebase_sessions.status` 設為 `"unavailable"`，指標設為 `null`。
