@@ -14,8 +14,14 @@ APPS_YAML = ROOT / "apps.yaml"
 
 
 def load_config() -> dict:
+    if not APPS_YAML.exists():
+        example_yaml = ROOT / "apps.example.yaml"
+        if example_yaml.exists():
+            with open(example_yaml, encoding="utf-8") as f:
+                return yaml.safe_load(f) or {}
+        return {}
     with open(APPS_YAML, encoding="utf-8") as f:
-        return yaml.safe_load(f)
+        return yaml.safe_load(f) or {}
 
 
 def get_app(name: str) -> dict:
