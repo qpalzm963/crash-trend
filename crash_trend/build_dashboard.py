@@ -1,674 +1,2576 @@
-"""產生自包含靜態儀表板 dashboard.html。
+"""產生自包含靜態儀表板 dashboard.html (Dashboard V2)。
 
-讀 reports/data/<app>/*.json（各月摘要，committed），內嵌 Chart.js 與資料，
-file:// 離線可開、無 CDN。每月跑 normalize 後重跑本腳本即可更新。
-視覺方向：「黑盒子飛航記錄器」儀表面板 — 近黑底、等寬讀數、訊號紅僅用於 fatal。
+支援 Schema V2 資料契約 (DashboardV2Bundle)，採淺色 SaaS / B2B Analytics 現代風格。
+內嵌 Chart.js (vendor/chart.umd.min.js)，無外部 CDN 依賴，file:// 本地離線可直接開啟。
 """
 
 from __future__ import annotations
 
+import argparse
 import json
+import sys
+from pathlib import Path
+from typing import Any, Dict, Optional, Union
 
-from config import ROOT, load_config
-
+# Root directory
+ROOT = Path(__file__).resolve().parent.parent
 VENDOR_JS = ROOT / "vendor" / "chart.umd.min.js"
-OUT_HTML = ROOT / "dashboard.html"
+DEFAULT_OUT_HTML = ROOT / "dashboard.html"
 
 
-def collect_data() -> dict:
-    cfg = load_config()
-    apps: dict = {}
-    for name, app in (cfg.get("apps") or {}).items():
-        months = {}
-        data_dir = ROOT / "reports" / "data" / name
-        if data_dir.is_dir():
-            for f in sorted(data_dir.glob("*.json")):
-                months[f.stem] = json.loads(f.read_text(encoding="utf-8"))
-        if months:
-            apps[name] = {"display_name": app.get("display_name", name), "months": months}
-    return {"apps": apps}
+def get_vendor_chartjs() -> str:
+    """Reads vendor Chart.js library or returns an empty fallback if missing."""
+    if VENDOR_JS.is_file():
+        return VENDOR_JS.read_text(encoding="utf-8")
+    return "/* Chart.js vendor script not found */"
 
 
-TEMPLATE = r"""<!DOCTYPE html>
-<html lang="zh-Hant">
+def collect_data(data_path: Optional[Union[str, Path]] = None) -> dict:
+    """Loads Dashboard V2 bundle data from specified path or standard locations."""
+    if data_path:
+        p = Path(data_path)
+        if p.is_file():
+            return json.loads(p.read_text(encoding="utf-8"))
+        raise FileNotFoundError(f"Specified data file not found: {data_path}")
+
+    # Search candidates
+    candidates = [
+        ROOT / "reports" / "dashboard_v2.json",
+        ROOT / "tests" / "fixtures" / "dashboard_v2.json",
+        ROOT / "out" / "dashboard_v2.json",
+    ]
+    for c in candidates:
+        if c.is_file():
+            return json.loads(c.read_text(encoding="utf-8"))
+
+    # Fallback to minimal bundle if nothing found
+    return {
+        "schema_version": "2.0",
+        "generated_at": "2026-09-02T00:00:00Z",
+        "default_app": "default_app",
+        "apps": {
+            "default_app": {
+                "metadata": {
+                    "app_id": "default_app",
+                    "display_name": "My Application",
+                    "firebase_project_id": "my-app-default",
+                    "platforms": ["android", "ios"],
+                    "source_repo": None,
+                    "custom_keys_monitored": [],
+                },
+                "period": {
+                    "days": 30,
+                    "start_time": "2026-08-03T00:00:00Z",
+                    "end_time": "2026-09-02T00:00:00Z",
+                    "comparison_period": None,
+                },
+                "sources": {
+                    "crashlytics_bq": {
+                        "status": "available",
+                        "last_sync_timestamp": "2026-09-02T00:00:00Z",
+                        "error_message": None,
+                    },
+                    "firebase_sessions": {
+                        "status": "unavailable",
+                        "last_sync_timestamp": None,
+                        "error_message": "Sessions export not configured",
+                    },
+                    "mcp_crashlytics": {
+                        "status": "unavailable",
+                        "last_sync_timestamp": None,
+                        "error_message": None,
+                    },
+                    "gemini_ai": {
+                        "status": "disabled",
+                        "last_sync_timestamp": None,
+                        "error_message": None,
+                    },
+                },
+                "kpi": {
+                    "crash_events": {"value": 0, "previous_value": None, "change_pct": None, "status": "available"},
+                    "affected_users": {"value": 0, "previous_value": None, "change_pct": None, "status": "available"},
+                    "crash_free_users": {
+                        "rate": None,
+                        "total": None,
+                        "crashed": None,
+                        "previous_rate": None,
+                        "change_pct_points": None,
+                        "status": "unavailable",
+                        "unavailable_reason": "Firebase Sessions export 未開啟",
+                    },
+                    "crash_free_sessions": {
+                        "rate": None,
+                        "total": None,
+                        "crashed": None,
+                        "previous_rate": None,
+                        "change_pct_points": None,
+                        "status": "unavailable",
+                        "unavailable_reason": "Firebase Sessions export 未開啟",
+                    },
+                    "new_issues_count": {"value": 0, "previous_value": None, "change_pct": None, "status": "available"},
+                    "events_by_error_type": {"fatal": 0, "anr": 0, "non_fatal": 0},
+                },
+                "daily_trend": [],
+                "version_health": [],
+                "distributions": {
+                    "platform": [],
+                    "device_models": [],
+                    "os_versions": [],
+                    "app_versions": [],
+                },
+                "top_issues": [],
+                "ai_summary": {
+                    "status": "unavailable",
+                    "model": None,
+                    "generated_at": None,
+                    "overview": "尚無 AI 摘要分析。",
+                    "key_takeaways": [],
+                    "distribution_insights": "",
+                    "recommended_actions": [],
+                    "data_limitations": None,
+                },
+                "limitations": [],
+            }
+        },
+    }
+
+
+HTML_TEMPLATE = r"""<!DOCTYPE html>
+<html lang="zh-Hant" data-theme="light">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Crash 趨勢儀表板</title>
+<title>Crashlytics Engineering Dashboard V2</title>
 <style>
-  :root { /* 預設：日間工程圖紙（light） */
-    --bg: #f1efe9; --panel: #fbfaf7; --panel-2: #f6f4ee; --line: #d9d4c6; --line-soft: #e6e2d5;
-    --ink: #20293a; --dim: #5d6879; --faint: #9aa2ae;
-    --live: #0e9f6e; --amber: #b97f0f; --red: #d43d33; --blue: #2f6db8; --steel: #6b7a90;
-    --grid: rgba(47,77,120,.055); --glow-a: rgba(47,109,184,.06); --glow-b: rgba(14,159,110,.05);
-    --noise-op: .35; --screw: rgba(0,0,0,.06); --hover: rgba(47,109,184,.05);
-    --red-soft: rgba(212,61,51,.08); --red-line: rgba(212,61,51,.35);
-    --amber-soft: rgba(185,127,15,.09); --amber-line: rgba(185,127,15,.35);
-    --bar-and: rgba(91,124,166,.85); --bar-ios: rgba(47,109,184,.7);
-    --trend-fill: rgba(212,61,51,.09);
-    --mono: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
-    --sans: "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", sans-serif;
+  :root {
+    --bg-app: #f8fafc;
+    --bg-surface: #ffffff;
+    --bg-subtle: #f1f5f9;
+    --bg-muted: #e2e8f0;
+    --border: #e2e8f0;
+    --border-subtle: #f1f5f9;
+    --border-hover: #cbd5e1;
+    --text-main: #0f172a;
+    --text-muted: #64748b;
+    --text-subtle: #94a3b8;
+    --accent: #2563eb;
+    --accent-light: #eff6ff;
+    --accent-hover: #1d4ed8;
+    --accent-text: #1d4ed8;
+    --success: #10b981;
+    --success-light: #ecfdf5;
+    --success-text: #047857;
+    --warning: #f59e0b;
+    --warning-light: #fffbeb;
+    --warning-text: #b45309;
+    --danger: #ef4444;
+    --danger-light: #fef2f2;
+    --danger-text: #b91c1c;
+    --p0: #dc2626;
+    --p0-bg: #fee2e2;
+    --p1: #d97706;
+    --p1-bg: #fef3c7;
+    --p2: #2563eb;
+    --p2-bg: #dbeafe;
+    --p3: #64748b;
+    --p3-bg: #f1f5f9;
+    --sidebar-w: 240px;
+    --sidebar-collapsed-w: 72px;
+    --header-h: 64px;
+    --radius-sm: 6px;
+    --radius-md: 8px;
+    --radius-lg: 12px;
+    --radius-full: 9999px;
+    --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+    --shadow-card: 0 1px 3px 0 rgba(0, 0, 0, 0.08), 0 1px 2px -1px rgba(0, 0, 0, 0.05);
+    --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.08), 0 2px 4px -2px rgba(0, 0, 0, 0.05);
+    --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.08), 0 4px 6px -4px rgba(0, 0, 0, 0.03);
+    --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, "Noto Sans TC", "PingFang TC", sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
   }
-  [data-theme="dark"] { /* 夜間面板（原深色版，右上 ◐ 切換） */
-    --bg: #0a0e15; --panel: #0f141f; --panel-2: #131a28; --line: #1c2536; --line-soft: #161e2d;
-    --ink: #dae4f2; --dim: #6b7890; --faint: #414d63;
-    --live: #3ddc97; --amber: #ffb454; --red: #ff5f56; --blue: #6ea8fe; --steel: #56719f;
-    --grid: rgba(255,255,255,.022); --glow-a: rgba(110,168,254,.075); --glow-b: rgba(61,220,151,.05);
-    --noise-op: .5; --screw: rgba(255,255,255,.04); --hover: rgba(110,168,254,.04);
-    --red-soft: rgba(255,95,86,.07); --red-line: rgba(255,95,86,.4);
-    --amber-soft: rgba(255,180,84,.06); --amber-line: rgba(255,180,84,.35);
-    --bar-and: rgba(86,113,159,.85); --bar-ios: rgba(110,168,254,.75);
-    --trend-fill: rgba(255,95,86,.12);
+
+  [data-theme="dark"] {
+    --bg-app: #0b1120;
+    --bg-surface: #131d33;
+    --bg-subtle: #1e293b;
+    --bg-muted: #334155;
+    --border: #24324d;
+    --border-subtle: #1a263d;
+    --border-hover: #475569;
+    --text-main: #f8fafc;
+    --text-muted: #94a3b8;
+    --text-subtle: #64748b;
+    --accent: #3b82f6;
+    --accent-light: rgba(59, 130, 246, 0.15);
+    --accent-hover: #60a5fa;
+    --accent-text: #93c5fd;
+    --shadow-card: 0 1px 3px 0 rgba(0, 0, 0, 0.4);
+    --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.5);
+    --danger-light: rgba(239, 68, 68, 0.2);
+    --danger-text: #fca5a5;
+    --warning-light: rgba(245, 158, 11, 0.2);
+    --warning-text: #fcd34d;
+    --success-light: rgba(16, 185, 129, 0.2);
+    --success-text: #6ee7b7;
+    --p0-bg: rgba(220, 38, 38, 0.25);
+    --p1-bg: rgba(217, 119, 6, 0.25);
+    --p2-bg: rgba(37, 99, 235, 0.25);
+    --p3-bg: rgba(100, 116, 139, 0.25);
   }
-  * { box-sizing: border-box; margin: 0; }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
   html { -webkit-font-smoothing: antialiased; }
   body {
-    background:
-      radial-gradient(1100px 480px at 18% -8%, var(--glow-a), transparent 60%),
-      radial-gradient(900px 420px at 100% 0%, var(--glow-b), transparent 55%),
-      linear-gradient(var(--grid) 1px, transparent 1px),
-      linear-gradient(90deg, var(--grid) 1px, transparent 1px),
-      var(--bg);
-    background-size: auto, auto, 34px 34px, 34px 34px, auto;
-    color: var(--ink); font: 14px/1.65 var(--sans);
-    min-height: 100vh; padding: clamp(16px, 3vw, 40px);
-    transition: background-color .25s, color .25s;
+    background: var(--bg-app);
+    color: var(--text-main);
+    font: 14px/1.5 var(--font-sans);
+    min-height: 100vh;
+    display: flex;
+    overflow-x: hidden;
   }
-  body::after { /* 細噪點，儀器面板質感 */
-    content: ""; position: fixed; inset: 0; pointer-events: none; opacity: var(--noise-op); mix-blend-mode: overlay;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 .04 0'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)'/%3E%3C/svg%3E");
+
+  /* ── Sidebar (左側導覽列) ────────────────────────── */
+  .sidebar {
+    width: var(--sidebar-w);
+    background: var(--bg-surface);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    z-index: 50;
+    transition: width 0.2s ease, transform 0.2s ease;
   }
-  .wrap { max-width: 1280px; margin: 0 auto; }
-
-  /* ── 頁首：記錄器狀態列 ─────────────────────────── */
-  header { display: flex; flex-wrap: wrap; gap: 16px 28px; align-items: flex-end;
-           border-bottom: 1px solid var(--line); padding-bottom: 18px; margin-bottom: 26px; }
-  .brand .kicker { font: 700 11px/1 var(--mono); letter-spacing: .32em; color: var(--dim); }
-  .brand h1 { font: 700 clamp(22px, 3vw, 30px)/1.15 var(--sans); letter-spacing: .02em; margin-top: 8px; }
-  .brand h1 .accent { color: var(--red); }
-  .statusline { font: 12px/1 var(--mono); color: var(--dim); display: flex; gap: 18px; flex-wrap: wrap;
-                padding-bottom: 6px; }
-  .statusline b { color: var(--ink); font-weight: 600; }
-  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 7px;
-         vertical-align: 0; background: var(--faint); }
-  .dot.live { background: var(--live); box-shadow: 0 0 0 0 rgba(61,220,151,.5); animation: ping 2.2s infinite; }
-  .dot.standby { background: var(--amber); animation: blink 1.6s steps(1) infinite; }
-  @keyframes ping { 0% { box-shadow: 0 0 0 0 rgba(61,220,151,.45); } 70% { box-shadow: 0 0 0 9px rgba(61,220,151,0); } 100% { box-shadow: 0 0 0 0 rgba(61,220,151,0); } }
-  @keyframes blink { 50% { opacity: .25; } }
-  .tabs { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; padding-bottom: 2px; }
-  .tab { font: 600 12px/1 var(--sans); letter-spacing: .05em; color: var(--dim); cursor: pointer;
-         padding: 9px 16px; border: 1px solid var(--line); border-radius: 3px; background: transparent;
-         transition: color .15s, border-color .15s, background .15s; }
-  .tab:hover { color: var(--ink); border-color: var(--steel); }
-  .tab.active { color: var(--ink); border-color: var(--steel); background: var(--panel-2);
-                box-shadow: inset 0 -2px 0 var(--live); }
-
-  /* ── 區塊標題（技術編號） ───────────────────────── */
-  .sec { display: flex; align-items: baseline; gap: 12px; margin: 30px 0 14px; }
-  .sec .no { font: 700 11px/1 var(--mono); color: var(--faint); letter-spacing: .1em; }
-  .sec h2 { font: 700 13px/1 var(--sans); letter-spacing: .18em; color: var(--dim); }
-  .sec .rule { flex: 1; height: 1px; background: linear-gradient(90deg, var(--line), transparent); }
-  .sec .hint { font: 11px/1 var(--mono); color: var(--faint); }
-
-  /* ── KPI 儀表卡 ────────────────────────────────── */
-  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
-  .card { background: linear-gradient(180deg, var(--panel-2), var(--panel));
-          border: 1px solid var(--line); border-radius: 4px; position: relative; }
-  .card::before { /* 面板螺絲角標 */
-    content: ""; position: absolute; top: 8px; right: 8px; width: 5px; height: 5px;
-    border-radius: 50%; background: var(--line); box-shadow: 0 0 0 1.5px var(--screw);
+  .sidebar.collapsed {
+    width: var(--sidebar-collapsed-w);
   }
-  .kpi { padding: 18px 18px 16px; overflow: hidden; }
-  .kpi .l { font: 600 10px/1 var(--mono); letter-spacing: .22em; color: var(--dim); }
-  .kpi .v { font: 700 clamp(30px, 3.2vw, 40px)/1.1 var(--mono); font-variant-numeric: tabular-nums;
-            margin: 10px 0 6px; letter-spacing: -.01em; }
-  .kpi .v .unit { font-size: 13px; color: var(--dim); font-weight: 600; margin-left: 4px; letter-spacing: .1em; }
-  .kpi .d { font: 11px/1.4 var(--mono); color: var(--faint); min-height: 15px; }
-  .kpi .d .up { color: var(--red); } .kpi .d .down { color: var(--live); } .kpi .d .flat { color: var(--faint); }
-  .kpi .meter { height: 3px; background: var(--line-soft); border-radius: 2px; margin-top: 12px; overflow: hidden; }
-  .kpi .meter i { display: block; height: 100%; width: 0; border-radius: 2px;
-                  background: linear-gradient(90deg, var(--amber), var(--red));
-                  transition: width 1.1s cubic-bezier(.2,.8,.2,1) .35s; }
-
-  /* ── 圖表面板 ──────────────────────────────────── */
-  .charts { display: grid; gap: 12px; grid-template-columns: repeat(12, 1fr); }
-  .chart-card { padding: 16px 18px 14px; }
-  .chart-card h3 { font: 600 10px/1 var(--mono); letter-spacing: .2em; color: var(--dim); margin-bottom: 14px; }
-  .chart-card h3 .src { color: var(--faint); letter-spacing: .05em; text-transform: none; }
-  .span6 { grid-column: span 6; } .span4 { grid-column: span 4; } .span8 { grid-column: span 8; }
-  @media (max-width: 940px) { .span6, .span4, .span8 { grid-column: span 12; } }
-  .chart-box { position: relative; height: 230px; }
-  .chart-box canvas { position: absolute; inset: 0; }
-  .nodata { position: absolute; inset: 0; display: grid; place-content: center;
-            font: 11px/1 var(--mono); letter-spacing: .3em; color: var(--faint); }
-  .nodata[hidden] { display: none; }
-  .nodata::before, .nodata::after { content: "——"; margin: 0 10px; color: var(--line); }
-
-  /* ── 資料來源面板 ──────────────────────────────── */
-  .srcs { padding: 16px 18px; display: flex; flex-direction: column; gap: 10px; }
-  .srcrow { display: flex; align-items: center; gap: 10px; font: 12px/1.3 var(--mono); color: var(--dim); }
-  .srcrow b { color: var(--ink); font-weight: 600; }
-  .srcrow .state { margin-left: auto; font-size: 10px; letter-spacing: .18em; }
-  .on  .state { color: var(--live); } .off .state { color: var(--faint); }
-  .srcnote { font: 11px/1.6 var(--sans); color: var(--faint); border-top: 1px dashed var(--line);
-             padding-top: 10px; margin-top: 2px; }
-
-  /* ── 優先修復清單 ──────────────────────────────── */
-  .prio-list { display: flex; flex-direction: column; gap: 10px; }
-  details.prio { border: 1px solid var(--line); border-left: 3px solid var(--amber);
-                 border-radius: 4px; background: linear-gradient(180deg, var(--panel-2), var(--panel)); }
-  details.prio.fatal { border-left-color: var(--red); }
-  details.prio summary { list-style: none; cursor: pointer; display: flex; align-items: center;
-                         gap: 14px; padding: 14px 18px; }
-  details.prio summary::-webkit-details-marker { display: none; }
-  .prio .rank { font: 700 20px/1 var(--mono); color: var(--faint); min-width: 44px; }
-  details[open].prio .rank, details.prio summary:hover .rank { color: var(--ink); }
-  .prio .t { font: 600 14px/1.4 var(--sans); }
-  .prio .sub { font: 11px/1.3 var(--mono); color: var(--dim); margin-top: 3px; word-break: break-all; }
-  .prio .score { margin-left: auto; text-align: right; white-space: nowrap; }
-  .prio .score .n { font: 700 20px/1 var(--mono); color: var(--amber); }
-  .prio .score .cap { font: 9px/1 var(--mono); letter-spacing: .2em; color: var(--faint); display: block; margin-top: 4px; }
-  .prio .body { border-top: 1px dashed var(--line); margin: 0 18px; padding: 14px 0 16px;
-                display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px 26px; }
-  .prio .f .k { font: 600 9px/1 var(--mono); letter-spacing: .22em; color: var(--faint); margin-bottom: 6px; }
-  .prio .f .x { font: 13px/1.7 var(--sans); color: var(--ink); }
-  .prio .f .x code { font: 12px var(--mono); color: var(--blue); word-break: break-all; }
-  .prio .trace { font: 11px/1.5 var(--mono); color: var(--dim); white-space: pre; overflow-x: auto;
-                 max-height: 220px; margin: 0; padding: 10px 12px; border: 1px solid var(--line);
-                 border-radius: 4px; background: var(--panel-2); }
-  .copybtn { font: 600 10px/1 var(--mono); letter-spacing: .1em; color: var(--dim); white-space: nowrap;
-             background: transparent; border: 1px solid var(--line); border-radius: 3px; padding: 7px 11px; cursor: pointer; }
-  .copybtn:hover { color: var(--ink); border-color: var(--dim); }
-  .copybtn.done { color: var(--live); border-color: var(--live); }
-  .chip { display: inline-block; font: 600 10px/1 var(--mono); letter-spacing: .12em;
-          padding: 4px 8px; border-radius: 2px; border: 1px solid; white-space: nowrap; }
-  .chip.fatal { color: var(--red); border-color: var(--red-line); background: var(--red-soft); }
-  .chip.warn  { color: var(--amber); border-color: var(--amber-line); background: var(--amber-soft); }
-  .chip.info  { color: var(--dim); border-color: var(--line); }
-  .chip.ok    { color: var(--live); border-color: var(--live); background: transparent; }
-
-  /* ── 上期清單回顧 ──────────────────────────────── */
-  .review-list { display: flex; flex-direction: column; gap: 10px; }
-  .review-row { border: 1px solid var(--line); border-left: 3px solid var(--live); border-radius: 4px;
-                background: linear-gradient(180deg, var(--panel-2), var(--panel));
-                display: flex; align-items: center; gap: 14px; padding: 14px 18px; }
-  .review-row.warn { border-left-color: var(--amber); }
-  .review-row.bad  { border-left-color: var(--red); }
-  .review-row .nums { margin-left: auto; text-align: right; white-space: nowrap;
-                      font: 600 12.5px var(--mono); color: var(--dim); font-variant-numeric: tabular-nums; }
-  .review-row .nums b { color: var(--ink); }
-
-  /* ── Issue 表 ─────────────────────────────────── */
-  .tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 4px; background: var(--panel); }
-  table { width: 100%; border-collapse: collapse; font-size: 12.5px; min-width: 860px; }
-  thead th { font: 600 10px/1 var(--mono); letter-spacing: .16em; color: var(--dim); text-align: left;
-             padding: 12px 14px; border-bottom: 1px solid var(--line); cursor: pointer; user-select: none;
-             white-space: nowrap; background: var(--panel-2); position: sticky; top: 0; }
-  thead th:hover { color: var(--ink); }
-  thead th.sorted { color: var(--live); }
-  thead th.sorted::after { content: " ▾"; }
-  thead th.sorted.asc::after { content: " ▴"; }
-  tbody td { padding: 11px 14px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
-  tbody tr:last-child td { border-bottom: none; }
-  tbody tr:hover td { background: var(--hover); }
-  td.num { font: 600 12.5px var(--mono); font-variant-numeric: tabular-nums; }
-  td .subtle { color: var(--dim); font: 11.5px var(--mono); word-break: break-all; }
-  .platform-badge { font: 700 10px/1 var(--mono); color: var(--dim); }
-  .plat { display: inline-flex; vertical-align: middle; }
-  .plat svg { width: 16px; height: 16px; display: block; }
-  .plat.android { color: #3ddc84; }
-  .plat.ios { color: var(--ink); }
-  .empty-row td { text-align: center; color: var(--faint); font: 12px var(--mono); letter-spacing: .2em; padding: 26px; }
-
-  /* ── 待命（空狀態）───────────────────────────────*/
-  .standby-hero { border: 1px solid var(--line); border-radius: 4px; padding: clamp(28px, 5vw, 56px);
-             background: linear-gradient(180deg, var(--panel-2), var(--panel));
-             display: grid; gap: 26px; justify-items: center; text-align: center; }
-  .standby-hero .scope { width: 118px; height: 118px; border-radius: 50%; border: 1px solid var(--line);
-                    position: relative; overflow: hidden;
-                    background: radial-gradient(circle at center, rgba(61,220,151,.06), transparent 65%); }
-  .standby-hero .scope::before, .standby-hero .scope::after { content: ""; position: absolute; background: var(--line-soft); }
-  .standby-hero .scope::before { left: 50%; top: 0; bottom: 0; width: 1px; }
-  .standby-hero .scope::after { top: 50%; left: 0; right: 0; height: 1px; }
-  .standby-hero .sweep { position: absolute; inset: 0; border-radius: 50%;
-                    background: conic-gradient(from 0deg, rgba(61,220,151,.35), transparent 70deg);
-                    animation: sweep 3.2s linear infinite; }
-  @keyframes sweep { to { transform: rotate(360deg); } }
-  .standby-hero h2 { font: 700 20px/1.3 var(--sans); letter-spacing: .06em; }
-  .standby-hero p { color: var(--dim); max-width: 52ch; font-size: 13.5px; }
-  .standby-hero .steps { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
-  .standby-hero .step { font: 12px/1.4 var(--mono); color: var(--dim); border: 1px dashed var(--line);
-                   border-radius: 3px; padding: 10px 14px; }
-  .standby-hero .step b { color: var(--live); font-weight: 600; }
-  .standby-hero .step.todo b { color: var(--amber); }
-
-  footer { margin-top: 34px; padding-top: 14px; border-top: 1px solid var(--line-soft);
-           display: flex; gap: 18px; flex-wrap: wrap; font: 10px/1 var(--mono);
-           letter-spacing: .14em; color: var(--faint); }
-  footer span { white-space: nowrap; }
-
-  /* 進場：儀表逐格點亮 */
-  .rise { opacity: 0; transform: translateY(10px); animation: rise .6s cubic-bezier(.2,.8,.2,1) forwards;
-          animation-delay: calc(var(--i, 0) * 70ms); }
-  @keyframes rise { to { opacity: 1; transform: none; } }
-  @media (prefers-reduced-motion: reduce) {
-    .rise { animation: none; opacity: 1; transform: none; }
-    .dot.live, .dot.standby, .standby-hero .sweep { animation: none; }
+  .sidebar-header {
+    height: var(--header-h);
+    display: flex;
+    align-items: center;
+    padding: 0 16px;
+    border-bottom: 1px solid var(--border);
+    gap: 10px;
   }
-  ::-webkit-scrollbar { height: 8px; width: 8px; }
-  ::-webkit-scrollbar-thumb { background: var(--line); border-radius: 4px; }
-  ::-webkit-scrollbar-track { background: transparent; }
+  .brand-logo {
+    width: 32px;
+    height: 32px;
+    border-radius: var(--radius-md);
+    background: linear-gradient(135deg, var(--accent), #4f46e5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #ffffff;
+    flex-shrink: 0;
+    box-shadow: 0 2px 4px rgba(37, 99, 235, 0.3);
+  }
+  .brand-info {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    white-space: nowrap;
+  }
+  .brand-title {
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--text-main);
+    letter-spacing: -0.01em;
+  }
+  .brand-sub {
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-muted);
+  }
+  .brand-badge {
+    display: inline-block;
+    font-size: 9px;
+    font-weight: 700;
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: var(--accent-light);
+    color: var(--accent-text);
+    margin-left: 6px;
+  }
+  .sidebar.collapsed .brand-info { display: none; }
+
+  .nav-menu {
+    flex: 1;
+    padding: 14px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    overflow-y: auto;
+  }
+  .nav-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 9px 12px;
+    border-radius: var(--radius-md);
+    color: var(--text-muted);
+    font-size: 13.5px;
+    font-weight: 500;
+    cursor: pointer;
+    text-decoration: none;
+    transition: background 0.15s, color 0.15s;
+    user-select: none;
+    border: none;
+    background: transparent;
+    width: 100%;
+    text-align: left;
+  }
+  .nav-item:hover {
+    background: var(--bg-subtle);
+    color: var(--text-main);
+  }
+  .nav-item.active {
+    background: var(--accent-light);
+    color: var(--accent-text);
+    font-weight: 600;
+  }
+  .nav-icon {
+    width: 20px;
+    height: 20px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .sidebar.collapsed .nav-label { display: none; }
+
+  .sidebar-footer {
+    padding: 12px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .collapse-btn {
+    padding: 6px 8px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    background: var(--bg-surface);
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s;
+  }
+  .collapse-btn:hover {
+    color: var(--text-main);
+    border-color: var(--border-hover);
+  }
+
+  /* ── Main Layout Wrapper ─────────────────────────── */
+  .layout-wrapper {
+    flex: 1;
+    margin-left: var(--sidebar-w);
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    transition: margin-left 0.2s ease;
+  }
+  .sidebar.collapsed + .layout-wrapper {
+    margin-left: var(--sidebar-collapsed-w);
+  }
+
+  /* ── Header (頂部功能列) ─────────────────────────── */
+  header.top-header {
+    height: var(--header-h);
+    background: var(--bg-surface);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 24px;
+    position: sticky;
+    top: 0;
+    z-index: 40;
+  }
+  .header-left {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+  .mobile-toggle {
+    display: none;
+    border: 1px solid var(--border);
+    background: var(--bg-surface);
+    padding: 6px 8px;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+  }
+  .app-select-wrap {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .app-label {
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--text-subtle);
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+  .app-selector {
+    font-size: 13.5px;
+    font-weight: 600;
+    color: var(--text-main);
+    background: var(--bg-subtle);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 6px 12px;
+    cursor: pointer;
+    outline: none;
+    transition: border-color 0.15s, box-shadow 0.15s;
+  }
+  .app-selector:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px var(--accent-light);
+  }
+
+  /* Date / Period Filter */
+  .period-filters {
+    display: inline-flex;
+    background: var(--bg-subtle);
+    padding: 3px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border);
+  }
+  .period-btn {
+    border: none;
+    background: transparent;
+    padding: 4px 10px;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-muted);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .period-btn.active {
+    background: var(--bg-surface);
+    color: var(--text-main);
+    font-weight: 600;
+    box-shadow: var(--shadow-sm);
+  }
+
+  .header-right {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+  .search-box {
+    position: relative;
+    display: flex;
+    align-items: center;
+  }
+  .search-input {
+    width: 220px;
+    height: 34px;
+    padding: 0 12px 0 32px;
+    font-size: 13px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border);
+    background: var(--bg-subtle);
+    color: var(--text-main);
+    outline: none;
+    transition: width 0.2s, border-color 0.15s;
+  }
+  .search-input:focus {
+    width: 280px;
+    border-color: var(--accent);
+    background: var(--bg-surface);
+  }
+  .search-icon {
+    position: absolute;
+    left: 10px;
+    width: 14px;
+    height: 14px;
+    color: var(--text-subtle);
+    pointer-events: none;
+  }
+
+  /* Sources Availability Chips in Header */
+  .source-badges {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+  }
+  .src-chip {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 3px 8px;
+    border-radius: var(--radius-full);
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background: var(--bg-subtle);
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+  }
+  .src-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+  }
+  .src-dot.available { background: var(--success); box-shadow: 0 0 0 2px var(--success-light); }
+  .src-dot.unavailable { background: var(--text-subtle); }
+  .src-dot.disabled { background: var(--text-subtle); }
+  .src-dot.error { background: var(--danger); box-shadow: 0 0 0 2px var(--danger-light); }
+
+  .theme-toggle-btn {
+    width: 34px;
+    height: 34px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border);
+    background: var(--bg-surface);
+    color: var(--text-muted);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .theme-toggle-btn:hover {
+    color: var(--text-main);
+    border-color: var(--border-hover);
+  }
+
+  /* ── Content Area & Views ────────────────────────── */
+  main.content-area {
+    padding: 24px;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+  }
+  .view-container {
+    display: none;
+    flex-direction: column;
+    gap: 20px;
+    animation: fadeIn 0.18s ease-in-out;
+  }
+  .view-container.active {
+    display: flex;
+  }
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(4px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  /* ── Section Titles ──────────────────────────────── */
+  .section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 2px;
+  }
+  .section-title {
+    font-size: 17px;
+    font-weight: 700;
+    color: var(--text-main);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .section-subtitle {
+    font-size: 13px;
+    color: var(--text-muted);
+    font-weight: 400;
+  }
+
+  /* ── KPI Cards (首頁指標卡) ──────────────────────── */
+  .kpi-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 16px;
+  }
+  @media (max-width: 1100px) {
+    .kpi-grid { grid-template-columns: repeat(2, 1fr); }
+  }
+  @media (max-width: 640px) {
+    .kpi-grid { grid-template-columns: 1fr; }
+  }
+
+  .kpi-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 20px;
+    box-shadow: var(--shadow-card);
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    position: relative;
+    overflow: hidden;
+    transition: transform 0.15s, box-shadow 0.15s;
+  }
+  .kpi-card:hover {
+    box-shadow: var(--shadow-md);
+  }
+  .kpi-top {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    margin-bottom: 12px;
+  }
+  .kpi-meta {
+    display: flex;
+    flex-direction: column;
+  }
+  .kpi-title {
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .kpi-icon-wrap {
+    width: 36px;
+    height: 36px;
+    border-radius: var(--radius-md);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg-subtle);
+    color: var(--accent);
+  }
+  .kpi-value-row {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+  .kpi-value {
+    font-size: 28px;
+    font-weight: 700;
+    font-family: var(--font-mono);
+    color: var(--text-main);
+    letter-spacing: -0.02em;
+    line-height: 1.1;
+  }
+  .kpi-value.unavailable-text {
+    font-size: 22px;
+    color: var(--text-subtle);
+    font-weight: 600;
+  }
+  .kpi-badge-unavailable {
+    display: inline-block;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: var(--bg-muted);
+    color: var(--text-muted);
+  }
+
+  .kpi-bottom {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 12px;
+    color: var(--text-muted);
+    padding-top: 10px;
+    border-top: 1px solid var(--border-subtle);
+  }
+  .delta-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    font-size: 11.5px;
+    font-weight: 600;
+    font-family: var(--font-mono);
+  }
+  .delta-pill.good { color: var(--success-text); }
+  .delta-pill.bad { color: var(--danger-text); }
+  .delta-pill.neutral { color: var(--text-muted); }
+
+  /* Circular progress indicator */
+  .ring-wrap {
+    position: relative;
+    width: 44px;
+    height: 44px;
+    flex-shrink: 0;
+  }
+  .ring-svg {
+    transform: rotate(-90deg);
+    width: 44px;
+    height: 44px;
+  }
+  .ring-bg {
+    stroke: var(--bg-muted);
+    stroke-width: 4;
+    fill: none;
+  }
+  .ring-progress {
+    stroke: var(--accent);
+    stroke-width: 4;
+    fill: none;
+    stroke-linecap: round;
+    transition: stroke-dashoffset 0.8s ease;
+  }
+  .ring-progress.good { stroke: var(--success); }
+  .ring-progress.warn { stroke: var(--warning); }
+  .ring-progress.danger { stroke: var(--danger); }
+
+  /* ── AI Insights Banner ──────────────────────────── */
+  .ai-summary-card {
+    background: linear-gradient(135deg, rgba(37, 99, 235, 0.04), rgba(79, 70, 229, 0.06));
+    border: 1px solid rgba(37, 99, 235, 0.2);
+    border-radius: var(--radius-lg);
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .ai-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .ai-title {
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--accent-text);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .ai-model-tag {
+    font-size: 11px;
+    font-family: var(--font-mono);
+    color: var(--text-muted);
+    background: var(--bg-surface);
+    padding: 2px 8px;
+    border-radius: var(--radius-full);
+    border: 1px solid var(--border);
+  }
+  .ai-overview-text {
+    font-size: 13.5px;
+    color: var(--text-main);
+    line-height: 1.6;
+  }
+  .ai-takeaways-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 10px;
+    margin-top: 4px;
+  }
+  .ai-takeaway-item {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 10px 14px;
+    font-size: 12.5px;
+    color: var(--text-main);
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    box-shadow: var(--shadow-sm);
+  }
+
+  /* ── Charts Grid ─────────────────────────────────── */
+  .charts-grid {
+    display: grid;
+    grid-template-columns: repeat(12, 1fr);
+    gap: 16px;
+  }
+  .col-12 { grid-column: span 12; }
+  .col-8  { grid-column: span 8; }
+  .col-6  { grid-column: span 6; }
+  .col-4  { grid-column: span 4; }
+  @media (max-width: 960px) {
+    .col-8, .col-6, .col-4 { grid-column: span 12; }
+  }
+
+  .chart-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 18px 20px;
+    box-shadow: var(--shadow-card);
+    display: flex;
+    flex-direction: column;
+    min-height: 280px;
+  }
+  .chart-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 14px;
+  }
+  .chart-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-main);
+  }
+  .chart-subtitle {
+    font-size: 11.5px;
+    color: var(--text-muted);
+  }
+  .chart-container {
+    position: relative;
+    flex: 1;
+    min-height: 220px;
+    width: 100%;
+  }
+
+  /* ── Issues Table & Lists ────────────────────────── */
+  .table-container {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-card);
+    overflow: hidden;
+  }
+  .table-toolbar {
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .filters-group {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .filter-select {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-main);
+    background: var(--bg-subtle);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 5px 10px;
+    cursor: pointer;
+    outline: none;
+  }
+
+  table.data-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+    text-align: left;
+  }
+  table.data-table th {
+    background: var(--bg-subtle);
+    color: var(--text-muted);
+    font-weight: 600;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+    user-select: none;
+    white-space: nowrap;
+  }
+  table.data-table td {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border-subtle);
+    vertical-align: middle;
+    color: var(--text-main);
+  }
+  table.data-table tr:hover td {
+    background: var(--bg-subtle);
+  }
+  table.data-table tr:last-child td {
+    border-bottom: none;
+  }
+  td.mono-num {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Badges and Chips */
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 7px;
+    border-radius: 4px;
+    white-space: nowrap;
+  }
+  .badge-p0 { background: var(--p0-bg); color: var(--p0); }
+  .badge-p1 { background: var(--p1-bg); color: var(--p1); }
+  .badge-p2 { background: var(--p2-bg); color: var(--p2); }
+  .badge-p3 { background: var(--p3-bg); color: var(--p3); }
+
+  .badge-fatal { background: var(--danger-light); color: var(--danger-text); }
+  .badge-anr { background: var(--warning-light); color: var(--warning-text); }
+  .badge-nonfatal { background: var(--bg-subtle); color: var(--text-muted); }
+
+  .badge-status {
+    padding: 2px 8px;
+    border-radius: var(--radius-full);
+    font-size: 10.5px;
+    font-weight: 600;
+  }
+  .badge-latest { background: var(--accent-light); color: var(--accent-text); }
+  .badge-active { background: var(--success-light); color: var(--success-text); }
+  .badge-maintenance { background: var(--warning-light); color: var(--warning-text); }
+  .badge-deprecated { background: var(--bg-muted); color: var(--text-muted); }
+
+  /* Issue Accordion Item */
+  .issue-accordion {
+    border-bottom: 1px solid var(--border);
+  }
+  .issue-accordion:last-child {
+    border-bottom: none;
+  }
+  .issue-summary-row {
+    padding: 14px 18px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    transition: background 0.15s;
+    user-select: none;
+  }
+  .issue-summary-row:hover {
+    background: var(--bg-subtle);
+  }
+  .issue-rank {
+    font-family: var(--font-mono);
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--text-subtle);
+    min-width: 24px;
+  }
+  .issue-title-group {
+    flex: 1;
+    min-width: 0;
+  }
+  .issue-main-title {
+    font-size: 13.5px;
+    font-weight: 600;
+    color: var(--text-main);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .issue-sub-title {
+    font-size: 11.5px;
+    font-family: var(--font-mono);
+    color: var(--text-muted);
+    margin-top: 2px;
+  }
+  .issue-stats-group {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    font-size: 12.5px;
+    font-family: var(--font-mono);
+    color: var(--text-muted);
+    white-space: nowrap;
+  }
+
+  .issue-detail-panel {
+    display: none;
+    padding: 16px 20px 20px;
+    background: var(--bg-subtle);
+    border-top: 1px dashed var(--border);
+    flex-direction: column;
+    gap: 14px;
+  }
+  .issue-detail-panel.open {
+    display: flex;
+  }
+  .detail-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 14px;
+  }
+  .detail-box {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 12px 14px;
+  }
+  .detail-box-title {
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 6px;
+  }
+  .detail-box-content {
+    font-size: 12.5px;
+    color: var(--text-main);
+    line-height: 1.5;
+  }
+  pre.code-stack {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 10px;
+    max-height: 200px;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    word-break: break-all;
+    color: var(--text-main);
+  }
+
+  .btn-copy-prompt {
+    font-size: 11.5px;
+    font-weight: 600;
+    padding: 6px 12px;
+    border-radius: var(--radius-md);
+    background: var(--accent);
+    color: #ffffff;
+    border: none;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    transition: background 0.15s;
+    align-self: flex-start;
+  }
+  .btn-copy-prompt:hover {
+    background: var(--accent-hover);
+  }
+
+  /* Empty state */
+  .empty-state {
+    padding: 48px 24px;
+    text-align: center;
+    color: var(--text-muted);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+  }
+  .empty-state-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-main);
+  }
+
+  /* Responsive styles */
+  @media (max-width: 768px) {
+    .sidebar {
+      transform: translateX(-100%);
+    }
+    .sidebar.mobile-open {
+      transform: translateX(0);
+    }
+    .layout-wrapper {
+      margin-left: 0 !important;
+    }
+    .mobile-toggle {
+      display: inline-flex;
+    }
+    .search-input {
+      width: 140px;
+    }
+    .search-input:focus {
+      width: 180px;
+    }
+  }
+
+  /* Toast Notification */
+  .toast {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    background: var(--text-main);
+    color: var(--bg-surface);
+    padding: 10px 18px;
+    border-radius: var(--radius-md);
+    font-size: 13px;
+    font-weight: 500;
+    box-shadow: var(--shadow-lg);
+    z-index: 999;
+    opacity: 0;
+    transform: translateY(8px);
+    transition: all 0.2s ease;
+    pointer-events: none;
+  }
+  .toast.show {
+    opacity: 1;
+    transform: translateY(0);
+  }
 </style>
 </head>
 <body>
-<div class="wrap">
-  <header>
-    <div class="brand">
-      <div class="kicker">FLIGHT&nbsp;RECORDER&nbsp;//&nbsp;CRASH&nbsp;TELEMETRY</div>
-      <h1>Crash 趨勢儀表板<span class="accent">_</span></h1>
+
+<!-- ── Sidebar ───────────────────────────────────── -->
+<aside class="sidebar" id="sidebar">
+  <div class="sidebar-header">
+    <div class="brand-logo">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/>
+      </svg>
     </div>
-    <div class="statusline" id="statusline"></div>
-    <nav class="tabs" id="appTabs"></nav>
-    <button class="tab" id="themeBtn" onclick="toggleTheme()" title="切換深／淺色">◐</button>
+    <div class="brand-info">
+      <div class="brand-title">Crashlytics <span class="brand-badge">V2</span></div>
+      <div class="brand-sub">Telemetry Dashboard</div>
+    </div>
+  </div>
+
+  <nav class="nav-menu">
+    <button class="nav-item active" onclick="switchView('overview')" id="nav-overview">
+      <span class="nav-icon">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+      </span>
+      <span class="nav-label">總覽 (Overview)</span>
+    </button>
+    <button class="nav-item" onclick="switchView('issues')" id="nav-issues">
+      <span class="nav-icon">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      </span>
+      <span class="nav-label">問題列表 (Issues)</span>
+    </button>
+    <button class="nav-item" onclick="switchView('version_health')" id="nav-version_health">
+      <span class="nav-icon">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+      </span>
+      <span class="nav-label">版本健康度 (Version Health)</span>
+    </button>
+    <button class="nav-item" onclick="switchView('devices')" id="nav-devices">
+      <span class="nav-icon">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>
+      </span>
+      <span class="nav-label">裝置分析 (Devices)</span>
+    </button>
+    <button class="nav-item" onclick="switchView('releases')" id="nav-releases">
+      <span class="nav-icon">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/></svg>
+      </span>
+      <span class="nav-label">發佈版本 (Releases)</span>
+    </button>
+    <button class="nav-item" onclick="switchView('notifications')" id="nav-notifications">
+      <span class="nav-icon">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>
+      </span>
+      <span class="nav-label">通知 (Notifications)</span>
+    </button>
+    <button class="nav-item" onclick="switchView('ai_insights')" id="nav-ai_insights">
+      <span class="nav-icon">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+      </span>
+      <span class="nav-label">AI 分析 (AI Insights)</span>
+    </button>
+    <button class="nav-item" onclick="switchView('settings')" id="nav-settings">
+      <span class="nav-icon">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      </span>
+      <span class="nav-label">設定 (Settings)</span>
+    </button>
+  </nav>
+
+  <div class="sidebar-footer">
+    <button class="collapse-btn" onclick="toggleSidebar()" title="折疊導覽列">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
+    </button>
+  </div>
+</aside>
+
+<!-- ── Layout Wrapper ────────────────────────────── -->
+<div class="layout-wrapper">
+
+  <!-- ── Top Header ──────────────────────────────── -->
+  <header class="top-header">
+    <div class="header-left">
+      <button class="mobile-toggle" onclick="toggleMobileMenu()">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+      </button>
+
+      <div class="app-select-wrap">
+        <span class="app-label">App:</span>
+        <select id="appSelector" class="app-selector" onchange="switchApp(this.value)">
+          <!-- Populated dynamically -->
+        </select>
+      </div>
+
+      <div class="period-filters">
+        <button class="period-btn" onclick="setPeriod(7)" id="p-7d">7d</button>
+        <button class="period-btn active" onclick="setPeriod(30)" id="p-30d">30d</button>
+        <button class="period-btn" onclick="setPeriod(90)" id="p-90d">90d</button>
+      </div>
+    </div>
+
+    <div class="header-right">
+      <div class="search-box">
+        <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input type="text" class="search-input" id="globalSearch" placeholder="搜尋問題、檔案、ID..." oninput="handleSearch(this.value)">
+      </div>
+
+      <div class="source-badges" id="headerSourceBadges">
+        <!-- Populated dynamically -->
+      </div>
+
+      <button class="theme-toggle-btn" onclick="toggleTheme()" title="切換深/淺色主題">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
+      </button>
+    </div>
   </header>
-  <main id="main"></main>
-  <footer id="foot"></footer>
+
+  <!-- ── Main Content Area ────────────────────────── -->
+  <main class="content-area">
+
+    <!-- VIEW: OVERVIEW (總覽) -->
+    <section class="view-container active" id="view-overview">
+      <div class="section-header">
+        <div>
+          <h2 class="section-title">總覽 (Overview)</h2>
+          <div class="section-subtitle" id="overviewPeriodSubtitle">載入中...</div>
+        </div>
+      </div>
+
+      <!-- KPI Cards -->
+      <div class="kpi-grid">
+        <!-- KPI 1: Crash-free Users -->
+        <div class="kpi-card" id="cardCrashFreeUsers">
+          <div class="kpi-top">
+            <div class="kpi-meta">
+              <span class="kpi-title">Crash-free Users</span>
+              <div class="kpi-value-row" id="cfUsersValueRow">
+                <span class="kpi-value" id="kpiCFUsers">—</span>
+              </div>
+            </div>
+            <div class="ring-wrap" id="cfUsersRing">
+              <svg class="ring-svg" viewBox="0 0 44 44">
+                <circle class="ring-bg" cx="22" cy="22" r="18"/>
+                <circle class="ring-progress good" id="cfUsersProgress" cx="22" cy="22" r="18" stroke-dasharray="113.097" stroke-dashoffset="113.097"/>
+              </svg>
+            </div>
+          </div>
+          <div class="kpi-bottom">
+            <span class="delta-pill" id="kpiCFUsersDelta">—</span>
+            <span id="kpiCFUsersCounts">—</span>
+          </div>
+        </div>
+
+        <!-- KPI 2: Crash Events -->
+        <div class="kpi-card" id="cardCrashEvents">
+          <div class="kpi-top">
+            <div class="kpi-meta">
+              <span class="kpi-title">Crash Events</span>
+              <div class="kpi-value-row">
+                <span class="kpi-value" id="kpiEvents">0</span>
+              </div>
+            </div>
+            <div class="kpi-icon-wrap">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+            </div>
+          </div>
+          <div class="kpi-bottom">
+            <span class="delta-pill" id="kpiEventsDelta">—</span>
+            <span id="kpiErrorBreakdown">Fatal: 0 · ANR: 0</span>
+          </div>
+        </div>
+
+        <!-- KPI 3: Affected Users -->
+        <div class="kpi-card" id="cardAffectedUsers">
+          <div class="kpi-top">
+            <div class="kpi-meta">
+              <span class="kpi-title">Affected Users</span>
+              <div class="kpi-value-row">
+                <span class="kpi-value" id="kpiUsers">0</span>
+              </div>
+            </div>
+            <div class="kpi-icon-wrap">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+            </div>
+          </div>
+          <div class="kpi-bottom">
+            <span class="delta-pill" id="kpiUsersDelta">—</span>
+            <span>去重受影響用戶</span>
+          </div>
+        </div>
+
+        <!-- KPI 4: New Issues -->
+        <div class="kpi-card" id="cardNewIssues">
+          <div class="kpi-top">
+            <div class="kpi-meta">
+              <span class="kpi-title">New Issues</span>
+              <div class="kpi-value-row">
+                <span class="kpi-value" id="kpiNewIssues">0</span>
+              </div>
+            </div>
+            <div class="kpi-icon-wrap">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+            </div>
+          </div>
+          <div class="kpi-bottom">
+            <span class="delta-pill" id="kpiNewIssuesDelta">—</span>
+            <span>本期首見問題數</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- AI Quick Insights -->
+      <div class="ai-summary-card" id="aiQuickCard">
+        <div class="ai-header">
+          <div class="ai-title">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3Z"/></svg>
+            AI 策略摘要 (AI Insights)
+          </div>
+          <span class="ai-model-tag" id="aiModelTag">Gemini Flash</span>
+        </div>
+        <p class="ai-overview-text" id="aiOverviewText">載入中...</p>
+        <div class="ai-takeaways-list" id="aiTakeawaysList"></div>
+      </div>
+
+      <!-- Trend & Breakdown Charts -->
+      <div class="charts-grid">
+        <div class="chart-card col-8">
+          <div class="chart-card-header">
+            <div>
+              <div class="chart-title">每日趨勢 (Daily Trend)</div>
+              <div class="chart-subtitle" id="dailyTrendChartSubtitle">事件數與受影響用戶每日變化</div>
+            </div>
+          </div>
+          <div class="chart-container">
+            <canvas id="chartDailyTrend"></canvas>
+          </div>
+        </div>
+
+        <div class="chart-card col-4">
+          <div class="chart-card-header">
+            <div>
+              <div class="chart-title">錯誤類型佔比 (Error Types)</div>
+              <div class="chart-subtitle">Fatal vs ANR vs Non-fatal</div>
+            </div>
+          </div>
+          <div class="chart-container">
+            <canvas id="chartErrorTypes"></canvas>
+          </div>
+        </div>
+
+        <div class="chart-card col-6">
+          <div class="chart-card-header">
+            <div>
+              <div class="chart-title">平台分布 (Platforms)</div>
+              <div class="chart-subtitle">Android vs iOS 事件與用戶佔比</div>
+            </div>
+          </div>
+          <div class="chart-container">
+            <canvas id="chartPlatforms"></canvas>
+          </div>
+        </div>
+
+        <div class="chart-card col-6">
+          <div class="chart-card-header">
+            <div>
+              <div class="chart-title">Top App 版本分布</div>
+              <div class="chart-subtitle">依崩潰事件量排序</div>
+            </div>
+          </div>
+          <div class="chart-container">
+            <canvas id="chartAppVersions"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <!-- Top Issues Quick Preview -->
+      <div class="table-container">
+        <div class="table-toolbar">
+          <div class="section-title" style="font-size:14px">優先關注問題 (Top Priority Issues)</div>
+          <button class="filter-select" onclick="switchView('issues')">查看完整問題列表 →</button>
+        </div>
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>等級</th>
+              <th>標題與位置</th>
+              <th>平台</th>
+              <th>層級</th>
+              <th>事件數</th>
+              <th>受影響用戶</th>
+              <th>最新版本</th>
+            </tr>
+          </thead>
+          <tbody id="topIssuesPreviewBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- VIEW: ISSUES (問題列表) -->
+    <section class="view-container" id="view-issues">
+      <div class="section-header">
+        <div>
+          <h2 class="section-title">問題列表 (Issues)</h2>
+          <div class="section-subtitle">點擊展開查看 AI 建議修法、元兇程式碼與 Stack Trace</div>
+        </div>
+      </div>
+
+      <div class="table-container">
+        <div class="table-toolbar">
+          <div class="filters-group">
+            <select class="filter-select" id="filterErrorType" onchange="renderIssuesList()">
+              <option value="ALL">全部層級</option>
+              <option value="FATAL">FATAL (致命閃退)</option>
+              <option value="ANR">ANR (無回應)</option>
+              <option value="NON_FATAL">NON_FATAL (非致命)</option>
+            </select>
+            <select class="filter-select" id="filterPlatform" onchange="renderIssuesList()">
+              <option value="ALL">全部平台</option>
+              <option value="android">Android</option>
+              <option value="ios">iOS</option>
+            </select>
+            <select class="filter-select" id="filterPriority" onchange="renderIssuesList()">
+              <option value="ALL">全部優先級</option>
+              <option value="P0">P0</option>
+              <option value="P1">P1</option>
+              <option value="P2">P2</option>
+              <option value="P3">P3</option>
+            </select>
+            <select class="filter-select" id="sortIssuesSelect" onchange="setSort(this.value)">
+              <option value="priority">依優先級 (P0 ~ P3)</option>
+              <option value="events">依事件數 (Events)</option>
+              <option value="users">依受影響用戶 (Users)</option>
+              <option value="last_seen">依最近出現時間</option>
+            </select>
+          </div>
+          <div id="issuesCountBadge" style="font-size:12px;color:var(--text-muted)">共 0 個問題</div>
+        </div>
+
+        <div id="issuesListContainer">
+          <!-- Accordion list items -->
+        </div>
+      </div>
+    </section>
+
+    <!-- VIEW: VERSION HEALTH (版本健康度) -->
+    <section class="view-container" id="view-version_health">
+      <div class="section-header">
+        <div>
+          <h2 class="section-title">版本健康度 (Version Health)</h2>
+          <div class="section-subtitle">各發佈版本之 Crash-free 指標、採納率與穩定趨勢</div>
+        </div>
+      </div>
+
+      <div class="table-container">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>版本號</th>
+              <th>平台</th>
+              <th>發佈日期</th>
+              <th>狀態</th>
+              <th>趨勢</th>
+              <th>Crash-free (Users)</th>
+              <th>Crash-free (Sessions)</th>
+              <th>採納率</th>
+              <th>崩潰事件數</th>
+              <th>受影響用戶</th>
+            </tr>
+          </thead>
+          <tbody id="versionHealthTableBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- VIEW: DEVICES (裝置分析) -->
+    <section class="view-container" id="view-devices">
+      <div class="section-header">
+        <div>
+          <h2 class="section-title">裝置與系統分析 (Devices & OS)</h2>
+          <div class="section-subtitle">主要崩潰機型、作業系統版本分布與自訂 Key 交叉分析</div>
+        </div>
+      </div>
+
+      <div class="charts-grid">
+        <div class="chart-card col-6">
+          <div class="chart-card-header">
+            <div>
+              <div class="chart-title">機型崩潰排行 (Device Models)</div>
+              <div class="chart-subtitle">事件數最高之裝置型號</div>
+            </div>
+          </div>
+          <div class="chart-container">
+            <canvas id="chartDeviceModels"></canvas>
+          </div>
+        </div>
+
+        <div class="chart-card col-6">
+          <div class="chart-card-header">
+            <div>
+              <div class="chart-title">OS 版本排行 (OS Versions)</div>
+              <div class="chart-subtitle">各作業系統版本分布</div>
+            </div>
+          </div>
+          <div class="chart-container">
+            <canvas id="chartOSVersions"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <div class="table-container" style="margin-top:16px">
+        <div class="table-toolbar">
+          <div class="section-title" style="font-size:14px">機型詳細分布</div>
+        </div>
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>機型名稱</th>
+              <th>平台</th>
+              <th>崩潰事件數</th>
+              <th>受影響用戶</th>
+              <th>佔比</th>
+            </tr>
+          </thead>
+          <tbody id="deviceModelsTableBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- VIEW: RELEASES (發佈版本) -->
+    <section class="view-container" id="view-releases">
+      <div class="section-header">
+        <div>
+          <h2 class="section-title">發佈版本 (Releases)</h2>
+          <div class="section-subtitle">版本發佈歷程與穩定度追蹤</div>
+        </div>
+      </div>
+      <div class="table-container">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>版本號</th>
+              <th>發佈日期</th>
+              <th>狀態</th>
+              <th>事件數</th>
+              <th>用戶數</th>
+              <th>Crash-free (Users)</th>
+              <th>採納率</th>
+            </tr>
+          </thead>
+          <tbody id="releasesTableBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- VIEW: NOTIFICATIONS (通知與管道狀態) -->
+    <section class="view-container" id="view-notifications">
+      <div class="section-header">
+        <div>
+          <h2 class="section-title">數據管道與通知 (Data Pipelines)</h2>
+          <div class="section-subtitle">數據來源連線狀態、最後同步時間與資料限制備註</div>
+        </div>
+      </div>
+
+      <div class="charts-grid" id="pipelineCardsGrid">
+        <!-- Filled dynamically -->
+      </div>
+
+      <div class="ai-summary-card" style="margin-top:16px" id="limitationsCard">
+        <div class="ai-title" style="color:var(--text-main)">資料收集限制與注意事項 (Data Limitations)</div>
+        <ul id="limitationsList" style="padding-left:20px;font-size:13px;color:var(--text-muted);display:flex;flex-direction:column;gap:6px"></ul>
+      </div>
+    </section>
+
+    <!-- VIEW: AI INSIGHTS (AI 分析) -->
+    <section class="view-container" id="view-ai_insights">
+      <div class="section-header">
+        <div>
+          <h2 class="section-title">AI 分析與行動建議 (AI Insights)</h2>
+          <div class="section-subtitle">Gemini 深入分析、分佈洞察與建議行動清單</div>
+        </div>
+      </div>
+
+      <div class="ai-summary-card">
+        <div class="ai-header">
+          <div class="ai-title">AI 策略摘要</div>
+          <span class="ai-model-tag" id="aiFullModelTag">Gemini Flash</span>
+        </div>
+        <p class="ai-overview-text" id="aiFullOverviewText"></p>
+        <div class="ai-takeaways-list" id="aiFullTakeawaysList"></div>
+        <div style="margin-top:12px;font-size:13px;color:var(--text-main);background:var(--bg-surface);border:1px solid var(--border);border-radius:var(--radius-md);padding:12px 14px">
+          <b>分佈洞察：</b> <span id="aiDistributionInsights"></span>
+        </div>
+      </div>
+
+      <div class="table-container" style="margin-top:16px">
+        <div class="table-toolbar">
+          <div class="section-title" style="font-size:14px">推薦行動清單 (Recommended Actions)</div>
+        </div>
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>優先級</th>
+              <th>目標 Issue</th>
+              <th>建議行動</th>
+              <th>預估工作量</th>
+            </tr>
+          </thead>
+          <tbody id="recommendedActionsTableBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- VIEW: SETTINGS (設定) -->
+    <section class="view-container" id="view-settings">
+      <div class="section-header">
+        <div>
+          <h2 class="section-title">應用程式設定 (Settings)</h2>
+          <div class="section-subtitle">當前 App Metadata、監控自訂鍵值與系統資訊</div>
+        </div>
+      </div>
+
+      <div class="table-container">
+        <table class="data-table">
+          <tbody id="settingsTableBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+  </main>
 </div>
 
-<script>__CHARTJS__</script>
+<div class="toast" id="toast">已複製到剪貼簿</div>
+
+<!-- Chart.js Embedded -->
+<script>
+__CHARTJS__
+</script>
+
+<!-- Embedded Dashboard V2 Bundle Data & Client Logic -->
 <script>
 const DATA = __DATA__;
-const appNames = Object.keys(DATA.apps);
-let curApp = appNames[0], charts = [], sortKey = "users", sortAsc = false;
-// URL hash 直達分頁（聊天卡「開儀表板」按鈕帶 #<app>）
-if (DATA.apps[location.hash.slice(1)]) curApp = location.hash.slice(1);
-
-/* 主題：預設日間，◐ 切換並記住選擇（file:// 下 localStorage 不可用時靜默略過） */
-try { document.documentElement.dataset.theme = localStorage.getItem("ct-theme") || "light"; } catch (e) {}
-function toggleTheme() {
-  const t = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
-  document.documentElement.dataset.theme = t;
-  try { localStorage.setItem("ct-theme", t); } catch (e) {}
-  render(); // 圖表顏色取自 CSS 變數，需重建
-}
+let curAppId = DATA.default_app || Object.keys(DATA.apps || {})[0];
+let curPeriodDays = 30;
+let searchQuery = "";
+let chartInstances = {};
 
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-const fmt = n => (n ?? 0).toLocaleString("zh-Hant");
-// 平台圖示（inline SVG，離線自包含；Apple 用前景色、Android 用品牌綠）
-const PLAT_SVG = {
-  ios: '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.81-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"/></svg>',
-  android: '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M17.6 9.48l1.84-3.18c.16-.31.04-.69-.26-.85-.29-.15-.65-.06-.83.22l-1.88 3.24a11.5 11.5 0 0 0-9.42 0L5.17 5.67c-.18-.29-.53-.37-.83-.22-.3.16-.42.54-.26.85L5.92 9.48A10.8 10.8 0 0 0 1 17.34h22a10.8 10.8 0 0 0-4.92-7.86M7 15.25a1 1 0 1 1 0-2 1 1 0 0 1 0 2m10 0a1 1 0 1 1 0-2 1 1 0 0 1 0 2"/></svg>',
-};
-const platIcon = p => { const k = p === "ios" ? "ios" : "android";
-  return `<span class="plat ${k}" title="${k === "ios" ? "iOS" : "Android"}">${PLAT_SVG[k]}</span>`; };
-// 層級三態（白話中文；hover 顯示英文原詞）。舊快照無 error_type 時用 fatal 布林 fallback
-const LEVEL = { FATAL: ["fatal", "閃退"], ANR: ["warn", "凍結"], NON_FATAL: ["info", "非致命"] };
-const levelOf = r => LEVEL[r.error_type] ? r.error_type : (r.fatal ? "FATAL" : "NON_FATAL");
-const levelChip = r => { const lv = levelOf(r), [cls, label] = LEVEL[lv];
-  return `<span class="chip ${cls}" title="${lv}">${label}</span>`; };
-const monthsOf = a => Object.keys(DATA.apps[a].months).sort();
-const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const fmt = n => (n != null && !isNaN(n)) ? Number(n).toLocaleString("zh-Hant") : "0";
 
-function pickDist(dists, platform, kind) {
-  return ((dists || {})[platform] || {})[kind] || [];
-}
-function mergedDist(dists, kind) {
-  const a = pickDist(dists, "android", kind), i = pickDist(dists, "ios", kind);
-  const rows = [...a.map(r => ({ ...r, p: "AND" })), ...i.map(r => ({ ...r, p: "iOS" }))]
-    .sort((x, y) => y.events - x.events).slice(0, 10);
-  const src = [a.length && "Android", i.length && "iOS"].filter(Boolean).join(" + ");
-  return { rows, src };
-}
-function deltaHtml(cur, prev) {
-  if (prev == null) return `<span class="flat">首期・無基期</span>`;
-  if (prev === 0) return `<span class="flat">上期 0</span>`;
-  const pct = Math.round(((cur - prev) / prev) * 100);
-  const cls = pct > 0 ? "up" : pct < 0 ? "down" : "flat";
-  const arrow = pct > 0 ? "▲" : pct < 0 ? "▼" : "＝";
-  return `<span class="${cls}">${arrow} ${Math.abs(pct)}% vs 上期</span>`;
-}
-function countUp(el, target) {
-  const t0 = performance.now(), dur = 900;
-  const tick = now => {
-    const p = Math.min((now - t0) / dur, 1), eased = 1 - Math.pow(1 - p, 3);
-    el.textContent = fmt(Math.round(target * eased));
-    if (p < 1) requestAnimationFrame(tick);
-  };
-  requestAnimationFrame(tick);
+// Theme support
+try {
+  const savedTheme = localStorage.getItem("ct_theme") || "light";
+  document.documentElement.dataset.theme = savedTheme;
+} catch (e) {}
+
+function toggleTheme() {
+  const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+  document.documentElement.dataset.theme = next;
+  try { localStorage.setItem("ct_theme", next); } catch (e) {}
+  renderCharts();
 }
 
-/* ── 版面渲染 ── */
-function render() {
-  const app = DATA.apps[curApp], months = monthsOf(curApp);
-  const m = months.at(-1), s = app.months[m];
-  const ps = months.length > 1 ? app.months[months.at(-2)] : null;
-  const srcs = s.sources || {}, liveData = srcs.crashlytics_bq || srcs.mcp_report || srcs.manual_console;
-
-  $("appTabs").innerHTML = appNames.map(a =>
-    `<button class="tab ${a === curApp ? "active" : ""}" onclick="switchApp('${a}')">${esc(DATA.apps[a].display_name)}</button>`).join("");
-
-  $("statusline").innerHTML = `
-    <span><i class="dot ${liveData ? "live" : "standby"}"></i>${liveData ? "LIVE" : "STANDBY"}</span>
-    <span>APP <b>${esc(app.display_name)}</b></span>
-    <span>資料月份 <b>${m}</b></span>
-    <span>產生 <b>${s.generated_at || m}</b></span>`;
-
-  charts.forEach(c => c.destroy()); charts = [];
-  $("main").innerHTML = liveData || (s.kpis?.events > 0) ? layoutLive(s, ps, months, app) : layoutStandby();
-  if (liveData || (s.kpis?.events > 0)) hydrateCharts(s, months, app);
-
-  $("foot").innerHTML = [
-    `crash-trend // 離線自包含`,
-    `來源 BQ:${srcs.crashlytics_bq ? "ON" : "--"} MCP:${srcs.mcp_report ? "ON" : "--"} CONSOLE:${srcs.manual_console ? "ON" : "--"}`,
-    `每月 normalize 後重產`,
-  ].map(x => `<span>${x}</span>`).join("");
+function toggleSidebar() {
+  $("sidebar").classList.toggle("collapsed");
 }
 
-function layoutStandby() {
-  return `
-  <section class="standby-hero rise" style="--i:1">
-    <div class="scope"><div class="sweep"></div></div>
-    <h2>待命中 — 本月尚無資料</h2>
-    <p>若 BigQuery 已連結，首批批次匯出最長 48 小時（通常隔日）；尚未連結則先到該 Firebase 專案的
-       Console 點 Link，或改用 console 快照模式。資料備妥後，對 Claude 說「跑 crash 月報」，本頁隨之點亮。</p>
-    <div class="steps">
-      <div class="step"><b>✓</b>&nbsp;Crashlytics 收集中</div>
-      <div class="step todo"><b>⏳</b>&nbsp;等待資料源（BigQuery 或 console 快照）</div>
-      <div class="step todo"><b>→</b>&nbsp;「跑 crash 月報」</div>
-    </div>
-  </section>`;
+function toggleMobileMenu() {
+  $("sidebar").classList.toggle("mobile-open");
 }
 
-function layoutLive(s, ps, months, app) {
-  const k = s.kpis || {}, pk = ps ? (ps.kpis || {}) : null;
-  const fatalPct = k.fatal_share == null ? null : Math.round(k.fatal_share * 100);
-  const kpi = (i, label, val, sub, extra = "") => `
-    <div class="card kpi rise" style="--i:${i}">
-      <div class="l">${label}</div>
-      <div class="v">${val}</div>
-      <div class="d">${sub}</div>${extra}
-    </div>`;
-
-  const pr = s.priority_list || [];
-  const prioHtml = pr.length ? pr.map((p, i) => `
-    <details class="prio ${p.fatal ? "fatal" : ""} rise" style="--i:${8 + i}">
-      <summary>
-        <span class="rank">${String(i + 1).padStart(2, "0")}</span>
-        <span><span class="t">${esc(p.title)}</span>
-          <span class="sub">${esc(p.code_location || "")}</span></span>
-        ${levelChip(p)}
-        <span class="score"><span class="n">${esc(p.score)}</span><span class="cap">PRIORITY</span></span>
-        <button class="copybtn" id="copy-${i}" title="複製成可貼給 AI agent 的修復請求"
-          onclick="event.preventDefault();event.stopPropagation();copyFix(${i})">COPY ⧉</button>
-      </summary>
-      <div class="body">
-        <div class="f"><div class="k">ROOT CAUSE 推測</div><div class="x">${esc(p.root_cause || "—")}</div></div>
-        <div class="f"><div class="k">建議修法</div><div class="x">${esc(p.suggested_fix || "—")}</div></div>
-        <div class="f"><div class="k">影響 / 工作量</div>
-          <div class="x">${fmt(p.users)} 用戶・${fmt(p.events)} 事件・工作量 <b>${esc(p.effort || "?")}</b></div></div>
-        ${p.blame_file ? `<div class="f"><div class="k">程式碼位置</div><div class="x"><code>${esc(p.blame_file)}${p.blame_line ? ":" + esc(p.blame_line) : ""}</code></div></div>`
-          : (p.code_location ? `<div class="f"><div class="k">錯誤訊息</div><div class="x"><code>${esc(p.code_location)}</code></div></div>` : "")}
-        ${p.stack_trace ? `<div class="f" style="grid-column:1/-1"><div class="k">STACK TRACE（Crashlytics 實際堆疊）</div><pre class="trace">${esc(p.stack_trace)}</pre></div>` : ""}
-      </div>
-    </details>`).join("")
-    : `<div class="card srcs rise" style="--i:8"><div class="srcrow"><b>尚無 AI 優先清單</b>
-       <span class="state">PENDING</span></div>
-       <div class="srcnote">跑一次「crash 月報」，AI 會依「用戶×3 + 閃退或凍結×2 + 惡化×2 + 最新版仍現×2 + 核心路徑×3 + 事件×1」評分後填入。</div></div>`;
-
-  // 上期清單回顧（fix_review 由 normalize.py 算好存進月快照，這裡只渲染）
-  const fr = s.fix_review;
-  const hasReview = !!(fr && fr.items && fr.items.length);
-  const FR = { resolved:          { cls: "",     chip: "ok",    label: "本期未再出現" },
-               old_versions_only: { cls: "warn", chip: "warn",  label: "僅舊版仍出現" },
-               still_occurring:   { cls: "bad",  chip: "fatal", label: "最新版仍出現" } };
-  const frVer = it => it.status === "resolved" ? ""
-    : !it.version_known ? "版本不明"
-    : `最新見 ${esc(it.cur_last_seen_version || "?")}（全域最新 ${esc(it.latest_app_version || "?")}）`;
-  const reviewHtml = hasReview ? fr.items.map((it, i) => {
-    const st = FR[it.status] || FR.still_occurring;
-    return `
-    <div class="review-row ${st.cls} rise" style="--i:${5 + i}">
-      <span class="rank">${String(i + 1).padStart(2, "0")}</span>
-      <span><span class="t">${esc(it.title)}</span>
-        <span class="sub">${frVer(it)}</span></span>
-      <span class="nums">上期 ${fmt(it.prev?.events)}/${fmt(it.prev?.users)} → 本期 <b>${fmt(it.cur?.events)}/${fmt(it.cur?.users)}</b></span>
-      <span class="chip ${st.chip}">${st.label}</span>
-    </div>`;
-  }).join("") + `
-    <div class="srcnote">來源：${fr.source === "priority_list" ? "上期優先修復清單" : "上期 Top Issues（上期無 AI 清單）"}
-      ${+String(s.generated_at || "").slice(8, 10) < 15 ? "・本月資料未滿月，「未再出現」僅供參考" : ""}</div>` : "";
-  const secNo = hasReview ? { review: "02", prio: "03", top: "04" } : { prio: "02", top: "03" };
-
-  return `
-  <section class="kpis">
-    ${kpi(1, "EVENTS&nbsp;/&nbsp;事件數", `<span data-count="${k.events || 0}">0</span>`, deltaHtml(k.events, pk?.events))}
-    ${kpi(2, "USERS&nbsp;/&nbsp;受影響用戶", `<span data-count="${k.users || 0}">0</span>`, deltaHtml(k.users, pk?.users))}
-    ${kpi(3, "FATAL&nbsp;SHARE&nbsp;/&nbsp;佔比", fatalPct == null ? "—" : `${fatalPct}<span class="unit">%</span>`,
-          fatalPct == null ? "無事件" : "閃退事件佔全部事件（不含凍結）",
-          `<div class="meter"><i data-w="${fatalPct || 0}"></i></div>`)}
-    ${kpi(4, "ISSUES&nbsp;/&nbsp;問題數", `<span data-count="${k.issue_count || 0}">0</span>`, deltaHtml(k.issue_count, pk?.issue_count))}
-  </section>
-
-  <div class="sec"><span class="no">01</span><h2>趨勢與分布</h2><div class="rule"></div>
-    <span class="hint">CHART.JS // OFFLINE</span></div>
-  <section class="charts">
-    <div class="card chart-card span8 rise" style="--i:5"><h3>跨月趨勢 — 事件 / 用戶</h3>
-      <div class="chart-box"><canvas id="cTrend"></canvas><div class="nodata" id="nTrend" hidden>NO DATA</div></div></div>
-    <div class="card srcs span4 rise" style="--i:5">
-      <div class="srcrow ${s.sources?.crashlytics_bq ? "on" : "off"}"><b>Crashlytics BigQuery</b>
-        <span class="state">${s.sources?.crashlytics_bq ? "● ACTIVE" : "○ OFFLINE"}</span></div>
-      <div class="srcrow ${s.sources?.mcp_report ? "on" : "off"}"><b>Crashlytics API（MCP 報表）</b>
-        <span class="state">${s.sources?.mcp_report ? "● ACTIVE" : "○ OFFLINE"}</span></div>
-      <div class="srcrow ${s.sources?.manual_console ? "on" : "off"}"><b>Console 快照（人工）</b>
-        <span class="state">${s.sources?.manual_console ? "● ACTIVE" : "○ OFFLINE"}</span></div>
-      <div class="srcnote">深度資料（自訂 keys 族群交叉、週趨勢）以 BigQuery 為準；BQ 未接的 app 由
-        MCP 報表補 issue 清單與分布；Console 快照用於補歷史。月度摘要永久存於工具 repo 的 git。</div>
-    </div>
-    <div class="card chart-card span4 rise" style="--i:6"><h3>機型分布 <span class="src" id="sDev"></span></h3>
-      <div class="chart-box"><canvas id="cDev"></canvas><div class="nodata" id="nDev" hidden>NO DATA</div></div></div>
-    <div class="card chart-card span4 rise" style="--i:6"><h3>OS 版本分布</h3>
-      <div class="chart-box"><canvas id="cOs"></canvas><div class="nodata" id="nOs" hidden>NO DATA</div></div></div>
-    <div class="card chart-card span4 rise" style="--i:7"><h3>APP 版本分布</h3>
-      <div class="chart-box"><canvas id="cVer"></canvas><div class="nodata" id="nVer" hidden>NO DATA</div></div></div>
-    <div class="card chart-card span4 rise" style="--i:8"><h3>層級分布 <span class="src">// 全量事件</span></h3>
-      <div class="chart-box"><canvas id="cLvl"></canvas><div class="nodata" id="nLvl" hidden>NO DATA</div></div></div>
-    <div class="card chart-card span8 rise" style="--i:8"><h3>週趨勢 — 事件</h3>
-      <div class="chart-box"><canvas id="cWeek"></canvas><div class="nodata" id="nWeek" hidden>NO DATA</div></div></div>
-  </section>
-
-  ${hasReview ? `
-  <div class="sec"><span class="no">02</span><h2>上期清單回顧</h2><div class="rule"></div>
-    <span class="hint">FIX VERIFICATION // vs ${esc(fr.prev_month)}</span></div>
-  <section class="review-list">${reviewHtml}</section>` : ""}
-
-  <div class="sec"><span class="no">${secNo.prio}</span><h2>優先修復清單</h2><div class="rule"></div>
-    <span class="hint">SCORED // P = 用戶×3 + 閃退或凍結×2 + 惡化×2 + 最新版仍現×2 + 核心路徑×3 + 事件×1</span></div>
-  <section class="prio-list">${prioHtml}</section>
-
-  <div class="sec"><span class="no">${secNo.top}</span><h2>TOP ISSUES</h2><div class="rule"></div>
-    <span class="hint">點欄位排序・層級：閃退＝APP 強制關閉｜凍結＝畫面卡死無回應(ANR)｜非致命＝已捕捉錯誤未閃退</span></div>
-  <section class="tablewrap rise" style="--i:9"><table id="issues"><thead></thead><tbody></tbody></table></section>`;
+function showToast(msg) {
+  const t = $("toast");
+  t.textContent = msg;
+  t.classList.add("show");
+  setTimeout(() => t.classList.remove("show"), 2000);
 }
 
-function chartOpts(indexAxis) {
-  const dim = css("--dim"), line = css("--line-soft");
-  return {
-    responsive: true, maintainAspectRatio: false, indexAxis,
-    plugins: { legend: { labels: { color: dim, boxWidth: 10, boxHeight: 10,
-               font: { family: "SF Mono, Menlo, monospace", size: 10 } } } },
-    scales: {
-      x: { ticks: { color: dim, font: { family: "SF Mono, Menlo, monospace", size: 10 } }, grid: { color: line } },
-      y: { ticks: { color: dim, font: { family: "SF Mono, Menlo, monospace", size: 10 } }, grid: { color: line } },
-    },
-  };
-}
+// Navigation between views
+function switchView(viewName) {
+  document.querySelectorAll(".nav-item").forEach(el => el.classList.remove("active"));
+  const btn = $("nav-" + viewName);
+  if (btn) btn.classList.add("active");
 
-function hydrateCharts(s, months, app) {
-  document.querySelectorAll("[data-count]").forEach(el => countUp(el, +el.dataset.count));
-  requestAnimationFrame(() =>
-    document.querySelectorAll(".meter i").forEach(el => { el.style.width = el.dataset.w + "%"; }));
+  document.querySelectorAll(".view-container").forEach(el => el.classList.remove("active"));
+  const v = $("view-" + viewName);
+  if (v) v.classList.add("active");
 
-  const trendEv = months.map(x => app.months[x].kpis?.events ?? 0);
-  const trendUs = months.map(x => app.months[x].kpis?.users ?? 0);
-  if (months.length) {
-    charts.push(new Chart($("cTrend"), {
-      type: "line",
-      data: { labels: months, datasets: [
-        { label: "事件", data: trendEv, borderColor: css("--red"), backgroundColor: css("--trend-fill"),
-          fill: true, tension: .35, pointRadius: 3, borderWidth: 2 },
-        { label: "用戶", data: trendUs, borderColor: css("--blue"), tension: .35, pointRadius: 3, borderWidth: 2 },
-      ]},
-      options: chartOpts("x"),
-    }));
-  } else $("nTrend").hidden = false;
-
-  for (const [cid, nid, kind, srcEl] of [["cDev", "nDev", "device", "sDev"], ["cOs", "nOs", "os", null], ["cVer", "nVer", "app_version", null]]) {
-    const { rows, src } = mergedDist(s.distributions, kind);
-    if (srcEl && src) $(srcEl).textContent = `// ${src}`;
-    if (!rows.length) { $(nid).hidden = false; continue; }
-    charts.push(new Chart($(cid), {
-      type: "bar",
-      data: { labels: rows.map(r => `${r.label}${r.p === "iOS" ? " · iOS" : ""}`),
-              datasets: [{ label: "事件", data: rows.map(r => r.events),
-                           backgroundColor: rows.map(r => css(r.p === "iOS" ? "--bar-ios" : "--bar-and")),
-                           borderRadius: 2, barThickness: 12 }] },
-      options: { ...chartOpts("y"), plugins: { legend: { display: false } } },
-    }));
+  if (window.innerWidth <= 768) {
+    $("sidebar").classList.remove("mobile-open");
   }
-  // 層級分布（kpis 全量彙總；舊月快照缺欄時顯示 NO DATA）
-  const lvRows = [["閃退", s.kpis?.events_fatal, "--red"], ["凍結", s.kpis?.events_anr, "--amber"], ["非致命", s.kpis?.events_nonfatal, "--dim"]]
-    .filter(([, v]) => v > 0);
-  if (!lvRows.length) $("nLvl").hidden = false;
-  else charts.push(new Chart($("cLvl"), {
-    type: "doughnut",
-    data: { labels: lvRows.map(r => r[0]),
-            datasets: [{ data: lvRows.map(r => r[1]), backgroundColor: lvRows.map(r => css(r[2])), borderWidth: 0 }] },
-    options: { responsive: true, maintainAspectRatio: false, cutout: "62%",
-               plugins: { legend: { position: "right", labels: { color: css("--dim"), boxWidth: 10, font: { size: 10 } } } } },
-  }));
-
-  // 週趨勢（BQ 或 MCP 自建；週 key %Y-%W）
-  const wk = {};
-  for (const r of s.weekly_trend || []) wk[r.week] = (wk[r.week] || 0) + (r.events || 0);
-  const weeks = Object.keys(wk).sort();
-  if (!weeks.length) $("nWeek").hidden = false;
-  else charts.push(new Chart($("cWeek"), {
-    type: "line",
-    data: { labels: weeks, datasets: [{ label: "事件", data: weeks.map(w => wk[w]), borderColor: css("--red"),
-            backgroundColor: css("--trend-fill"), fill: true, tension: .35, pointRadius: 3, borderWidth: 2 }] },
-    options: { ...chartOpts("x"), plugins: { legend: { display: false } } },
-  }));
-
-  renderTable((s.top_issues || []));
 }
 
-function renderTable(rows) {
-  const cols = [["platform", "平台"], ["title", "標題 / 位置"], ["fatal", "層級"], ["events", "事件"],
-                ["users", "用戶"], ["first_seen_version", "首見"], ["last_seen_version", "最新見"], ["source", "來源"]];
-  const sorted = [...rows].sort((a, b) => {
-    const x = a[sortKey] ?? "", y = b[sortKey] ?? "";
-    return (typeof x === "number" || typeof x === "boolean"
-      ? Number(x) - Number(y) : String(x).localeCompare(String(y))) * (sortAsc ? 1 : -1);
+function switchApp(appId) {
+  if (DATA.apps && DATA.apps[appId]) {
+    curAppId = appId;
+    $("appSelector").value = appId;
+    renderAll();
+  }
+}
+
+let curSortField = "priority";
+let curSortAsc = false;
+
+function setPeriod(days) {
+  const app = getCurAppData();
+  const availableDays = (app?.daily_trend || []).length || app?.period?.days || 30;
+  if (days > availableDays) {
+    showToast(`目前資料僅有 ${availableDays} 天，無法檢視 ${days} 天`);
+    return;
+  }
+  curPeriodDays = Number(days);
+  document.querySelectorAll(".period-btn").forEach(b => b.classList.remove("active"));
+  const b = $("p-" + days + "d");
+  if (b) b.classList.add("active");
+
+  renderKPIs();
+  renderCharts();
+}
+
+function setSort(field) {
+  if (curSortField === field) {
+    curSortAsc = !curSortAsc;
+  } else {
+    curSortField = field;
+    curSortAsc = false;
+  }
+  renderIssuesList();
+}
+
+function handleSearch(val) {
+  searchQuery = (val || "").trim().toLowerCase();
+  renderIssuesList();
+}
+
+function getCurAppData() {
+  return (DATA.apps && DATA.apps[curAppId]) ? DATA.apps[curAppId] : null;
+}
+
+// Render Header Elements
+function renderHeader() {
+  const sel = $("appSelector");
+  const apps = DATA.apps || {};
+  sel.innerHTML = Object.keys(apps).map(id => {
+    const meta = apps[id].metadata || {};
+    const name = meta.display_name || id;
+    return `<option value="${esc(id)}" ${id === curAppId ? "selected" : ""}>${esc(name)} (${id})</option>`;
+  }).join("");
+
+  const app = getCurAppData();
+  if (!app) return;
+
+  // Period buttons availability verification (prevent pretending 90d when data is only 30d)
+  const availableDays = (app.daily_trend || []).length || app.period?.days || 30;
+  [7, 30, 90].forEach(d => {
+    const btn = $("p-" + d + "d");
+    if (btn) {
+      if (availableDays < d) {
+        btn.disabled = true;
+        btn.title = `目前資料僅提供 ${availableDays} 天，無法檢視 ${d} 天`;
+        btn.classList.add("disabled");
+        btn.style.opacity = "0.45";
+        btn.style.cursor = "not-allowed";
+      } else {
+        btn.disabled = false;
+        btn.title = `切換為 ${d} 天趨勢`;
+        btn.classList.remove("disabled");
+        btn.style.opacity = "1";
+        btn.style.cursor = "pointer";
+      }
+    }
   });
-  document.querySelector("#issues thead").innerHTML = "<tr>" + cols.map(([key, label]) =>
-    `<th class="${key === sortKey ? "sorted" + (sortAsc ? " asc" : "") : ""}" onclick="sortBy('${key}')">${label}</th>`).join("") + "</tr>";
-  document.querySelector("#issues tbody").innerHTML = sorted.length ? sorted.map(r => `<tr>
-    <td>${platIcon(r.platform)}</td>
-    <td><div>${esc(r.title)}</div><div class="subtle">${esc(r.subtitle || "")}</div></td>
-    <td>${levelChip(r)}</td>
-    <td class="num">${fmt(r.events)}</td><td class="num">${fmt(r.users)}</td>
-    <td class="num">${esc(r.first_seen_version || "—")}</td><td class="num">${esc(r.last_seen_version || "—")}</td>
-    <td><span class="chip info">${(r.source || "").replace("crashlytics_bq", "BQ").replace("mcp_report", "MCP").replace("manual_console", "CONSOLE")}</span></td>
-  </tr>`).join("") : `<tr class="empty-row"><td colspan="8">本期無 ISSUE 資料</td></tr>`;
-}
+  if (curPeriodDays > availableDays) {
+    curPeriodDays = availableDays >= 30 ? 30 : (availableDays >= 7 ? 7 : availableDays);
+  }
+  document.querySelectorAll(".period-btn").forEach(b => b.classList.remove("active"));
+  const activeBtn = $("p-" + (curPeriodDays || 30) + "d");
+  if (activeBtn && !activeBtn.disabled) activeBtn.classList.add("active");
 
-function switchApp(a) { curApp = a; sortKey = "users"; sortAsc = false; render(); }
-// 排序只重畫表格——整頁 render() 會 destroy 重建所有圖表（動畫重跑），視覺上像整頁刷新
-function currentRows() { const m = monthsOf(curApp).at(-1); return DATA.apps[curApp].months[m]?.top_issues || []; }
-function sortBy(k) { sortAsc = sortKey === k ? !sortAsc : false; sortKey = k; renderTable(currentRows()); }
-
-// 「複製給 agent」——把該修復項組成自包含 markdown，一鍵貼給 coding agent 處理
-const TREND_ZH = { new: "新增", worse: "惡化", stable: "穩定" };
-function buildFixPrompt(p) {
-  const app = DATA.apps[curApp], plat = p.platform === "ios" ? "iOS" : "Android";
-  const level = (LEVEL[levelOf(p)] || ["", p.error_type || ""])[1];
-  const fence = "```";
-  const L = [
-    "# Crash 修復請求：" + (p.title || ""),
-    "",
-    "- App：" + app.display_name + "（" + plat + "）",
-    "- 層級：" + level + "（" + (p.error_type || "") + "）",
-    "- 影響：" + (p.users || 0).toLocaleString() + " 位用戶 / " + (p.events || 0).toLocaleString() + " 次事件，趨勢：" + (TREND_ZH[p.trend] || p.trend || "—"),
-    "- 版本：" + (p.first_seen_version || "?") + " → " + (p.last_seen_version || "?"),
+  const srcs = app.sources || {};
+  const badgeWrap = $("headerSourceBadges");
+  const sKeys = [
+    ["BigQuery", srcs.crashlytics_bq],
+    ["Sessions", srcs.firebase_sessions],
+    ["Gemini AI", srcs.gemini_ai]
   ];
-  if (p.blame_file) L.push("- 程式碼位置：" + p.blame_file + (p.blame_line ? ":" + p.blame_line : ""));
-  if (p.code_location) L.push("- 錯誤訊息：" + p.code_location);
-  L.push("", "## Root cause 推測（AI 分析）", p.root_cause || "需人工確認",
-         "", "## 建議修法（AI 分析，工作量 " + (p.effort || "?") + "）", p.suggested_fix || "—");
-  if (p.stack_trace) L.push("", "## Stack trace（Crashlytics 實際堆疊）", fence, p.stack_trace, fence);
-  L.push("", "請依上述 stack trace 與程式碼位置定位 root cause 並修復；修好後說明改了什麼、為什麼。");
-  return L.join("\n");
-}
-function flashCopied(i, ok) {
-  const b = document.getElementById("copy-" + i);
-  if (!b) return;
-  b.textContent = ok ? "已複製 ✓" : "複製失敗";
-  b.classList.add("done");
-  setTimeout(() => { b.textContent = "COPY ⧉"; b.classList.remove("done"); }, 1600);
-}
-function copyFix(i) {
-  const m = monthsOf(curApp).at(-1);
-  const p = (DATA.apps[curApp].months[m].priority_list || [])[i];
-  if (!p) return;
-  const txt = buildFixPrompt(p);
-  if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(txt).then(() => flashCopied(i, true)).catch(() => legacyCopy(txt, i));
-  } else legacyCopy(txt, i);
-}
-function legacyCopy(txt, i) {  // 離線 file:// 下 clipboard API 常被擋，退回 textarea + execCommand
-  const ta = document.createElement("textarea");
-  ta.value = txt; ta.style.position = "fixed"; ta.style.opacity = "0";
-  document.body.appendChild(ta); ta.focus(); ta.select();
-  let ok = false;
-  try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
-  document.body.removeChild(ta);
-  if (ok) flashCopied(i, true); else showManual(txt);  // 兩種都失敗 → 給手動複製浮層，不讓使用者卡住
-}
-function showManual(txt) {
-  const ov = document.createElement("div");
-  ov.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,.55);display:grid;place-items:center;z-index:99;padding:24px";
-  const box = document.createElement("div");
-  box.style.cssText = "background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:16px;max-width:760px;width:100%;display:flex;flex-direction:column;gap:10px";
-  const hint = document.createElement("div");
-  hint.textContent = "自動複製被瀏覽器擋下——請按 Cmd/Ctrl+C 複製下方內容，或點右上關閉：";
-  hint.style.cssText = "font:12px var(--mono);color:var(--dim)";
-  const ta = document.createElement("textarea");
-  ta.value = txt; ta.readOnly = true;
-  ta.style.cssText = "width:100%;height:52vh;font:12px/1.5 var(--mono);white-space:pre;overflow:auto;background:var(--panel-2);color:var(--ink);border:1px solid var(--line);border-radius:4px;padding:10px";
-  const close = document.createElement("button");
-  close.className = "copybtn"; close.textContent = "關閉"; close.style.alignSelf = "flex-end";
-  close.onclick = () => ov.remove();
-  box.append(hint, ta, close); ov.append(box); document.body.appendChild(ov);
-  ta.focus(); ta.select();
+  badgeWrap.innerHTML = sKeys.map(([name, obj]) => {
+    const st = obj ? obj.status : "unavailable";
+    return `<span class="src-chip" title="${name}: ${st}"><span class="src-dot ${st}"></span>${name}</span>`;
+  }).join("");
 }
 
-if (appNames.length) render();
-else document.body.innerHTML = '<div style="display:grid;place-content:center;min-height:90vh;color:#6b7890;font:12px/2 SF Mono,Menlo,monospace;letter-spacing:.2em">尚無任何 APP 的月度資料 — 先跑 NORMALIZE.PY</div>';
+// Render KPI Cards
+function renderKPIs() {
+  const app = getCurAppData();
+  if (!app) return;
+
+  const kpi = app.kpi || {};
+  const meta = app.metadata || {};
+  const period = app.period || {};
+
+  const pDays = period.days || 30;
+  const startStr = (period.start_time || "").slice(0, 10);
+  const endStr = (period.end_time || "").slice(0, 10);
+  $("overviewPeriodSubtitle").textContent = `${meta.display_name || curAppId} · 總覽指標 (${pDays} 天：${startStr} ~ ${endStr})`;
+
+  // Authoritative metrics directly from Schema V2 (no client-side derivation)
+  const totalEvents = kpi.crash_events?.value || 0;
+  const totalUsers = kpi.affected_users?.value || 0;
+  const fatalEvents = kpi.events_by_error_type?.fatal || 0;
+  const anrEvents = kpi.events_by_error_type?.anr || 0;
+  const nonFatalEvents = kpi.events_by_error_type?.non_fatal || 0;
+
+  // 1. Crash-free Users
+  const cfu = kpi.crash_free_users || {};
+  const cfuVal = $("kpiCFUsers");
+  const cfuProg = $("cfUsersProgress");
+  const cfuDelta = $("kpiCFUsersDelta");
+  const cfuCounts = $("kpiCFUsersCounts");
+
+  if (cfu.status === "available" && cfu.rate != null) {
+    const ratePct = (cfu.rate * 100).toFixed(2);
+    cfuVal.innerHTML = `${ratePct}<span style="font-size:16px;font-weight:600;margin-left:2px">%</span>`;
+    cfuVal.classList.remove("unavailable-text");
+
+    const circumference = 2 * Math.PI * 18; // ~113.097
+    const offset = circumference * (1 - cfu.rate);
+    cfuProg.style.strokeDashoffset = offset;
+
+    if (cfu.change_pct_points != null) {
+      const isUp = cfu.change_pct_points >= 0;
+      cfuDelta.className = `delta-pill ${isUp ? "good" : "bad"}`;
+      cfuDelta.innerHTML = `${isUp ? "▲ +" : "▼ "}${cfu.change_pct_points.toFixed(2)}% vs 上期`;
+    } else {
+      cfuDelta.className = "delta-pill neutral";
+      cfuDelta.textContent = "無基期";
+    }
+    cfuCounts.textContent = `${fmt(cfu.crashed)} 崩潰 / ${fmt(cfu.total)} 用戶`;
+  } else {
+    // Explicit Unavailable semantics - strictly no 0%
+    cfuVal.innerHTML = `<span class="kpi-badge-unavailable">Unavailable</span>`;
+    cfuVal.classList.add("unavailable-text");
+    cfuProg.style.strokeDashoffset = 113.097;
+    cfuDelta.className = "delta-pill neutral";
+    cfuDelta.textContent = cfu.unavailable_reason || "Firebase Sessions 未啟用";
+    cfuCounts.textContent = "—";
+  }
+
+  // 2. Crash Events
+  const ev = kpi.crash_events || {};
+  $("kpiEvents").textContent = fmt(totalEvents);
+  const evDelta = $("kpiEventsDelta");
+  if (ev.change_pct != null) {
+    const isDown = ev.change_pct <= 0;
+    evDelta.className = `delta-pill ${isDown ? "good" : "bad"}`;
+    evDelta.innerHTML = `${ev.change_pct > 0 ? "▲ +" : "▼ "}${ev.change_pct.toFixed(1)}% vs 上期`;
+  } else {
+    evDelta.className = "delta-pill neutral";
+    evDelta.textContent = "無基期";
+  }
+  $("kpiErrorBreakdown").textContent = `Fatal: ${fmt(fatalEvents)} · ANR: ${fmt(anrEvents)} · Non-fatal: ${fmt(nonFatalEvents)}`;
+
+  // 3. Affected Users
+  const us = kpi.affected_users || {};
+  $("kpiUsers").textContent = fmt(totalUsers);
+  const usDelta = $("kpiUsersDelta");
+  if (us.change_pct != null) {
+    const isDown = us.change_pct <= 0;
+    usDelta.className = `delta-pill ${isDown ? "good" : "bad"}`;
+    usDelta.innerHTML = `${us.change_pct > 0 ? "▲ +" : "▼ "}${us.change_pct.toFixed(1)}% vs 上期`;
+  } else {
+    usDelta.className = "delta-pill neutral";
+    usDelta.textContent = "無基期";
+  }
+
+  // 4. New Issues
+  const ni = kpi.new_issues_count || {};
+  $("kpiNewIssues").textContent = fmt(ni.value);
+  const niDelta = $("kpiNewIssuesDelta");
+  if (ni.change_pct != null) {
+    const isDown = ni.change_pct <= 0;
+    niDelta.className = `delta-pill ${isDown ? "good" : "bad"}`;
+    niDelta.innerHTML = `${ni.change_pct > 0 ? "▲ +" : "▼ "}${ni.change_pct.toFixed(1)}% vs 上期`;
+  } else {
+    niDelta.className = "delta-pill neutral";
+    niDelta.textContent = "無基期";
+  }
+}
+
+// Render AI Summary Cards
+function renderAISummaries() {
+  const app = getCurAppData();
+  if (!app) return;
+  const ai = app.ai_summary || {};
+
+  const modelText = ai.model || "Gemini Flash";
+  $("aiModelTag").textContent = modelText;
+  $("aiFullModelTag").textContent = modelText;
+
+  const overview = ai.overview || "尚無 AI 策略分析。";
+  $("aiOverviewText").textContent = overview;
+  $("aiFullOverviewText").textContent = overview;
+
+  const takeaways = ai.key_takeaways || [];
+  const takeawaysHtml = takeaways.map(t =>
+    `<div class="ai-takeaway-item">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" style="flex-shrink:0;margin-top:2px"><polyline points="20 6 9 17 4 12"/></svg>
+      <span>${esc(t)}</span>
+    </div>`
+  ).join("");
+
+  $("aiTakeawaysList").innerHTML = takeawaysHtml;
+  $("aiFullTakeawaysList").innerHTML = takeawaysHtml;
+  $("aiDistributionInsights").textContent = ai.distribution_insights || "—";
+
+  // Recommended actions
+  const actions = ai.recommended_actions || [];
+  const actBody = $("recommendedActionsTableBody");
+  if (actions.length) {
+    actBody.innerHTML = actions.map(act => `
+      <tr>
+        <td><span class="badge badge-${(act.priority || "p2").toLowerCase()}">${esc(act.priority)}</span></td>
+        <td class="mono-num">${esc(act.issue_id)}</td>
+        <td><b>${esc(act.action)}</b></td>
+        <td><span class="badge" style="background:var(--bg-subtle)">工作量 ${esc(act.effort || "?")}</span></td>
+      </tr>
+    `).join("");
+  } else {
+    actBody.innerHTML = `<tr><td colspan="4" class="empty-state">尚無推薦行動</td></tr>`;
+  }
+}
+
+// Chart Helpers
+function getChartColors() {
+  const isDark = document.documentElement.dataset.theme === "dark";
+  return {
+    text: isDark ? "#94a3b8" : "#64748b",
+    grid: isDark ? "#1e293b" : "#f1f5f9",
+    accent: isDark ? "#3b82f6" : "#2563eb",
+    danger: isDark ? "#f87171" : "#ef4444",
+    warning: isDark ? "#fbbf24" : "#f59e0b",
+    success: isDark ? "#34d399" : "#10b981",
+  };
+}
+
+function destroyChart(id) {
+  if (chartInstances[id]) {
+    chartInstances[id].destroy();
+    delete chartInstances[id];
+  }
+}
+
+function renderCharts() {
+  if (typeof Chart === "undefined") return;
+  const app = getCurAppData();
+  if (!app) return;
+  const colors = getChartColors();
+  const period = app.period || {};
+
+  // 1. Daily Trend (sliced by curPeriodDays)
+  destroyChart("chartDailyTrend");
+  const daily = app.daily_trend || [];
+  const activeDays = Math.min(curPeriodDays || period.days || 30, daily.length || 30);
+  const activeDaily = daily.slice(-activeDays);
+
+  const subEl = $("dailyTrendChartSubtitle");
+  if (subEl) {
+    if (curPeriodDays && curPeriodDays > daily.length) {
+      subEl.textContent = `事件數與受影響用戶（實際僅有 ${daily.length} 天資料）`;
+    } else {
+      subEl.textContent = `事件數與受影響用戶每日變化（顯示最近 ${activeDaily.length} 天）`;
+    }
+  }
+
+  const trendCtx = $("chartDailyTrend");
+  if (trendCtx && activeDaily.length) {
+    chartInstances["chartDailyTrend"] = new Chart(trendCtx, {
+      type: "line",
+      data: {
+        labels: activeDaily.map(d => d.date.slice(5)),
+        datasets: [
+          {
+            label: "事件數 (Events)",
+            data: activeDaily.map(d => d.crash_events),
+            borderColor: colors.danger,
+            backgroundColor: "rgba(239, 68, 68, 0.08)",
+            fill: true,
+            tension: 0.3,
+            borderWidth: 2,
+            pointRadius: 2,
+          },
+          {
+            label: "受影響用戶 (Users)",
+            data: activeDaily.map(d => d.affected_users),
+            borderColor: colors.accent,
+            backgroundColor: "transparent",
+            tension: 0.3,
+            borderWidth: 2,
+            pointRadius: 2,
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { position: "top", labels: { color: colors.text, boxWidth: 12 } }
+        },
+        scales: {
+          x: { ticks: { color: colors.text }, grid: { color: colors.grid } },
+          y: { ticks: { color: colors.text }, grid: { color: colors.grid } }
+        }
+      }
+    });
+  }
+
+  // 2. Error Types
+  destroyChart("chartErrorTypes");
+  const errCtx = $("chartErrorTypes");
+  const kpiErr = app.kpi?.events_by_error_type || {};
+  if (errCtx) {
+    chartInstances["chartErrorTypes"] = new Chart(errCtx, {
+      type: "doughnut",
+      data: {
+        labels: ["Fatal 閃退", "ANR 凍結", "Non-fatal 非致命"],
+        datasets: [{
+          data: [kpiErr.fatal || 0, kpiErr.anr || 0, kpiErr.non_fatal || 0],
+          backgroundColor: [colors.danger, colors.warning, "#94a3b8"],
+          borderWidth: 0,
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        cutout: "68%",
+        plugins: {
+          legend: { position: "bottom", labels: { color: colors.text, boxWidth: 10 } }
+        }
+      }
+    });
+  }
+
+  // 3. Platform Breakdown
+  destroyChart("chartPlatforms");
+  const platCtx = $("chartPlatforms");
+  const platData = app.distributions?.platform || [];
+  if (platCtx && platData.length) {
+    chartInstances["chartPlatforms"] = new Chart(platCtx, {
+      type: "bar",
+      data: {
+        labels: platData.map(p => p.name.toUpperCase()),
+        datasets: [
+          {
+            label: "事件數",
+            data: platData.map(p => p.events),
+            backgroundColor: colors.accent,
+            borderRadius: 4,
+          },
+          {
+            label: "用戶數",
+            data: platData.map(p => p.users),
+            backgroundColor: "#94a3b8",
+            borderRadius: 4,
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { position: "top", labels: { color: colors.text, boxWidth: 12 } } },
+        scales: {
+          x: { ticks: { color: colors.text }, grid: { display: false } },
+          y: { ticks: { color: colors.text }, grid: { color: colors.grid } }
+        }
+      }
+    });
+  }
+
+  // 4. App Versions
+  destroyChart("chartAppVersions");
+  const verCtx = $("chartAppVersions");
+  const verData = app.distributions?.app_versions || [];
+  if (verCtx && verData.length) {
+    chartInstances["chartAppVersions"] = new Chart(verCtx, {
+      type: "bar",
+      data: {
+        labels: verData.map(v => v.app_version),
+        datasets: [{
+          label: "事件數",
+          data: verData.map(v => v.events),
+          backgroundColor: colors.danger,
+          borderRadius: 4,
+        }]
+      },
+      options: {
+        indexAxis: "y",
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { ticks: { color: colors.text }, grid: { color: colors.grid } },
+          y: { ticks: { color: colors.text }, grid: { display: false } }
+        }
+      }
+    });
+  }
+
+  // 5. Device Models
+  destroyChart("chartDeviceModels");
+  const devCtx = $("chartDeviceModels");
+  const devData = app.distributions?.device_models || [];
+  if (devCtx && devData.length) {
+    chartInstances["chartDeviceModels"] = new Chart(devCtx, {
+      type: "bar",
+      data: {
+        labels: devData.slice(0, 8).map(d => d.model),
+        datasets: [{
+          label: "事件數",
+          data: devData.slice(0, 8).map(d => d.events),
+          backgroundColor: colors.accent,
+          borderRadius: 4,
+        }]
+      },
+      options: {
+        indexAxis: "y",
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { ticks: { color: colors.text }, grid: { color: colors.grid } },
+          y: { ticks: { color: colors.text }, grid: { display: false } }
+        }
+      }
+    });
+  }
+
+  // 6. OS Versions
+  destroyChart("chartOSVersions");
+  const osCtx = $("chartOSVersions");
+  const osData = app.distributions?.os_versions || [];
+  if (osCtx && osData.length) {
+    chartInstances["chartOSVersions"] = new Chart(osCtx, {
+      type: "bar",
+      data: {
+        labels: osData.slice(0, 8).map(o => o.os_version),
+        datasets: [{
+          label: "事件數",
+          data: osData.slice(0, 8).map(o => o.events),
+          backgroundColor: colors.warning,
+          borderRadius: 4,
+        }]
+      },
+      options: {
+        indexAxis: "y",
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { ticks: { color: colors.text }, grid: { color: colors.grid } },
+          y: { ticks: { color: colors.text }, grid: { display: false } }
+        }
+      }
+    });
+  }
+}
+
+// Render Issues Accordion & Table with Sorting
+function renderIssuesList() {
+  const app = getCurAppData();
+  if (!app) return;
+  const issues = app.top_issues || [];
+
+  const filterErr = $("filterErrorType") ? $("filterErrorType").value : "ALL";
+  const filterPlat = $("filterPlatform") ? $("filterPlatform").value : "ALL";
+  const filterPrio = $("filterPriority") ? $("filterPriority").value : "ALL";
+
+  const filtered = issues.filter(iss => {
+    if (filterErr !== "ALL" && iss.error_type !== filterErr) return false;
+    if (filterPlat !== "ALL" && iss.platform !== filterPlat) return false;
+    if (filterPrio !== "ALL" && iss.priority?.level !== filterPrio) return false;
+    if (searchQuery) {
+      const target = `${iss.title} ${iss.subtitle} ${iss.issue_id} ${iss.blame_frame?.file || ""}`.toLowerCase();
+      if (!target.includes(searchQuery)) return false;
+    }
+    return true;
+  });
+
+  // Sort filtered list
+  filtered.sort((a, b) => {
+    let valA, valB;
+    if (curSortField === "priority") {
+      valA = a.priority?.score ?? 0;
+      valB = b.priority?.score ?? 0;
+    } else if (curSortField === "events") {
+      valA = a.events ?? 0;
+      valB = b.events ?? 0;
+    } else if (curSortField === "users") {
+      valA = a.affected_users ?? 0;
+      valB = b.affected_users ?? 0;
+    } else if (curSortField === "last_seen") {
+      valA = a.last_seen_timestamp || "";
+      valB = b.last_seen_timestamp || "";
+    } else {
+      valA = a.events ?? 0;
+      valB = b.events ?? 0;
+    }
+    if (valA < valB) return curSortAsc ? -1 : 1;
+    if (valA > valB) return curSortAsc ? 1 : -1;
+    return 0;
+  });
+
+  $("issuesCountBadge").textContent = `顯示 ${filtered.length} / ${issues.length} 個問題 (排序: ${curSortField} ${curSortAsc ? '▲' : '▼'})`;
+
+  // Overview quick preview
+  const prevBody = $("topIssuesPreviewBody");
+  if (prevBody) {
+    prevBody.innerHTML = filtered.slice(0, 5).map(iss => {
+      const pLevel = iss.priority?.level || "P2";
+      const errCls = iss.error_type === "FATAL" ? "badge-fatal" : (iss.error_type === "ANR" ? "badge-anr" : "badge-nonfatal");
+      return `
+        <tr>
+          <td><span class="badge badge-${pLevel.toLowerCase()}">${esc(pLevel)}</span></td>
+          <td>
+            <div style="font-weight:600">${esc(iss.title)}</div>
+            <div style="font-size:11px;font-family:var(--font-mono);color:var(--text-muted)">${esc(iss.subtitle || "")}</div>
+          </td>
+          <td><span class="badge" style="background:var(--bg-subtle)">${esc(iss.platform)}</span></td>
+          <td><span class="badge ${errCls}">${esc(iss.error_type)}</span></td>
+          <td class="mono-num">${fmt(iss.events)}</td>
+          <td class="mono-num">${fmt(iss.affected_users)}</td>
+          <td class="mono-num">${esc(iss.last_seen_version || "—")}</td>
+        </tr>
+      `;
+    }).join("") || `<tr><td colspan="7" class="empty-state">尚無問題資料</td></tr>`;
+  }
+
+  // Full Issues Accordion List
+  const container = $("issuesListContainer");
+  if (!filtered.length) {
+    container.innerHTML = `<div class="empty-state"><div class="empty-state-title">無符合條件之問題</div></div>`;
+    return;
+  }
+
+  container.innerHTML = filtered.map((iss, idx) => {
+    const pLevel = iss.priority?.level || "P2";
+    const errCls = iss.error_type === "FATAL" ? "badge-fatal" : (iss.error_type === "ANR" ? "badge-anr" : "badge-nonfatal");
+    const ai = iss.ai_analysis || {};
+    const blame = iss.blame_frame || {};
+    const detail = iss.detail || {};
+
+    return `
+      <div class="issue-accordion" id="issue-acc-${idx}">
+        <div class="issue-summary-row" onclick="toggleIssueDetail(${idx})">
+          <span class="issue-rank">${String(idx + 1).padStart(2, "0")}</span>
+          <span class="badge badge-${pLevel.toLowerCase()}">${esc(pLevel)}</span>
+          <span class="badge ${errCls}">${esc(iss.error_type)}</span>
+          <div class="issue-title-group">
+            <div class="issue-main-title">${esc(iss.title)}</div>
+            <div class="issue-sub-title">${esc(iss.subtitle || "")}</div>
+          </div>
+          <div class="issue-stats-group">
+            <span>${esc(iss.platform.toUpperCase())}</span>
+            <span><b>${fmt(iss.events)}</b> 次事件</span>
+            <span><b>${fmt(iss.affected_users)}</b> 位用戶</span>
+            <span style="font-size:11px">見於 ${esc(iss.last_seen_version || "?")}</span>
+          </div>
+        </div>
+
+        <div class="issue-detail-panel" id="issue-detail-${idx}">
+          <div class="detail-grid">
+            <div class="detail-box">
+              <div class="detail-box-title">AI Root Cause 推測</div>
+              <div class="detail-box-content">${esc(ai.root_cause || "待分析")}</div>
+            </div>
+            <div class="detail-box">
+              <div class="detail-box-title">AI 建議修法 (預估工作量 ${esc(ai.effort || "?")})</div>
+              <div class="detail-box-content">${esc(ai.suggested_fix || "待分析")}</div>
+            </div>
+          </div>
+
+          ${blame.file ? `
+            <div class="detail-box">
+              <div class="detail-box-title">元兇程式碼位置 (Blame Frame)</div>
+              <div class="detail-box-content" style="font-family:var(--font-mono);font-size:12px">
+                <code>${esc(blame.file)}${blame.line ? ":" + esc(blame.line) : ""}</code>
+                ${blame.symbol ? ` · <code>${esc(blame.symbol)}</code>` : ""}
+              </div>
+            </div>
+          ` : ""}
+
+          ${detail.stack_trace ? `
+            <div class="detail-box">
+              <div class="detail-box-title">Crashlytics Stack Trace</div>
+              <pre class="code-stack">${esc(detail.stack_trace)}</pre>
+            </div>
+          ` : ""}
+
+          <button class="btn-copy-prompt" onclick="copyFixPrompt(${idx})">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+            複製 AI 修復 Prompt
+          </button>
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
+function toggleIssueDetail(idx) {
+  const panel = $("issue-detail-" + idx);
+  if (panel) panel.classList.toggle("open");
+}
+
+function copyFixPrompt(idx) {
+  const app = getCurAppData();
+  if (!app) return;
+  const iss = (app.top_issues || [])[idx];
+  if (!iss) return;
+
+  const ai = iss.ai_analysis || {};
+  const blame = iss.blame_frame || {};
+  const detail = iss.detail || {};
+
+  const promptLines = [
+    `# Crash 修復請求：${iss.title}`,
+    "",
+    `- App: ${app.metadata?.display_name || curAppId} (${iss.platform})`,
+    `- Issue ID: ${iss.issue_id}`,
+    `- 層級: ${iss.error_type} | 優先級: ${iss.priority?.level || "P2"} (分數: ${iss.priority?.score || 0})`,
+    `- 影響: ${fmt(iss.affected_users)} 位用戶 / ${fmt(iss.events)} 次崩潰事件`,
+    `- 版本範圍: ${iss.first_seen_version || "?"} → ${iss.last_seen_version || "?"}`,
+  ];
+
+  if (blame.file) promptLines.push(`- 元兇位置: ${blame.file}${blame.line ? ":" + blame.line : ""}`);
+  if (iss.subtitle) promptLines.push(`- 錯誤特徵: ${iss.subtitle}`);
+
+  promptLines.push("", "## AI 分析與建議", `Root Cause: ${ai.root_cause || "需人工檢驗"}`, `建議修法: ${ai.suggested_fix || "—"}`);
+
+  if (detail.stack_trace) {
+    promptLines.push("", "## Stack Trace", "```", detail.stack_trace, "```");
+  }
+
+  promptLines.push("", "請依據上述資訊定位 Root cause 並進行代碼修復。修復完成後請說明修正方案。");
+
+  const fullText = promptLines.join("\n");
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(fullText).then(() => showToast("已複製 AI 修復 Prompt")).catch(() => fallbackCopy(fullText));
+  } else {
+    fallbackCopy(fullText);
+  }
+}
+
+function fallbackCopy(text) {
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  try {
+    document.execCommand("copy");
+    showToast("已複製 AI 修復 Prompt");
+  } catch (e) {
+    showToast("複製失敗，請手動複製");
+  }
+  document.body.removeChild(ta);
+}
+
+// Render Version Health Table
+function renderVersionHealth() {
+  const app = getCurAppData();
+  if (!app) return;
+  const list = app.version_health || [];
+  const tbody = $("versionHealthTableBody");
+  if (!tbody) return;
+
+  if (!list.length) {
+    tbody.innerHTML = `<tr><td colspan="10" class="empty-state">尚無版本健康度資料</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = list.map(v => {
+    const cfuRate = (v.crash_free_users_rate != null) ? `${(v.crash_free_users_rate * 100).toFixed(2)}%` : "Unavailable";
+    const cfsRate = (v.crash_free_sessions_rate != null) ? `${(v.crash_free_sessions_rate * 100).toFixed(2)}%` : "Unavailable";
+    const adopt = (v.adoption_rate != null) ? `${(v.adoption_rate * 100).toFixed(1)}%` : "—";
+    const stCls = `badge-${v.status || "active"}`;
+
+    return `
+      <tr>
+        <td class="mono-num"><b>${esc(v.version)}</b></td>
+        <td><span class="badge" style="background:var(--bg-subtle)">${esc(v.platform)}</span></td>
+        <td class="mono-num">${esc(v.release_date || "—")}</td>
+        <td><span class="badge badge-status ${stCls}">${esc(v.status)}</span></td>
+        <td><span class="badge" style="background:var(--bg-subtle)">${esc(v.trend)}</span></td>
+        <td class="mono-num">${cfuRate}</td>
+        <td class="mono-num">${cfsRate}</td>
+        <td class="mono-num">${adopt}</td>
+        <td class="mono-num">${fmt(v.crash_events)}</td>
+        <td class="mono-num">${fmt(v.affected_users)}</td>
+      </tr>
+    `;
+  }).join("");
+}
+
+// Render Devices Table
+function renderDevicesTable() {
+  const app = getCurAppData();
+  if (!app) return;
+  const models = app.distributions?.device_models || [];
+  const tbody = $("deviceModelsTableBody");
+  if (!tbody) return;
+
+  tbody.innerHTML = models.map(m => `
+    <tr>
+      <td><b>${esc(m.model)}</b></td>
+      <td><span class="badge" style="background:var(--bg-subtle)">${esc(m.platform)}</span></td>
+      <td class="mono-num">${fmt(m.events)}</td>
+      <td class="mono-num">${fmt(m.users)}</td>
+      <td class="mono-num">${(m.share * 100).toFixed(1)}%</td>
+    </tr>
+  `).join("") || `<tr><td colspan="5" class="empty-state">尚無機型資料</td></tr>`;
+}
+
+// Render Releases Table
+function renderReleasesTable() {
+  const app = getCurAppData();
+  if (!app) return;
+  const list = app.version_health || [];
+  const tbody = $("releasesTableBody");
+  if (!tbody) return;
+
+  tbody.innerHTML = list.map(v => `
+    <tr>
+      <td class="mono-num"><b>${esc(v.version)}</b></td>
+      <td class="mono-num">${esc(v.release_date || "—")}</td>
+      <td><span class="badge badge-status badge-${v.status}">${esc(v.status)}</span></td>
+      <td class="mono-num">${fmt(v.crash_events)}</td>
+      <td class="mono-num">${fmt(v.affected_users)}</td>
+      <td class="mono-num">${v.crash_free_users_rate != null ? (v.crash_free_users_rate * 100).toFixed(2) + "%" : "Unavailable"}</td>
+      <td class="mono-num">${v.adoption_rate != null ? (v.adoption_rate * 100).toFixed(1) + "%" : "—"}</td>
+    </tr>
+  `).join("") || `<tr><td colspan="7" class="empty-state">尚無發佈版本資料</td></tr>`;
+}
+
+// Render Notifications / Pipelines
+function renderPipelines() {
+  const app = getCurAppData();
+  if (!app) return;
+  const srcs = app.sources || {};
+  const grid = $("pipelineCardsGrid");
+  if (!grid) return;
+
+  const pipelines = [
+    { key: "crashlytics_bq", name: "Crashlytics BigQuery", obj: srcs.crashlytics_bq },
+    { key: "firebase_sessions", name: "Firebase Sessions Export", obj: srcs.firebase_sessions },
+    { key: "mcp_crashlytics", name: "Crashlytics MCP Server", obj: srcs.mcp_crashlytics },
+    { key: "gemini_ai", name: "Gemini AI Analysis", obj: srcs.gemini_ai },
+  ];
+
+  grid.innerHTML = pipelines.map(p => {
+    const s = p.obj || { status: "unavailable" };
+    return `
+      <div class="chart-card col-6">
+        <div class="chart-card-header">
+          <div class="chart-title">${esc(p.name)}</div>
+          <span class="badge badge-status ${s.status === "available" ? "badge-active" : (s.status === "error" ? "badge-fatal" : "badge-deprecated")}">
+            ${esc(s.status.toUpperCase())}
+          </span>
+        </div>
+        <div style="font-size:12.5px;color:var(--text-muted);display:flex;flex-direction:column;gap:6px">
+          <div>最後同步時間: <b>${esc(s.last_sync_timestamp || "—")}</b></div>
+          ${s.error_message ? `<div style="color:var(--danger-text)">備註: ${esc(s.error_message)}</div>` : `<div>狀態正常，無錯誤報告。</div>`}
+        </div>
+      </div>
+    `;
+  }).join("");
+
+  const limits = app.limitations || [];
+  const limitList = $("limitationsList");
+  if (limitList) {
+    limitList.innerHTML = limits.map(l => `<li>${esc(l)}</li>`).join("") || `<li>無特殊資料限制。</li>`;
+  }
+}
+
+// Render Settings
+function renderSettings() {
+  const app = getCurAppData();
+  if (!app) return;
+  const meta = app.metadata || {};
+  const period = app.period || {};
+  const tbody = $("settingsTableBody");
+  if (!tbody) return;
+
+  tbody.innerHTML = `
+    <tr><th style="width:200px">App ID</th><td><code>${esc(meta.app_id)}</code></td></tr>
+    <tr><th>顯示名稱</th><td><b>${esc(meta.display_name)}</b></td></tr>
+    <tr><th>Firebase Project ID</th><td><code>${esc(meta.firebase_project_id)}</code></td></tr>
+    <tr><th>支援平台</th><td>${(meta.platforms || []).map(p => `<span class="badge" style="background:var(--bg-subtle)">${esc(p)}</span>`).join(" ")}</td></tr>
+    <tr><th>原始碼 Repo</th><td>${meta.source_repo ? `<code>${esc(meta.source_repo)}</code>` : "未設定"}</td></tr>
+    <tr><th>自訂監控 Keys</th><td>${(meta.custom_keys_monitored || []).map(k => `<code>${esc(k)}</code>`).join(", ") || "無"}</td></tr>
+    <tr><th>統計回溯天數</th><td>${esc(period.days)} 天 (${esc(period.start_time || "")} ~ ${esc(period.end_time || "")})</td></tr>
+    <tr><th>Schema 版本</th><td><code>${esc(DATA.schema_version || "2.0")}</code></td></tr>
+    <tr><th>報表產生時間</th><td><code>${esc(DATA.generated_at || "")}</code></td></tr>
+  `;
+}
+
+// Full Render
+function renderAll() {
+  renderHeader();
+  renderKPIs();
+  renderAISummaries();
+  renderCharts();
+  renderIssuesList();
+  renderVersionHealth();
+  renderDevicesTable();
+  renderReleasesTable();
+  renderPipelines();
+  renderSettings();
+}
+
+// Initialize on page load
+document.addEventListener("DOMContentLoaded", () => {
+  renderAll();
+});
+if (document.readyState === "complete" || document.readyState === "interactive") {
+  renderAll();
+}
 </script>
 </body>
 </html>
 """
 
 
+def build_html(data: Union[dict, Any]) -> str:
+    """Renders self-contained HTML for a DashboardV2Bundle data structure."""
+    chartjs_code = get_vendor_chartjs()
+    json_data = json.dumps(data, ensure_ascii=False)
+    html = HTML_TEMPLATE.replace("__CHARTJS__", chartjs_code).replace("__DATA__", json_data)
+    return html
+
+
+def generate_dashboard(
+    data: Optional[Union[dict, Any]] = None,
+    output_path: Optional[Union[str, Path]] = None,
+    data_path: Optional[Union[str, Path]] = None,
+) -> Path:
+    """Generates the dashboard.html file and returns the output Path."""
+    if data is None:
+        data = collect_data(data_path)
+
+    out = Path(output_path) if output_path else DEFAULT_OUT_HTML
+    html_content = build_html(data)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(html_content, encoding="utf-8")
+    return out
+
+
 def main() -> None:
-    data = collect_data()
-    html = TEMPLATE.replace("__CHARTJS__", VENDOR_JS.read_text(encoding="utf-8")).replace(
-        "__DATA__", json.dumps(data, ensure_ascii=False)
-    )
-    OUT_HTML.write_text(html, encoding="utf-8")
-    total_months = sum(len(a["months"]) for a in data["apps"].values())
-    print(f"  ✓ dashboard.html（{len(data['apps'])} 個 app、{total_months} 個月份摘要）")
+    parser = argparse.ArgumentParser(description="產生 Dashboard V2 自包含靜態 HTML 儀表板")
+    parser.add_argument("--data", help="輸入之 Dashboard V2 JSON 檔案路徑")
+    parser.add_argument("--out", default=str(DEFAULT_OUT_HTML), help="輸出之 HTML 檔案路徑")
+    args = parser.parse_args()
+
+    out_file = generate_dashboard(output_path=args.out, data_path=args.data)
+    try:
+        print(f"  ✓ 成功產生自包含 Dashboard V2 儀表板: {out_file}")
+    except UnicodeEncodeError:
+        print(f"  [OK] Generated self-contained Dashboard V2: {out_file}")
 
 
 if __name__ == "__main__":
