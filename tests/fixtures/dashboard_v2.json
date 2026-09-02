@@ -1,0 +1,703 @@
+{
+  "schema_version": "2.0",
+  "generated_at": "2026-09-02T14:00:00Z",
+  "default_app": "shop_app",
+  "apps": {
+    "shop_app": {
+      "metadata": {
+        "app_id": "shop_app",
+        "display_name": "E-Commerce Shop",
+        "firebase_project_id": "shop-app-prod-12345",
+        "platforms": ["android", "ios"],
+        "source_repo": "~/projects/shop_app",
+        "custom_keys_monitored": ["user_tier", "screen_name", "network_type"]
+      },
+      "period": {
+        "days": 30,
+        "start_time": "2026-08-03T14:00:00Z",
+        "end_time": "2026-09-02T14:00:00Z",
+        "comparison_period": {
+          "days": 30,
+          "start_time": "2026-07-04T14:00:00Z",
+          "end_time": "2026-08-03T14:00:00Z"
+        }
+      },
+      "sources": {
+        "crashlytics_bq": {
+          "status": "available",
+          "tables_queried": [
+            "com_example_shop_ANDROID",
+            "com_example_shop_IOS"
+          ],
+          "last_sync_timestamp": "2026-09-02T14:00:00Z",
+          "error_message": null
+        },
+        "firebase_sessions": {
+          "status": "available",
+          "last_sync_timestamp": "2026-09-02T14:00:00Z",
+          "error_message": null
+        },
+        "mcp_crashlytics": {
+          "status": "available",
+          "last_sync_timestamp": "2026-09-02T14:05:00Z",
+          "error_message": null
+        },
+        "gemini_ai": {
+          "status": "available",
+          "model": "gemini-flash-latest",
+          "last_sync_timestamp": "2026-09-02T14:10:00Z",
+          "error_message": null
+        }
+      },
+      "kpi": {
+        "crash_events": {
+          "value": 12450,
+          "previous_value": 15600,
+          "change_pct": -20.19,
+          "status": "available"
+        },
+        "affected_users": {
+          "value": 4120,
+          "previous_value": 5300,
+          "change_pct": -22.26,
+          "status": "available"
+        },
+        "crash_free_users": {
+          "rate": 0.9985,
+          "total": 520000,
+          "crashed": 780,
+          "previous_rate": 0.9972,
+          "change_pct_points": 0.13,
+          "status": "available",
+          "unavailable_reason": null
+        },
+        "crash_free_sessions": {
+          "rate": 0.9992,
+          "total": 3400000,
+          "crashed": 2720,
+          "previous_rate": 0.9988,
+          "change_pct_points": 0.04,
+          "status": "available",
+          "unavailable_reason": null
+        },
+        "new_issues_count": {
+          "value": 4,
+          "previous_value": 6,
+          "change_pct": -33.33,
+          "status": "available"
+        },
+        "events_by_error_type": {
+          "fatal": 8200,
+          "anr": 1350,
+          "non_fatal": 2900
+        }
+      },
+      "daily_trend": [
+        {
+          "date": "2026-08-27",
+          "crash_events": 430,
+          "affected_users": 150,
+          "fatal_events": 280,
+          "anr_events": 50,
+          "non_fatal_events": 100,
+          "sessions_total": 115000,
+          "crashed_sessions": 90,
+          "crash_free_sessions_rate": 0.9992,
+          "by_platform": {
+            "android": { "events": 250, "users": 90 },
+            "ios": { "events": 180, "users": 60 }
+          }
+        },
+        {
+          "date": "2026-08-28",
+          "crash_events": 410,
+          "affected_users": 142,
+          "fatal_events": 270,
+          "anr_events": 40,
+          "non_fatal_events": 100,
+          "sessions_total": 118000,
+          "crashed_sessions": 85,
+          "crash_free_sessions_rate": 0.9993,
+          "by_platform": {
+            "android": { "events": 240, "users": 82 },
+            "ios": { "events": 170, "users": 60 }
+          }
+        },
+        {
+          "date": "2026-08-29",
+          "crash_events": 520,
+          "affected_users": 180,
+          "fatal_events": 350,
+          "anr_events": 60,
+          "non_fatal_events": 110,
+          "sessions_total": 122000,
+          "crashed_sessions": 110,
+          "crash_free_sessions_rate": 0.9991,
+          "by_platform": {
+            "android": { "events": 320, "users": 110 },
+            "ios": { "events": 200, "users": 70 }
+          }
+        },
+        {
+          "date": "2026-08-30",
+          "crash_events": 480,
+          "affected_users": 165,
+          "fatal_events": 320,
+          "anr_events": 45,
+          "non_fatal_events": 115,
+          "sessions_total": 120000,
+          "crashed_sessions": 95,
+          "crash_free_sessions_rate": 0.9992,
+          "by_platform": {
+            "android": { "events": 290, "users": 100 },
+            "ios": { "events": 190, "users": 65 }
+          }
+        },
+        {
+          "date": "2026-08-31",
+          "crash_events": 390,
+          "affected_users": 130,
+          "fatal_events": 250,
+          "anr_events": 35,
+          "non_fatal_events": 105,
+          "sessions_total": 112000,
+          "crashed_sessions": 78,
+          "crash_free_sessions_rate": 0.9993,
+          "by_platform": {
+            "android": { "events": 230, "users": 75 },
+            "ios": { "events": 160, "users": 55 }
+          }
+        },
+        {
+          "date": "2026-09-01",
+          "crash_events": 412,
+          "affected_users": 140,
+          "fatal_events": 270,
+          "anr_events": 42,
+          "non_fatal_events": 100,
+          "sessions_total": 114000,
+          "crashed_sessions": 82,
+          "crash_free_sessions_rate": 0.9993,
+          "by_platform": {
+            "android": { "events": 242, "users": 85 },
+            "ios": { "events": 170, "users": 55 }
+          }
+        },
+        {
+          "date": "2026-09-02",
+          "crash_events": 380,
+          "affected_users": 125,
+          "fatal_events": 240,
+          "anr_events": 40,
+          "non_fatal_events": 100,
+          "sessions_total": 110000,
+          "crashed_sessions": 75,
+          "crash_free_sessions_rate": 0.9993,
+          "by_platform": {
+            "android": { "events": 220, "users": 70 },
+            "ios": { "events": 160, "users": 55 }
+          }
+        }
+      ],
+      "version_health": [
+        {
+          "version": "3.2.0",
+          "platform": "all",
+          "release_date": "2026-08-20",
+          "crash_events": 6800,
+          "affected_users": 2300,
+          "crash_free_users_rate": 0.9982,
+          "crash_free_sessions_rate": 0.9991,
+          "adoption_rate": 0.58,
+          "status": "latest",
+          "trend": "stable"
+        },
+        {
+          "version": "3.1.2",
+          "platform": "all",
+          "release_date": "2026-07-28",
+          "crash_events": 4100,
+          "affected_users": 1350,
+          "crash_free_users_rate": 0.9988,
+          "crash_free_sessions_rate": 0.9994,
+          "adoption_rate": 0.32,
+          "status": "active",
+          "trend": "improving"
+        },
+        {
+          "version": "3.1.0",
+          "platform": "all",
+          "release_date": "2026-07-05",
+          "crash_events": 1550,
+          "affected_users": 470,
+          "crash_free_users_rate": 0.9991,
+          "crash_free_sessions_rate": 0.9996,
+          "adoption_rate": 0.10,
+          "status": "maintenance",
+          "trend": "improving"
+        }
+      ],
+      "distributions": {
+        "platform": [
+          { "name": "android", "events": 7200, "users": 2450, "share": 0.578 },
+          { "name": "ios", "events": 5250, "users": 1670, "share": 0.422 }
+        ],
+        "device_models": [
+          { "model": "Pixel 8", "platform": "android", "events": 1420, "users": 480, "share": 0.114 },
+          { "model": "iPhone 15 Pro", "platform": "ios", "events": 1200, "users": 410, "share": 0.096 },
+          { "model": "Galaxy S24", "platform": "android", "events": 980, "users": 340, "share": 0.078 },
+          { "model": "iPhone 14", "platform": "ios", "events": 850, "users": 290, "share": 0.068 }
+        ],
+        "os_versions": [
+          { "os_version": "Android 14", "platform": "android", "events": 4500, "users": 1520, "share": 0.361 },
+          { "os_version": "iOS 18.0.1", "platform": "ios", "events": 3100, "users": 1050, "share": 0.249 },
+          { "os_version": "Android 13", "platform": "android", "events": 2700, "users": 930, "share": 0.217 },
+          { "os_version": "iOS 17.6.1", "platform": "ios", "events": 2150, "users": 620, "share": 0.173 }
+        ],
+        "app_versions": [
+          { "app_version": "3.2.0", "platform": "all", "events": 6800, "users": 2300, "share": 0.546 },
+          { "app_version": "3.1.2", "platform": "all", "events": 4100, "users": 1350, "share": 0.329 },
+          { "app_version": "3.1.0", "platform": "all", "events": 1550, "users": 470, "share": 0.125 }
+        ],
+        "custom_keys": [
+          { "key": "user_tier", "value": "vip", "platform": "all", "events": 4500 },
+          { "key": "user_tier", "value": "standard", "platform": "all", "events": 7950 }
+        ]
+      },
+      "top_issues": [
+        {
+          "issue_id": "8a7f1b2c",
+          "platform": "android",
+          "title": "NullPointerException: userProfile must not be null",
+          "subtitle": "CheckoutActivity.kt:142",
+          "error_type": "FATAL",
+          "priority": {
+            "score": 92,
+            "level": "P0",
+            "trend": "new",
+            "score_breakdown": {
+              "users_normalized": 10.0,
+              "events_normalized": 9.2,
+              "fatal_anr_boost": 2,
+              "worsening_boost": 2,
+              "latest_version_boost": 2,
+              "core_path_boost": 3
+            }
+          },
+          "events": 3420,
+          "affected_users": 2100,
+          "first_seen_timestamp": "2026-08-20T10:15:00Z",
+          "last_seen_timestamp": "2026-09-02T13:40:00Z",
+          "first_seen_version": "3.2.0",
+          "last_seen_version": "3.2.0",
+          "version_distribution": [
+            { "version": "3.2.0", "events": 3420, "users": 2100 }
+          ],
+          "blame_frame": {
+            "file": "app/src/main/java/com/example/shop/CheckoutActivity.kt",
+            "line": 142,
+            "symbol": "com.example.shop.CheckoutActivity.processPayment",
+            "class_name": "com.example.shop.CheckoutActivity",
+            "method_name": "processPayment",
+            "is_blame": true,
+            "source_available": true
+          },
+          "ai_analysis": {
+            "status": "available",
+            "root_cause": "結帳流程在特定網路延遲條件下，userProfile 尚未初始化完成即觸發 processPayment，引發 NPE 致命閃退。",
+            "suggested_fix": "於 processPayment 入口處加入 userProfile 空值檢查，並在未載入完成時顯示 Loading 狀態而非直接取值。",
+            "effort": "S",
+            "confidence": "high",
+            "reasoning_sources": ["stack_trace", "blame_frame", "version_concentration"]
+          },
+          "detail": {
+            "stack_trace": "java.lang.NullPointerException: Attempt to invoke virtual method 'java.lang.String com.example.shop.model.UserProfile.getId()' on a null object reference\n\tat com.example.shop.CheckoutActivity.processPayment(CheckoutActivity.kt:142)\n\tat com.example.shop.CheckoutActivity.access$processPayment(CheckoutActivity.kt:28)\n\tat com.example.shop.CheckoutActivity$onCreate$1.onClick(CheckoutActivity.kt:65)",
+            "breadcrumbs": [
+              {
+                "timestamp": "2026-09-02T13:39:50Z",
+                "category": "navigation",
+                "message": "User navigated to /cart",
+                "level": "info"
+              },
+              {
+                "timestamp": "2026-09-02T13:39:58Z",
+                "category": "navigation",
+                "message": "User navigated to /checkout",
+                "level": "info"
+              },
+              {
+                "timestamp": "2026-09-02T13:40:00Z",
+                "category": "ui_click",
+                "message": "Clicked #btn_pay_now",
+                "level": "info"
+              }
+            ],
+            "logs": [
+              { "timestamp": "2026-09-02T13:39:58Z", "message": "[CheckoutActivity] Initializing checkout view" },
+              { "timestamp": "2026-09-02T13:40:00Z", "message": "[PaymentGateway] Triggering payment flow" }
+            ],
+            "custom_keys": {
+              "user_tier": "vip",
+              "screen_name": "checkout_summary",
+              "network_type": "WIFI"
+            },
+            "top_devices": [
+              { "model": "Pixel 8", "events": 1420 },
+              { "model": "Galaxy S24", "events": 980 }
+            ],
+            "top_os": [
+              { "os_version": "Android 14", "events": 3420 }
+            ]
+          }
+        },
+        {
+          "issue_id": "3b2e9d1a",
+          "platform": "android",
+          "title": "Application Not Responding (ANR): Input dispatching timed out",
+          "subtitle": "AppDatabase_Impl.kt:88",
+          "error_type": "ANR",
+          "priority": {
+            "score": 78,
+            "level": "P1",
+            "trend": "worsening",
+            "score_breakdown": {
+              "users_normalized": 6.5,
+              "events_normalized": 4.2,
+              "fatal_anr_boost": 2,
+              "worsening_boost": 2,
+              "latest_version_boost": 2,
+              "core_path_boost": 3
+            }
+          },
+          "events": 1350,
+          "affected_users": 950,
+          "first_seen_timestamp": "2026-07-28T08:00:00Z",
+          "last_seen_timestamp": "2026-09-02T12:10:00Z",
+          "first_seen_version": "3.1.2",
+          "last_seen_version": "3.2.0",
+          "version_distribution": [
+            { "version": "3.2.0", "events": 950, "users": 680 },
+            { "version": "3.1.2", "events": 400, "users": 270 }
+          ],
+          "blame_frame": {
+            "file": "app/src/main/java/com/example/shop/data/AppDatabase_Impl.kt",
+            "line": 88,
+            "symbol": "com.example.shop.data.AppDatabase_Impl.createOpenHelper",
+            "class_name": "com.example.shop.data.AppDatabase_Impl",
+            "method_name": "createOpenHelper",
+            "is_blame": true,
+            "source_available": false
+          },
+          "ai_analysis": {
+            "status": "available",
+            "root_cause": "冷啟動時在 Main Thread 執行 Room 資料庫 Migration 與索引初始化，造成主執行緒卡頓超過 5 秒引發 ANR。",
+            "suggested_fix": "將資料庫初始預熱與 Migration 操作移至 Dispatchers.IO 協程中非同步執行。",
+            "effort": "M",
+            "confidence": "high",
+            "reasoning_sources": ["stack_trace", "blame_frame"]
+          },
+          "detail": {
+            "stack_trace": "\"main\" prio=5 tid=1 Blocked\n  | group=\"main\" sCount=1 ucsCount=0 flags=1 obj=0x73295840\n  at com.example.shop.data.AppDatabase_Impl.createOpenHelper(AppDatabase_Impl.kt:88)\n  at androidx.room.RoomDatabase.init(RoomDatabase.kt:145)",
+            "breadcrumbs": [],
+            "logs": [],
+            "custom_keys": { "screen_name": "splash" },
+            "top_devices": [{ "model": "Galaxy A54", "events": 600 }],
+            "top_os": [{ "os_version": "Android 14", "events": 1100 }]
+          }
+        },
+        {
+          "issue_id": "4c9e8d7a",
+          "platform": "ios",
+          "title": "EXC_BAD_ACCESS: KERN_INVALID_ADDRESS at 0x0000000000000010",
+          "subtitle": "ImageLoader.swift:72",
+          "error_type": "FATAL",
+          "priority": {
+            "score": 65,
+            "level": "P2",
+            "trend": "improving",
+            "score_breakdown": {
+              "users_normalized": 4.0,
+              "events_normalized": 3.5,
+              "fatal_anr_boost": 2,
+              "worsening_boost": 0,
+              "latest_version_boost": 0,
+              "core_path_boost": 0
+            }
+          },
+          "events": 980,
+          "affected_users": 620,
+          "first_seen_timestamp": "2026-07-05T09:00:00Z",
+          "last_seen_timestamp": "2026-08-25T16:00:00Z",
+          "first_seen_version": "3.1.0",
+          "last_seen_version": "3.1.2",
+          "version_distribution": [
+            { "version": "3.1.2", "events": 180, "users": 120 },
+            { "version": "3.1.0", "events": 800, "users": 500 }
+          ],
+          "blame_frame": {
+            "file": "ShopApp/Services/ImageLoader.swift",
+            "line": 72,
+            "symbol": "ImageLoader.cacheImage(_:forKey:)",
+            "class_name": "ImageLoader",
+            "method_name": "cacheImage",
+            "is_blame": true,
+            "source_available": true
+          },
+          "ai_analysis": {
+            "status": "available",
+            "root_cause": "舊版 3.1.0 快取釋放時競態條件導致野指標存取，3.2.0 已加入鎖保護，目前僅餘舊版本用戶殘留。",
+            "suggested_fix": "3.2.0 已修復，建議透過強制更新或推播提醒用戶升級。",
+            "effort": "S",
+            "confidence": "high",
+            "reasoning_sources": ["version_concentration"]
+          },
+          "detail": null
+        }
+      ],
+      "ai_summary": {
+        "status": "available",
+        "model": "gemini-flash-latest",
+        "generated_at": "2026-09-02T14:10:00Z",
+        "overview": "本期整體崩潰事件較上月下降 20.2%，整體 Crash-free rate 提升至 99.85%。然而 3.2.0 新版在結帳流程中引入 1 個高頻 P0 NPE 崩潰，影響約 2,100 位用戶。",
+        "key_takeaways": [
+          "P0: CheckoutActivity.kt:142 佔本期總閃退量 27.5%，建議立即發布 3.2.1 Hotfix",
+          "Android 啟動 ANR 集中在 AppDatabase 初始化，需將 Migration 移出 Main Thread",
+          "iOS 平台穩定性極佳，舊有 ImageLoader 崩潰隨用戶升級至 3.2.0 已大幅收斂"
+        ],
+        "distribution_insights": "崩潰高度集中於 Android 平台（佔 57.8%）及 3.2.0 版本，其中 Pixel 8 與 Galaxy S24 為主要崩潰機型。",
+        "recommended_actions": [
+          {
+            "priority": "P0",
+            "issue_id": "8a7f1b2c",
+            "action": "修復 CheckoutActivity userProfile 空值檢查並發布 Hotfix",
+            "effort": "S"
+          },
+          {
+            "priority": "P1",
+            "issue_id": "3b2e9d1a",
+            "action": "將 Room 資料庫初始化移至 Background Thread 解決 ANR",
+            "effort": "M"
+          }
+        ],
+        "data_limitations": "MCP stack trace 部分 frame 缺乏 symbol 資訊；自訂 keys VIP 佔比約 36%。"
+      },
+      "limitations": [
+        "Firebase Sessions 數據自 2026-08-03 開始收集",
+        "MCP stack trace 部分為 headless 模式抓取"
+      ]
+    },
+    "rider_app": {
+      "metadata": {
+        "app_id": "rider_app",
+        "display_name": "Delivery Rider App",
+        "firebase_project_id": "rider-app-prod-9988",
+        "platforms": ["android"],
+        "source_repo": "~/projects/rider_app",
+        "custom_keys_monitored": ["city_id", "battery_level"]
+      },
+      "period": {
+        "days": 30,
+        "start_time": "2026-08-03T14:00:00Z",
+        "end_time": "2026-09-02T14:00:00Z",
+        "comparison_period": null
+      },
+      "sources": {
+        "crashlytics_bq": {
+          "status": "available",
+          "tables_queried": ["com_example_rider_ANDROID"],
+          "last_sync_timestamp": "2026-09-02T14:00:00Z",
+          "error_message": null
+        },
+        "firebase_sessions": {
+          "status": "available",
+          "last_sync_timestamp": "2026-09-02T14:00:00Z",
+          "error_message": null
+        },
+        "mcp_crashlytics": {
+          "status": "available",
+          "last_sync_timestamp": "2026-09-02T14:05:00Z",
+          "error_message": null
+        },
+        "gemini_ai": {
+          "status": "available",
+          "model": "gemini-flash-latest",
+          "last_sync_timestamp": "2026-09-02T14:10:00Z",
+          "error_message": null
+        }
+      },
+      "kpi": {
+        "crash_events": {
+          "value": 1820,
+          "previous_value": null,
+          "change_pct": null,
+          "status": "available"
+        },
+        "affected_users": {
+          "value": 310,
+          "previous_value": null,
+          "change_pct": null,
+          "status": "available"
+        },
+        "crash_free_users": {
+          "rate": 0.9965,
+          "total": 88000,
+          "crashed": 310,
+          "previous_rate": null,
+          "change_pct_points": null,
+          "status": "available",
+          "unavailable_reason": null
+        },
+        "crash_free_sessions": {
+          "rate": 0.9989,
+          "total": 920000,
+          "crashed": 1010,
+          "previous_rate": null,
+          "change_pct_points": null,
+          "status": "available",
+          "unavailable_reason": null
+        },
+        "new_issues_count": {
+          "value": 1,
+          "previous_value": null,
+          "change_pct": null,
+          "status": "available"
+        },
+        "events_by_error_type": {
+          "fatal": 1400,
+          "anr": 120,
+          "non_fatal": 300
+        }
+      },
+      "daily_trend": [
+        {
+          "date": "2026-09-01",
+          "crash_events": 60,
+          "affected_users": 12,
+          "fatal_events": 45,
+          "anr_events": 5,
+          "non_fatal_events": 10,
+          "sessions_total": 31000,
+          "crashed_sessions": 33,
+          "crash_free_sessions_rate": 0.9989,
+          "by_platform": {
+            "android": { "events": 60, "users": 12 }
+          }
+        },
+        {
+          "date": "2026-09-02",
+          "crash_events": 55,
+          "affected_users": 10,
+          "fatal_events": 40,
+          "anr_events": 5,
+          "non_fatal_events": 10,
+          "sessions_total": 30500,
+          "crashed_sessions": 30,
+          "crash_free_sessions_rate": 0.9990,
+          "by_platform": {
+            "android": { "events": 55, "users": 10 }
+          }
+        }
+      ],
+      "version_health": [
+        {
+          "version": "1.8.0",
+          "platform": "android",
+          "release_date": "2026-08-15",
+          "crash_events": 1820,
+          "affected_users": 310,
+          "crash_free_users_rate": 0.9965,
+          "crash_free_sessions_rate": 0.9989,
+          "adoption_rate": 0.95,
+          "status": "latest",
+          "trend": "stable"
+        }
+      ],
+      "distributions": {
+        "platform": [
+          { "name": "android", "events": 1820, "users": 310, "share": 1.0 }
+        ],
+        "device_models": [
+          { "model": "Redmi Note 12", "platform": "android", "events": 900, "users": 150, "share": 0.495 }
+        ],
+        "os_versions": [
+          { "os_version": "Android 13", "platform": "android", "events": 1200, "users": 200, "share": 0.659 }
+        ],
+        "app_versions": [
+          { "app_version": "1.8.0", "platform": "android", "events": 1820, "users": 310, "share": 1.0 }
+        ],
+        "custom_keys": [
+          { "key": "city_id", "value": "TPE", "platform": "android", "events": 1100 }
+        ]
+      },
+      "top_issues": [
+        {
+          "issue_id": "99a1b2c3",
+          "platform": "android",
+          "title": "LocationTimeoutException: GPS fix timeout",
+          "subtitle": "LocationTracker.kt:89",
+          "error_type": "FATAL",
+          "priority": {
+            "score": 80,
+            "level": "P1",
+            "trend": "stable",
+            "score_breakdown": {
+              "users_normalized": 8.0,
+              "events_normalized": 8.0,
+              "fatal_anr_boost": 2,
+              "worsening_boost": 0,
+              "latest_version_boost": 2,
+              "core_path_boost": 3
+            }
+          },
+          "events": 1400,
+          "affected_users": 250,
+          "first_seen_timestamp": "2026-08-15T08:00:00Z",
+          "last_seen_timestamp": "2026-09-02T13:00:00Z",
+          "first_seen_version": "1.8.0",
+          "last_seen_version": "1.8.0",
+          "version_distribution": [
+            { "version": "1.8.0", "events": 1400, "users": 250 }
+          ],
+          "blame_frame": {
+            "file": "app/src/main/java/com/example/rider/LocationTracker.kt",
+            "line": 89,
+            "symbol": "com.example.rider.LocationTracker.requestHighAccuracyLocation",
+            "class_name": "com.example.rider.LocationTracker",
+            "method_name": "requestHighAccuracyLocation",
+            "is_blame": true,
+            "source_available": true
+          },
+          "ai_analysis": {
+            "status": "available",
+            "root_cause": "騎手進入地下室或隧道時 GPS 訊號遺失，LocationTracker 未處理超時直接拋出未捕捉異常。",
+            "suggested_fix": "於 LocationTracker 增加 try-catch 並降級使用基地台最後已知位置。",
+            "effort": "S",
+            "confidence": "high",
+            "reasoning_sources": ["stack_trace", "blame_frame"]
+          },
+          "detail": null
+        }
+      ],
+      "ai_summary": {
+        "status": "available",
+        "model": "gemini-flash-latest",
+        "generated_at": "2026-09-02T14:10:00Z",
+        "overview": "外送騎手 App 整體 Crash-free rate 為 99.65%，主要問題為 GPS 定位超時引發的崩潰。",
+        "key_takeaways": [
+          "GPS 定位超時佔據 77% 的閃退量，修復後可立即將穩定度拉升至 99.9%+"
+        ],
+        "distribution_insights": "崩潰主要集中在 Redmi Note 12 等平價機型。",
+        "recommended_actions": [
+          {
+            "priority": "P1",
+            "issue_id": "99a1b2c3",
+            "action": "實作 GPS 逾時降級與防禦性錯誤捕捉",
+            "effort": "S"
+          }
+        ],
+        "data_limitations": null
+      },
+      "limitations": []
+    }
+  }
+}

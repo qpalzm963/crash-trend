@@ -1,0 +1,197 @@
+{
+  "schema_version": "2.0",
+  "generated_at": "2026-09-02T14:00:00Z",
+  "default_app": "legacy_app",
+  "apps": {
+    "legacy_app": {
+      "metadata": {
+        "app_id": "legacy_app",
+        "display_name": "Legacy Project App",
+        "firebase_project_id": "legacy-app-77889",
+        "platforms": ["android", "ios"],
+        "source_repo": null,
+        "custom_keys_monitored": []
+      },
+      "period": {
+        "days": 30,
+        "start_time": "2026-08-03T14:00:00Z",
+        "end_time": "2026-09-02T14:00:00Z",
+        "comparison_period": null
+      },
+      "sources": {
+        "crashlytics_bq": {
+          "status": "available",
+          "tables_queried": ["com_example_legacy_ANDROID"],
+          "last_sync_timestamp": "2026-09-02T14:00:00Z",
+          "error_message": null
+        },
+        "firebase_sessions": {
+          "status": "unavailable",
+          "last_sync_timestamp": null,
+          "error_message": "Firebase Sessions export table not found in dataset"
+        },
+        "mcp_crashlytics": {
+          "status": "unavailable",
+          "last_sync_timestamp": null,
+          "error_message": "MCP server offline"
+        },
+        "gemini_ai": {
+          "status": "disabled",
+          "model": null,
+          "last_sync_timestamp": null,
+          "error_message": "GEMINI_API_KEY is not configured"
+        }
+      },
+      "kpi": {
+        "crash_events": {
+          "value": 540,
+          "previous_value": null,
+          "change_pct": null,
+          "status": "available"
+        },
+        "affected_users": {
+          "value": 120,
+          "previous_value": null,
+          "change_pct": null,
+          "status": "available"
+        },
+        "crash_free_users": {
+          "rate": null,
+          "total": null,
+          "crashed": null,
+          "previous_rate": null,
+          "change_pct_points": null,
+          "status": "unavailable",
+          "unavailable_reason": "Firebase Sessions export table not found in dataset"
+        },
+        "crash_free_sessions": {
+          "rate": null,
+          "total": null,
+          "crashed": null,
+          "previous_rate": null,
+          "change_pct_points": null,
+          "status": "unavailable",
+          "unavailable_reason": "Firebase Sessions export table not found in dataset"
+        },
+        "new_issues_count": {
+          "value": 2,
+          "previous_value": null,
+          "change_pct": null,
+          "status": "available"
+        },
+        "events_by_error_type": {
+          "fatal": 400,
+          "anr": 40,
+          "non_fatal": 100
+        }
+      },
+      "daily_trend": [
+        {
+          "date": "2026-09-01",
+          "crash_events": 20,
+          "affected_users": 6,
+          "fatal_events": 15,
+          "anr_events": 2,
+          "non_fatal_events": 3,
+          "sessions_total": null,
+          "crashed_sessions": null,
+          "crash_free_sessions_rate": null,
+          "by_platform": {
+            "android": { "events": 20, "users": 6 }
+          }
+        },
+        {
+          "date": "2026-09-02",
+          "crash_events": 18,
+          "affected_users": 5,
+          "fatal_events": 14,
+          "anr_events": 1,
+          "non_fatal_events": 3,
+          "sessions_total": null,
+          "crashed_sessions": null,
+          "crash_free_sessions_rate": null,
+          "by_platform": {
+            "android": { "events": 18, "users": 5 }
+          }
+        }
+      ],
+      "version_health": [
+        {
+          "version": "1.0.4",
+          "platform": "android",
+          "release_date": null,
+          "crash_events": 540,
+          "affected_users": 120,
+          "crash_free_users_rate": null,
+          "crash_free_sessions_rate": null,
+          "adoption_rate": null,
+          "status": "active",
+          "trend": "stable"
+        }
+      ],
+      "distributions": {
+        "platform": [
+          { "name": "android", "events": 540, "users": 120, "share": 1.0 }
+        ],
+        "device_models": [
+          { "model": "Pixel 6", "platform": "android", "events": 300, "users": 70, "share": 0.555 }
+        ],
+        "os_versions": [
+          { "os_version": "Android 13", "platform": "android", "events": 540, "users": 120, "share": 1.0 }
+        ],
+        "app_versions": [
+          { "app_version": "1.0.4", "platform": "android", "events": 540, "users": 120, "share": 1.0 }
+        ],
+        "custom_keys": []
+      },
+      "top_issues": [
+        {
+          "issue_id": "aa11bb22",
+          "platform": "android",
+          "title": "IllegalStateException: Fragment not attached to an activity",
+          "subtitle": "HomeFragment.kt:55",
+          "error_type": "FATAL",
+          "priority": {
+            "score": 60,
+            "level": "P2",
+            "trend": "stable",
+            "score_breakdown": null
+          },
+          "events": 400,
+          "affected_users": 90,
+          "first_seen_timestamp": "2026-08-10T12:00:00Z",
+          "last_seen_timestamp": "2026-09-02T10:00:00Z",
+          "first_seen_version": "1.0.4",
+          "last_seen_version": "1.0.4",
+          "version_distribution": [
+            { "version": "1.0.4", "events": 400, "users": 90 }
+          ],
+          "blame_frame": null,
+          "ai_analysis": {
+            "status": "unavailable",
+            "root_cause": null,
+            "suggested_fix": null,
+            "effort": null,
+            "confidence": null,
+            "reasoning_sources": null
+          },
+          "detail": null
+        }
+      ],
+      "ai_summary": {
+        "status": "disabled",
+        "model": null,
+        "generated_at": null,
+        "overview": "AI 分析未啟用（未配置 GEMINI_API_KEY）。",
+        "key_takeaways": [],
+        "distribution_insights": "本期未執行 AI 分布分析。",
+        "recommended_actions": [],
+        "data_limitations": "Firebase Sessions 未開啟，Crash-free 指標不可用；未設定 GEMINI_API_KEY。"
+      },
+      "limitations": [
+        "Firebase Sessions 未開啟",
+        "AI 分析未啟用"
+      ]
+    }
+  }
+}
