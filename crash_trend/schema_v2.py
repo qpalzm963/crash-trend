@@ -4,14 +4,19 @@ This module defines the Python data contract for Dashboard V2, providing:
 - Required-by-default TypedDict definitions with explicit NotRequired and Optional annotations
 - Strict runtime validation for timestamps (ISO 8601 UTC), dates, numerical ranges, enums,
   and cross-field consistency
+- Complete 1:1 parity between TypedDict required keys and runtime validator enforcement
 - Safe error handling that returns structured error messages without crashing on malformed input
 """
 
 from __future__ import annotations
 
 import datetime as dt
-import re
-from typing import Any, Dict, List, Literal, NotRequired, Optional, TypedDict, Union
+from typing import Any, Dict, List, Literal, Optional, TypedDict, Union
+
+try:
+    from typing import NotRequired
+except ImportError:
+    from typing_extensions import NotRequired  # type: ignore
 
 SCHEMA_VERSION = "2.0"
 
@@ -302,11 +307,9 @@ def is_valid_iso8601_utc(val: Any) -> bool:
     if not isinstance(val, str) or not val.strip():
         return False
     
-    # Must end with Z or +00:00
     if not (val.endswith("Z") or val.endswith("+00:00")):
         return False
     
-    # Parse with datetime to enforce calendar validity (e.g. leap years, month ranges)
     norm = val[:-1] + "+00:00" if val.endswith("Z") else val
     try:
         parsed = dt.datetime.fromisoformat(norm)
@@ -326,33 +329,26 @@ def is_valid_date(val: Any) -> bool:
         return False
 
 
-def _check_type(val: Any, expected: type, name: str, errors: List[str], nullable: bool = False) -> bool:
-    if val is None:
-        if not nullable:
-            errors.append(f"{name} cannot be null")
-            return False
-        return True
-    if not isinstance(val, expected):
-        errors.append(f"{name} must be {expected.__name__}, got {type(val).__name__}")
-        return False
-    return True
-
-
 def validate_kpi_metric(metric: Any, name: str, errors: List[str]) -> None:
     if not isinstance(metric, dict):
         errors.append(f"{name} must be an object")
         return
-    for k in ("value", "status"):
+    for k in ("value", "previous_value", "change_pct", "status"):
         if k not in metric:
             errors.append(f"{name}.{k} is required")
-    if not isinstance(metric.get("value"), int) or metric["value"] < 0:
-        errors.append(f"{name}.value must be a non-negative integer")
+    
+    if "value" in metric:
+        if not isinstance(metric["value"], int) or metric["value"] < 0:
+            errors.append(f"{name}.value must be a non-negative integer")
+    
     status = metric.get("status")
     if status not in {"available", "insufficient_data", "error"}:
         errors.append(f"{name}.status must be one of available, insufficient_data, error")
+    
     if "previous_value" in metric and metric["previous_value"] is not None:
         if not isinstance(metric["previous_value"], int) or metric["previous_value"] < 0:
             errors.append(f"{name}.previous_value must be a non-negative integer or null")
+    
     if "change_pct" in metric and metric["change_pct"] is not None:
         if not isinstance(metric["change_pct"], (int, float)):
             errors.append(f"{name}.change_pct must be a number or null")
@@ -362,7 +358,7 @@ def validate_crash_free_metric(metric: Any, name: str, errors: List[str]) -> Non
     if not isinstance(metric, dict):
         errors.append(f"{name} must be an object")
         return
-    for k in ("rate", "total", "crashed", "status"):
+    for k in ("rate", "total", "crashed", "previous_rate", "change_pct_points", "status", "unavailable_reason"):
         if k not in metric:
             errors.append(f"{name}.{k} is required")
     
@@ -385,6 +381,15 @@ def validate_crash_free_metric(metric: Any, name: str, errors: List[str]) -> Non
             errors.append(f"{name}.total must be null when status is 'unavailable'")
         if metric.get("crashed") is not None:
             errors.append(f"{name}.crashed must be null when status is 'unavailable'")
+        if metric.get("unavailable_reason") is not None and not isinstance(metric["unavailable_reason"], str):
+            errors.append(f"{name}.unavailable_reason must be a string or null")
+
+    if "previous_rate" in metric and metric["previous_rate"] is not None:
+        if not isinstance(metric["previous_rate"], (int, float)) or metric["previous_rate"] < 0.0 or metric["previous_rate"] > 1.0:
+            errors.append(f"{name}.previous_rate must be a float between 0.0 and 1.0 or null")
+    if "change_pct_points" in metric and metric["change_pct_points"] is not None:
+        if not isinstance(metric["change_pct_points"], (int, float)):
+            errors.append(f"{name}.change_pct_points must be a number or null")
 
 
 def validate_app_dashboard_v2(data: dict, prefix: str = "") -> List[str]:
@@ -410,14 +415,28 @@ def validate_app_dashboard_v2(data: dict, prefix: str = "") -> List[str]:
         for field in ("app_id", "display_name", "firebase_project_id", "platforms", "source_repo", "custom_keys_monitored"):
             if field not in meta:
                 errors.append(f"{p}metadata.{field} is required")
-        if not isinstance(meta.get("platforms"), list) or not meta.get("platforms"):
-            errors.append(f"{p}metadata.platforms must be a non-empty list")
-        else:
-            for pf in meta.get("platforms", []):
-                if pf not in {"ios", "android"}:
-                    errors.append(f"{p}metadata.platforms item '{pf}' must be 'ios' or 'android'")
-        if not isinstance(meta.get("custom_keys_monitored"), list):
-            errors.append(f"{p}metadata.custom_keys_monitored must be a list")
+        if "app_id" in meta and (not isinstance(meta["app_id"], str) or not meta["app_id"]):
+            errors.append(f"{p}metadata.app_id must be a non-empty string")
+        if "display_name" in meta and (not isinstance(meta["display_name"], str) or not meta["display_name"]):
+            errors.append(f"{p}metadata.display_name must be a non-empty string")
+        if "firebase_project_id" in meta and (not isinstance(meta["firebase_project_id"], str) or not meta["firebase_project_id"]):
+            errors.append(f"{p}metadata.firebase_project_id must be a non-empty string")
+        if "platforms" in meta:
+            if not isinstance(meta["platforms"], list) or not meta["platforms"]:
+                errors.append(f"{p}metadata.platforms must be a non-empty list")
+            else:
+                for pf in meta["platforms"]:
+                    if pf not in {"ios", "android"}:
+                        errors.append(f"{p}metadata.platforms item '{pf}' must be 'ios' or 'android'")
+        if "source_repo" in meta and meta["source_repo"] is not None and not isinstance(meta["source_repo"], str):
+            errors.append(f"{p}metadata.source_repo must be a string or null")
+        if "custom_keys_monitored" in meta:
+            if not isinstance(meta["custom_keys_monitored"], list):
+                errors.append(f"{p}metadata.custom_keys_monitored must be a list")
+            else:
+                for ck in meta["custom_keys_monitored"]:
+                    if not isinstance(ck, str):
+                        errors.append(f"{p}metadata.custom_keys_monitored item must be a string")
     elif meta is not None:
         errors.append(f"{p}metadata must be an object")
 
@@ -427,22 +446,26 @@ def validate_app_dashboard_v2(data: dict, prefix: str = "") -> List[str]:
         for field in ("days", "start_time", "end_time", "comparison_period"):
             if field not in period:
                 errors.append(f"{p}period.{field} is required")
-        if not isinstance(period.get("days"), int) or period["days"] <= 0:
+        if "days" in period and (not isinstance(period["days"], int) or period["days"] <= 0):
             errors.append(f"{p}period.days must be a positive integer")
-        if not is_valid_iso8601_utc(period.get("start_time")):
+        if "start_time" in period and not is_valid_iso8601_utc(period["start_time"]):
             errors.append(f"{p}period.start_time must be a valid ISO 8601 UTC timestamp (ending in Z)")
-        if not is_valid_iso8601_utc(period.get("end_time")):
+        if "end_time" in period and not is_valid_iso8601_utc(period["end_time"]):
             errors.append(f"{p}period.end_time must be a valid ISO 8601 UTC timestamp (ending in Z)")
+        
         comp = period.get("comparison_period")
         if comp is not None:
             if not isinstance(comp, dict):
                 errors.append(f"{p}period.comparison_period must be an object or null")
             else:
-                if not isinstance(comp.get("days"), int) or comp["days"] <= 0:
+                for cf in ("days", "start_time", "end_time"):
+                    if cf not in comp:
+                        errors.append(f"{p}period.comparison_period.{cf} is required")
+                if "days" in comp and (not isinstance(comp["days"], int) or comp["days"] <= 0):
                     errors.append(f"{p}period.comparison_period.days must be a positive integer")
-                if not is_valid_iso8601_utc(comp.get("start_time")):
+                if "start_time" in comp and not is_valid_iso8601_utc(comp["start_time"]):
                     errors.append(f"{p}period.comparison_period.start_time must be valid ISO 8601 UTC")
-                if not is_valid_iso8601_utc(comp.get("end_time")):
+                if "end_time" in comp and not is_valid_iso8601_utc(comp["end_time"]):
                     errors.append(f"{p}period.comparison_period.end_time must be valid ISO 8601 UTC")
     elif period is not None:
         errors.append(f"{p}period must be an object")
@@ -464,12 +487,17 @@ def validate_app_dashboard_v2(data: dict, prefix: str = "") -> List[str]:
                 sync_ts = s_obj.get("last_sync_timestamp")
                 if sync_ts is not None and not is_valid_iso8601_utc(sync_ts):
                     errors.append(f"{p}sources.{s_name}.last_sync_timestamp must be ISO 8601 UTC or null")
+                if s_obj.get("error_message") is not None and not isinstance(s_obj["error_message"], str):
+                    errors.append(f"{p}sources.{s_name}.error_message must be a string or null")
     elif sources is not None:
         errors.append(f"{p}sources must be an object")
 
     # 4. KPI
     kpi = data.get("kpi")
     if isinstance(kpi, dict):
+        for kpi_f in ("crash_events", "affected_users", "crash_free_users", "crash_free_sessions", "new_issues_count", "events_by_error_type"):
+            if kpi_f not in kpi:
+                errors.append(f"{p}kpi.{kpi_f} is required")
         validate_kpi_metric(kpi.get("crash_events"), f"{p}kpi.crash_events", errors)
         validate_kpi_metric(kpi.get("affected_users"), f"{p}kpi.affected_users", errors)
         validate_kpi_metric(kpi.get("new_issues_count"), f"{p}kpi.new_issues_count", errors)
@@ -481,7 +509,9 @@ def validate_app_dashboard_v2(data: dict, prefix: str = "") -> List[str]:
             errors.append(f"{p}kpi.events_by_error_type is required and must be an object")
         else:
             for err_k in ("fatal", "anr", "non_fatal"):
-                if not isinstance(by_err.get(err_k), int) or by_err[err_k] < 0:
+                if err_k not in by_err:
+                    errors.append(f"{p}kpi.events_by_error_type.{err_k} is required")
+                elif not isinstance(by_err[err_k], int) or by_err[err_k] < 0:
                     errors.append(f"{p}kpi.events_by_error_type.{err_k} must be a non-negative integer")
     elif kpi is not None:
         errors.append(f"{p}kpi must be an object")
@@ -496,11 +526,20 @@ def validate_app_dashboard_v2(data: dict, prefix: str = "") -> List[str]:
             for req_k in ("date", "crash_events", "affected_users", "fatal_events", "anr_events", "non_fatal_events", "sessions_total", "crashed_sessions", "crash_free_sessions_rate", "by_platform"):
                 if req_k not in item:
                     errors.append(f"{p}daily_trend[{idx}].{req_k} is required")
-            if not is_valid_date(item.get("date")):
+            if "date" in item and not is_valid_date(item["date"]):
                 errors.append(f"{p}daily_trend[{idx}].date must be valid YYYY-MM-DD")
             for int_f in ("crash_events", "affected_users", "fatal_events", "anr_events", "non_fatal_events"):
-                if not isinstance(item.get(int_f), int) or item[int_f] < 0:
+                if int_f in item and (not isinstance(item[int_f], int) or item[int_f] < 0):
                     errors.append(f"{p}daily_trend[{idx}].{int_f} must be a non-negative integer")
+            if "sessions_total" in item and item["sessions_total"] is not None:
+                if not isinstance(item["sessions_total"], int) or item["sessions_total"] < 0:
+                    errors.append(f"{p}daily_trend[{idx}].sessions_total must be a non-negative integer or null")
+            if "crashed_sessions" in item and item["crashed_sessions"] is not None:
+                if not isinstance(item["crashed_sessions"], int) or item["crashed_sessions"] < 0:
+                    errors.append(f"{p}daily_trend[{idx}].crashed_sessions must be a non-negative integer or null")
+            if "crash_free_sessions_rate" in item and item["crash_free_sessions_rate"] is not None:
+                if not isinstance(item["crash_free_sessions_rate"], (int, float)) or item["crash_free_sessions_rate"] < 0.0 or item["crash_free_sessions_rate"] > 1.0:
+                    errors.append(f"{p}daily_trend[{idx}].crash_free_sessions_rate must be a float between 0.0 and 1.0 or null")
             # Cross-field error type check per daily point
             if isinstance(item.get("crash_events"), int) and isinstance(item.get("fatal_events"), int) and isinstance(item.get("anr_events"), int) and isinstance(item.get("non_fatal_events"), int):
                 if item["fatal_events"] + item["anr_events"] + item["non_fatal_events"] != item["crash_events"]:
@@ -520,41 +559,131 @@ def validate_app_dashboard_v2(data: dict, prefix: str = "") -> List[str]:
             for req_k in ("version", "platform", "release_date", "crash_events", "affected_users", "crash_free_users_rate", "crash_free_sessions_rate", "adoption_rate", "status", "trend"):
                 if req_k not in item:
                     errors.append(f"{p}version_health[{idx}].{req_k} is required")
-            if not item.get("version"):
+            if "version" in item and (not isinstance(item["version"], str) or not item["version"]):
                 errors.append(f"{p}version_health[{idx}].version must be a non-empty string")
-            if item.get("platform") not in {"ios", "android", "all"}:
+            if "platform" in item and item["platform"] not in {"ios", "android", "all"}:
                 errors.append(f"{p}version_health[{idx}].platform must be ios, android, or all")
-            if item.get("release_date") is not None and not is_valid_date(item["release_date"]):
+            if "release_date" in item and item["release_date"] is not None and not is_valid_date(item["release_date"]):
                 errors.append(f"{p}version_health[{idx}].release_date must be YYYY-MM-DD or null")
-            if item.get("status") not in valid_vh_statuses:
+            if "crash_events" in item and (not isinstance(item["crash_events"], int) or item["crash_events"] < 0):
+                errors.append(f"{p}version_health[{idx}].crash_events must be a non-negative integer")
+            if "affected_users" in item and (not isinstance(item["affected_users"], int) or item["affected_users"] < 0):
+                errors.append(f"{p}version_health[{idx}].affected_users must be a non-negative integer")
+            if "status" in item and item["status"] not in valid_vh_statuses:
                 errors.append(f"{p}version_health[{idx}].status must be one of {valid_vh_statuses}")
-            if item.get("trend") not in valid_vh_trends:
+            if "trend" in item and item["trend"] not in valid_vh_trends:
                 errors.append(f"{p}version_health[{idx}].trend must be one of {valid_vh_trends}")
             for rate_f in ("crash_free_users_rate", "crash_free_sessions_rate", "adoption_rate"):
-                rf_val = item.get(rate_f)
-                if rf_val is not None and (not isinstance(rf_val, (int, float)) or rf_val < 0.0 or rf_val > 1.0):
-                    errors.append(f"{p}version_health[{idx}].{rate_f} must be a float between 0.0 and 1.0 or null")
+                if rate_f in item:
+                    rf_val = item[rate_f]
+                    if rf_val is not None and (not isinstance(rf_val, (int, float)) or rf_val < 0.0 or rf_val > 1.0):
+                        errors.append(f"{p}version_health[{idx}].{rate_f} must be a float between 0.0 and 1.0 or null")
     elif vh is not None:
         errors.append(f"{p}version_health must be a list")
 
     # 7. Distributions
     dists = data.get("distributions")
     if isinstance(dists, dict):
-        for dk in ("platform", "device_models", "os_versions", "app_versions"):
-            d_list = dists.get(dk)
-            if not isinstance(d_list, list):
-                errors.append(f"{p}distributions.{dk} is required and must be a list")
+        # 7.1 Platform
+        if "platform" not in dists or not isinstance(dists["platform"], list):
+            errors.append(f"{p}distributions.platform is required and must be a list")
+        else:
+            for idx, item in enumerate(dists["platform"]):
+                if not isinstance(item, dict):
+                    errors.append(f"{p}distributions.platform[{idx}] must be an object")
+                    continue
+                for req_f in ("name", "events", "users", "share"):
+                    if req_f not in item:
+                        errors.append(f"{p}distributions.platform[{idx}].{req_f} is required")
+                if "name" in item and item["name"] not in {"ios", "android"}:
+                    errors.append(f"{p}distributions.platform[{idx}].name must be 'ios' or 'android'")
+                if "events" in item and (not isinstance(item["events"], int) or item["events"] < 0):
+                    errors.append(f"{p}distributions.platform[{idx}].events must be a non-negative integer")
+                if "users" in item and (not isinstance(item["users"], int) or item["users"] < 0):
+                    errors.append(f"{p}distributions.platform[{idx}].users must be a non-negative integer")
+                if "share" in item and (not isinstance(item["share"], (int, float)) or item["share"] < 0.0 or item["share"] > 1.0):
+                    errors.append(f"{p}distributions.platform[{idx}].share must be a float between 0.0 and 1.0")
+
+        # 7.2 Device models
+        if "device_models" not in dists or not isinstance(dists["device_models"], list):
+            errors.append(f"{p}distributions.device_models is required and must be a list")
+        else:
+            for idx, item in enumerate(dists["device_models"]):
+                if not isinstance(item, dict):
+                    errors.append(f"{p}distributions.device_models[{idx}] must be an object")
+                    continue
+                for req_f in ("model", "platform", "events", "users", "share"):
+                    if req_f not in item:
+                        errors.append(f"{p}distributions.device_models[{idx}].{req_f} is required")
+                if "model" in item and (not isinstance(item["model"], str) or not item["model"]):
+                    errors.append(f"{p}distributions.device_models[{idx}].model must be a non-empty string")
+                if "platform" in item and item["platform"] not in {"ios", "android", "all"}:
+                    errors.append(f"{p}distributions.device_models[{idx}].platform must be ios, android, or all")
+                if "events" in item and (not isinstance(item["events"], int) or item["events"] < 0):
+                    errors.append(f"{p}distributions.device_models[{idx}].events must be a non-negative integer")
+                if "users" in item and (not isinstance(item["users"], int) or item["users"] < 0):
+                    errors.append(f"{p}distributions.device_models[{idx}].users must be a non-negative integer")
+                if "share" in item and (not isinstance(item["share"], (int, float)) or item["share"] < 0.0 or item["share"] > 1.0):
+                    errors.append(f"{p}distributions.device_models[{idx}].share must be a float between 0.0 and 1.0")
+
+        # 7.3 OS versions
+        if "os_versions" not in dists or not isinstance(dists["os_versions"], list):
+            errors.append(f"{p}distributions.os_versions is required and must be a list")
+        else:
+            for idx, item in enumerate(dists["os_versions"]):
+                if not isinstance(item, dict):
+                    errors.append(f"{p}distributions.os_versions[{idx}] must be an object")
+                    continue
+                for req_f in ("os_version", "platform", "events", "users", "share"):
+                    if req_f not in item:
+                        errors.append(f"{p}distributions.os_versions[{idx}].{req_f} is required")
+                if "os_version" in item and (not isinstance(item["os_version"], str) or not item["os_version"]):
+                    errors.append(f"{p}distributions.os_versions[{idx}].os_version must be a non-empty string")
+                if "platform" in item and item["platform"] not in {"ios", "android", "all"}:
+                    errors.append(f"{p}distributions.os_versions[{idx}].platform must be ios, android, or all")
+                if "events" in item and (not isinstance(item["events"], int) or item["events"] < 0):
+                    errors.append(f"{p}distributions.os_versions[{idx}].events must be a non-negative integer")
+                if "users" in item and (not isinstance(item["users"], int) or item["users"] < 0):
+                    errors.append(f"{p}distributions.os_versions[{idx}].users must be a non-negative integer")
+                if "share" in item and (not isinstance(item["share"], (int, float)) or item["share"] < 0.0 or item["share"] > 1.0):
+                    errors.append(f"{p}distributions.os_versions[{idx}].share must be a float between 0.0 and 1.0")
+
+        # 7.4 App versions
+        if "app_versions" not in dists or not isinstance(dists["app_versions"], list):
+            errors.append(f"{p}distributions.app_versions is required and must be a list")
+        else:
+            for idx, item in enumerate(dists["app_versions"]):
+                if not isinstance(item, dict):
+                    errors.append(f"{p}distributions.app_versions[{idx}] must be an object")
+                    continue
+                for req_f in ("app_version", "platform", "events", "users", "share"):
+                    if req_f not in item:
+                        errors.append(f"{p}distributions.app_versions[{idx}].{req_f} is required")
+                if "app_version" in item and (not isinstance(item["app_version"], str) or not item["app_version"]):
+                    errors.append(f"{p}distributions.app_versions[{idx}].app_version must be a non-empty string")
+                if "platform" in item and item["platform"] not in {"ios", "android", "all"}:
+                    errors.append(f"{p}distributions.app_versions[{idx}].platform must be ios, android, or all")
+                if "events" in item and (not isinstance(item["events"], int) or item["events"] < 0):
+                    errors.append(f"{p}distributions.app_versions[{idx}].events must be a non-negative integer")
+                if "users" in item and (not isinstance(item["users"], int) or item["users"] < 0):
+                    errors.append(f"{p}distributions.app_versions[{idx}].users must be a non-negative integer")
+                if "share" in item and (not isinstance(item["share"], (int, float)) or item["share"] < 0.0 or item["share"] > 1.0):
+                    errors.append(f"{p}distributions.app_versions[{idx}].share must be a float between 0.0 and 1.0")
+
+        # 7.5 Custom keys (optional)
+        if "custom_keys" in dists and dists["custom_keys"] is not None:
+            if not isinstance(dists["custom_keys"], list):
+                errors.append(f"{p}distributions.custom_keys must be a list")
             else:
-                for idx, item in enumerate(d_list):
+                for idx, item in enumerate(dists["custom_keys"]):
                     if not isinstance(item, dict):
-                        errors.append(f"{p}distributions.{dk}[{idx}] must be an object")
+                        errors.append(f"{p}distributions.custom_keys[{idx}] must be an object")
                         continue
-                    if not isinstance(item.get("events"), int) or item["events"] < 0:
-                        errors.append(f"{p}distributions.{dk}[{idx}].events must be a non-negative integer")
-                    if not isinstance(item.get("users"), int) or item["users"] < 0:
-                        errors.append(f"{p}distributions.{dk}[{idx}].users must be a non-negative integer")
-                    if not isinstance(item.get("share"), (int, float)) or item["share"] < 0.0 or item["share"] > 1.0:
-                        errors.append(f"{p}distributions.{dk}[{idx}].share must be a float between 0.0 and 1.0")
+                    for req_f in ("key", "value", "platform", "events"):
+                        if req_f not in item:
+                            errors.append(f"{p}distributions.custom_keys[{idx}].{req_f} is required")
+                    if "events" in item and (not isinstance(item["events"], int) or item["events"] < 0):
+                        errors.append(f"{p}distributions.custom_keys[{idx}].events must be a non-negative integer")
     elif dists is not None:
         errors.append(f"{p}distributions must be an object")
 
@@ -573,26 +702,50 @@ def validate_app_dashboard_v2(data: dict, prefix: str = "") -> List[str]:
             ):
                 if req_k not in issue:
                     errors.append(f"{p}top_issues[{idx}].{req_k} is required")
-            if issue.get("platform") not in {"ios", "android"}:
+            if "platform" in issue and issue["platform"] not in {"ios", "android"}:
                 errors.append(f"{p}top_issues[{idx}].platform must be 'ios' or 'android'")
-            if issue.get("error_type") not in {"FATAL", "ANR", "NON_FATAL"}:
+            if "error_type" in issue and issue["error_type"] not in {"FATAL", "ANR", "NON_FATAL"}:
                 errors.append(f"{p}top_issues[{idx}].error_type must be FATAL, ANR, or NON_FATAL")
-            if not is_valid_iso8601_utc(issue.get("first_seen_timestamp")):
-                errors.append(f"{p}top_issues[{idx}].first_seen_timestamp must be ISO 8601 UTC timestamp")
-            if not is_valid_iso8601_utc(issue.get("last_seen_timestamp")):
-                errors.append(f"{p}top_issues[{idx}].last_seen_timestamp must be ISO 8601 UTC timestamp")
+            if "events" in issue and (not isinstance(issue["events"], int) or issue["events"] < 0):
+                errors.append(f"{p}top_issues[{idx}].events must be a non-negative integer")
+            if "affected_users" in issue and (not isinstance(issue["affected_users"], int) or issue["affected_users"] < 0):
+                errors.append(f"{p}top_issues[{idx}].affected_users must be a non-negative integer")
+            if "first_seen_timestamp" in issue and not is_valid_iso8601_utc(issue["first_seen_timestamp"]):
+                errors.append(f"{p}top_issues[{idx}].first_seen_timestamp must be ISO 8601 UTC timestamp (ending in Z)")
+            if "last_seen_timestamp" in issue and not is_valid_iso8601_utc(issue["last_seen_timestamp"]):
+                errors.append(f"{p}top_issues[{idx}].last_seen_timestamp must be ISO 8601 UTC timestamp (ending in Z)")
 
+            # Priority
             prio = issue.get("priority")
             if isinstance(prio, dict):
                 for pk in ("score", "level", "trend", "score_breakdown"):
                     if pk not in prio:
                         errors.append(f"{p}top_issues[{idx}].priority.{pk} is required")
-                if prio.get("level") not in {"P0", "P1", "P2", "P3"}:
+                if "score" in prio and (not isinstance(prio["score"], int) or prio["score"] < 0):
+                    errors.append(f"{p}top_issues[{idx}].priority.score must be a non-negative integer")
+                if "level" in prio and prio["level"] not in {"P0", "P1", "P2", "P3"}:
                     errors.append(f"{p}top_issues[{idx}].priority.level must be P0, P1, P2, or P3")
-                if prio.get("trend") not in {"new", "worsening", "stable", "improving"}:
+                if "trend" in prio and prio["trend"] not in {"new", "worsening", "stable", "improving"}:
                     errors.append(f"{p}top_issues[{idx}].priority.trend must be new, worsening, stable, or improving")
-            else:
+            elif prio is not None:
                 errors.append(f"{p}top_issues[{idx}].priority must be an object")
+
+            # Version distribution
+            vdist = issue.get("version_distribution")
+            if isinstance(vdist, list):
+                for vidx, vitem in enumerate(vdist):
+                    if not isinstance(vitem, dict):
+                        errors.append(f"{p}top_issues[{idx}].version_distribution[{vidx}] must be an object")
+                        continue
+                    for v_req in ("version", "events", "users"):
+                        if v_req not in vitem:
+                            errors.append(f"{p}top_issues[{idx}].version_distribution[{vidx}].{v_req} is required")
+                    if "events" in vitem and (not isinstance(vitem["events"], int) or vitem["events"] < 0):
+                        errors.append(f"{p}top_issues[{idx}].version_distribution[{vidx}].events must be a non-negative integer")
+                    if "users" in vitem and (not isinstance(vitem["users"], int) or vitem["users"] < 0):
+                        errors.append(f"{p}top_issues[{idx}].version_distribution[{vidx}].users must be a non-negative integer")
+            elif vdist is not None:
+                errors.append(f"{p}top_issues[{idx}].version_distribution must be a list")
 
             # Blame Frame
             bf = issue.get("blame_frame")
@@ -603,6 +756,12 @@ def validate_app_dashboard_v2(data: dict, prefix: str = "") -> List[str]:
                     for bfk in ("file", "line", "symbol", "class_name", "method_name", "is_blame", "source_available"):
                         if bfk not in bf:
                             errors.append(f"{p}top_issues[{idx}].blame_frame.{bfk} is required")
+                    if "line" in bf and bf["line"] is not None and (not isinstance(bf["line"], int) or bf["line"] <= 0):
+                        errors.append(f"{p}top_issues[{idx}].blame_frame.line must be a positive integer or null")
+                    if "is_blame" in bf and not isinstance(bf["is_blame"], bool):
+                        errors.append(f"{p}top_issues[{idx}].blame_frame.is_blame must be a boolean")
+                    if "source_available" in bf and not isinstance(bf["source_available"], bool):
+                        errors.append(f"{p}top_issues[{idx}].blame_frame.source_available must be a boolean")
 
             # AI Issue Analysis
             ai_ia = issue.get("ai_analysis")
@@ -610,12 +769,15 @@ def validate_app_dashboard_v2(data: dict, prefix: str = "") -> List[str]:
                 for ak in ("status", "root_cause", "suggested_fix", "effort", "confidence", "reasoning_sources"):
                     if ak not in ai_ia:
                         errors.append(f"{p}top_issues[{idx}].ai_analysis.{ak} is required")
-                if ai_ia.get("status") not in {"available", "unavailable", "pending", "skipped"}:
+                if "status" in ai_ia and ai_ia["status"] not in {"available", "unavailable", "pending", "skipped"}:
                     errors.append(f"{p}top_issues[{idx}].ai_analysis.status must be available, unavailable, pending, or skipped")
                 eff = ai_ia.get("effort")
                 if eff is not None and eff not in {"S", "M", "L"}:
                     errors.append(f"{p}top_issues[{idx}].ai_analysis.effort must be S, M, L, or null")
-            else:
+                conf = ai_ia.get("confidence")
+                if conf is not None and conf not in {"high", "medium", "low", "needs_manual_review"}:
+                    errors.append(f"{p}top_issues[{idx}].ai_analysis.confidence must be high, medium, low, needs_manual_review, or null")
+            elif ai_ia is not None:
                 errors.append(f"{p}top_issues[{idx}].ai_analysis must be an object")
 
             # Detail
@@ -636,14 +798,14 @@ def validate_app_dashboard_v2(data: dict, prefix: str = "") -> List[str]:
         for req_k in ("status", "model", "generated_at", "overview", "key_takeaways", "distribution_insights", "recommended_actions", "data_limitations"):
             if req_k not in ai:
                 errors.append(f"{p}ai_summary.{req_k} is required")
-        if ai.get("status") not in {"available", "unavailable", "disabled", "error"}:
+        if "status" in ai and ai["status"] not in {"available", "unavailable", "disabled", "error"}:
             errors.append(f"{p}ai_summary.status must be one of available, unavailable, disabled, error")
         gen_ts = ai.get("generated_at")
         if gen_ts is not None and not is_valid_iso8601_utc(gen_ts):
             errors.append(f"{p}ai_summary.generated_at must be ISO 8601 UTC timestamp or null")
-        if not isinstance(ai.get("overview"), str):
+        if "overview" in ai and not isinstance(ai["overview"], str):
             errors.append(f"{p}ai_summary.overview must be a string")
-        if not isinstance(ai.get("key_takeaways"), list):
+        if "key_takeaways" in ai and not isinstance(ai["key_takeaways"], list):
             errors.append(f"{p}ai_summary.key_takeaways must be a list of strings")
         rec_actions = ai.get("recommended_actions")
         if isinstance(rec_actions, list):
@@ -651,9 +813,12 @@ def validate_app_dashboard_v2(data: dict, prefix: str = "") -> List[str]:
                 if not isinstance(act, dict):
                     errors.append(f"{p}ai_summary.recommended_actions[{idx}] must be an object")
                     continue
-                if act.get("priority") not in {"P0", "P1", "P2", "P3"}:
+                for req_act in ("priority", "issue_id", "action", "effort"):
+                    if req_act not in act:
+                        errors.append(f"{p}ai_summary.recommended_actions[{idx}].{req_act} is required")
+                if "priority" in act and act["priority"] not in {"P0", "P1", "P2", "P3"}:
                     errors.append(f"{p}ai_summary.recommended_actions[{idx}].priority must be P0, P1, P2, or P3")
-                if act.get("effort") not in {"S", "M", "L"}:
+                if "effort" in act and act["effort"] not in {"S", "M", "L"}:
                     errors.append(f"{p}ai_summary.recommended_actions[{idx}].effort must be S, M, or L")
         elif rec_actions is not None:
             errors.append(f"{p}ai_summary.recommended_actions must be a list")
@@ -661,8 +826,12 @@ def validate_app_dashboard_v2(data: dict, prefix: str = "") -> List[str]:
         errors.append(f"{p}ai_summary must be an object")
 
     # 10. Limitations
-    if not isinstance(data.get("limitations"), list):
-        errors.append(f"{p}limitations must be a list of strings")
+    if "limitations" not in data or not isinstance(data.get("limitations"), list):
+        errors.append(f"{p}limitations is required and must be a list of strings")
+    else:
+        for l_item in data["limitations"]:
+            if not isinstance(l_item, str):
+                errors.append(f"{p}limitations item must be a string")
 
     return errors
 

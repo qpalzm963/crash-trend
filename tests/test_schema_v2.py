@@ -154,6 +154,48 @@ class TestDashboardV2Schema(unittest.TestCase):
         errors = validate_dashboard_v2(data)
         self.assertTrue(any("error_type must be FATAL, ANR, or NON_FATAL" in e for e in errors))
 
+    def test_missing_kpi_previous_value_rejected(self) -> None:
+        fixture_path = self.fixtures_dir / "dashboard_v2.json"
+        data = json.loads(fixture_path.read_text(encoding="utf-8"))
+        del data["apps"]["shop_app"]["kpi"]["crash_events"]["previous_value"]
+        errors = validate_dashboard_v2(data)
+        self.assertTrue(any("kpi.crash_events.previous_value is required" in e for e in errors))
+
+    def test_missing_crash_free_previous_rate_rejected(self) -> None:
+        fixture_path = self.fixtures_dir / "dashboard_v2.json"
+        data = json.loads(fixture_path.read_text(encoding="utf-8"))
+        del data["apps"]["shop_app"]["kpi"]["crash_free_users"]["previous_rate"]
+        errors = validate_dashboard_v2(data)
+        self.assertTrue(any("kpi.crash_free_users.previous_rate is required" in e for e in errors))
+
+    def test_distribution_missing_model_or_platform_rejected(self) -> None:
+        fixture_path = self.fixtures_dir / "dashboard_v2.json"
+        data = json.loads(fixture_path.read_text(encoding="utf-8"))
+        # Remove model
+        del data["apps"]["shop_app"]["distributions"]["device_models"][0]["model"]
+        errors = validate_dashboard_v2(data)
+        self.assertTrue(any("distributions.device_models[0].model is required" in e for e in errors))
+
+        # Invalid platform
+        data_bad_pf = json.loads(fixture_path.read_text(encoding="utf-8"))
+        data_bad_pf["apps"]["shop_app"]["distributions"]["device_models"][0]["platform"] = "windows_phone"
+        errors_pf = validate_dashboard_v2(data_bad_pf)
+        self.assertTrue(any("distributions.device_models[0].platform" in e for e in errors_pf))
+
+    def test_invalid_version_health_affected_users_rejected(self) -> None:
+        fixture_path = self.fixtures_dir / "dashboard_v2.json"
+        data = json.loads(fixture_path.read_text(encoding="utf-8"))
+        data["apps"]["shop_app"]["version_health"][0]["affected_users"] = -10
+        errors = validate_dashboard_v2(data)
+        self.assertTrue(any("version_health[0].affected_users must be a non-negative integer" in e for e in errors))
+
+    def test_invalid_top_issues_events_rejected(self) -> None:
+        fixture_path = self.fixtures_dir / "dashboard_v2.json"
+        data = json.loads(fixture_path.read_text(encoding="utf-8"))
+        data["apps"]["shop_app"]["top_issues"][0]["events"] = -5
+        errors = validate_dashboard_v2(data)
+        self.assertTrue(any("top_issues[0].events must be a non-negative integer" in e for e in errors))
+
     def test_malformed_input_handled_gracefully_without_crash(self) -> None:
         """Ensures validator does not throw unhandled exceptions on malformed structures."""
         malformed_cases = [
