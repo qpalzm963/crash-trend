@@ -3,15 +3,12 @@
 Dashboard V2 重構：
 - 獨立 Overview 聚合查詢：COUNT(*) 全量事件、COUNT(DISTINCT installation_uuid) 全量去重用戶、COUNTIF 各錯誤類型
 - 每日趨勢 (Daily Trend)：依 FORMAT_TIMESTAMP('%Y-%m-%d', event_timestamp) 聚合每日 events, users, fatal, anr, non_fatal
-- Top Issues 聚合：依 Crashlytics 真實 schema（exceptions 陣列）提取 title / subtitle / error_type / ISO 8601 UTC 時間戳與 version_distribution
-- App 表過濾：鎖定當前 App 對應的 Crashlytics 表名，避免同一 Firebase 專案多 App 混淆
+- Top Issues 聚合：依 Crashlytics 真實 schema（exceptions / error / threads）跨平台 COALESCE 提取 title / subtitle / error_type / ISO 8601 UTC 時間戳與 version_distribution
+- App 表過濾：鎖定當前 App 對應的 Crashlytics 表名，找不到時回傳空陣列，防範 multi-app 專案資料污染
+- 時間窗口對齊：全面以 calendar-day boundary (DATE_SUB(CURRENT_DATE(), INTERVAL {days - 1} DAY)) 對齊 SQL 與 Python buckets
+- New Issues 計算：以 MIN(event_timestamp) 判定首次出現時間
 - 維度分布 (Distributions)：platform, device_models, os_versions, app_versions, custom_keys
 - 資料契約整合：提供 transform_bq_to_v2 產生符合 Dashboard V2 Data Schema 的標準資料
-
-憑證解析順序：
-  1. apps.yaml `credentials.bq_service_account`（服務帳號 json 路徑）— 伺服器部署用
-  2. Application Default Credentials — 筆電上沿用 `gcloud auth login`
-輸出 out/<app>/crashlytics_bq.json
 """
 
 from __future__ import annotations
@@ -87,7 +84,7 @@ except ImportError:
 # ---------------------------------------------------------------------------
 
 SQLS: Dict[str, str] = {
-    # 1. 獨立 Overview 聚合查詢（期間內全量計數與全量去重用戶）
+    # 1. 獨立 Overview 聚合查詢（期間內全量計數與全量去重用戶，對齊日曆日邊界）
     "overview": """
         SELECT
             COUNT(*) AS total_events,
@@ -96,7 +93,8 @@ SQLS: Dict[str, str] = {
             COUNTIF(UPPER(error_type) = 'ANR') AS anr_events,
             COUNTIF(UPPER(error_type) NOT IN ('FATAL', 'ANR') OR error_type IS NULL) AS non_fatal_events
         FROM `{table}`
-        WHERE event_timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {days} DAY)""",
+        WHERE event_timestamp >= TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL {days} - 1 DAY))
+          AND event_timestamp < TIMESTAMP_ADD(TIMESTAMP(CURRENT_DATE()), INTERVAL 1 DAY)""",
     # 2. 每日趨勢（依 YYYY-MM-DD 聚合每日 events, users, fatal, anr, non_fatal）
     "daily_trend": """
         SELECT
@@ -107,21 +105,27 @@ SQLS: Dict[str, str] = {
             COUNTIF(UPPER(error_type) = 'ANR') AS anr_events,
             COUNTIF(UPPER(error_type) NOT IN ('FATAL', 'ANR') OR error_type IS NULL) AS non_fatal_events
         FROM `{table}`
-        WHERE event_timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {days} DAY)
+        WHERE event_timestamp >= TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL {days} - 1 DAY))
+          AND event_timestamp < TIMESTAMP_ADD(TIMESTAMP(CURRENT_DATE()), INTERVAL 1 DAY)
         GROUP BY 1
         ORDER BY date ASC""",
-    # 3. Top Issues 聚合（依真實 Crashlytics exceptions 巢狀結構提取 title/subtitle）
+    # 3. Top Issues 聚合（跨平台 COALESCE exceptions / error / threads 提取 title/subtitle）
     "top_issues": """
         SELECT
             issue_id,
             COALESCE(
+                exceptions[SAFE_OFFSET(0)].title,
                 exceptions[SAFE_OFFSET(0)].type,
-                exceptions[SAFE_OFFSET(0)].name,
+                error[SAFE_OFFSET(0)].title,
+                threads[SAFE_OFFSET(0)].title,
                 'Unknown Error'
             ) AS issue_title,
             COALESCE(
-                exceptions[SAFE_OFFSET(0)].message,
+                exceptions[SAFE_OFFSET(0)].subtitle,
+                exceptions[SAFE_OFFSET(0)].exception_message,
                 exceptions[SAFE_OFFSET(0)].frames[SAFE_OFFSET(0)].symbol,
+                error[SAFE_OFFSET(0)].subtitle,
+                threads[SAFE_OFFSET(0)].subtitle,
                 ''
             ) AS issue_subtitle,
             error_type,
@@ -132,22 +136,23 @@ SQLS: Dict[str, str] = {
             MIN(application.display_version) AS first_seen_version,
             MAX(application.display_version) AS last_seen_version
         FROM `{table}`
-        WHERE event_timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {days} DAY)
+        WHERE event_timestamp >= TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL {days} - 1 DAY))
+          AND event_timestamp < TIMESTAMP_ADD(TIMESTAMP(CURRENT_DATE()), INTERVAL 1 DAY)
         GROUP BY 1, 2, 3, 4
         ORDER BY events DESC
         LIMIT 50""",
-    # 4. 新增問題數 (New Issues)：本期出現且在此之前無歷史記錄之 Issue 數
+    # 4. 新增問題數 (New Issues)：以可用歷史中 MIN(event_timestamp) 落在當期者判定
     "new_issues": """
-        SELECT
-            COUNT(DISTINCT issue_id) AS new_issues_count
-        FROM `{table}`
-        WHERE event_timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {days} DAY)
-          AND issue_id NOT IN (
-            SELECT DISTINCT issue_id
+        WITH issue_first_seen AS (
+            SELECT
+                issue_id,
+                MIN(event_timestamp) AS first_seen
             FROM `{table}`
-            WHERE event_timestamp < TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {days} DAY)
-              AND event_timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {days} * 2 DAY)
-          )""",
+            GROUP BY issue_id
+        )
+        SELECT
+            COUNTIF(first_seen >= TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL {days} - 1 DAY))) AS new_issues_count
+        FROM issue_first_seen""",
     # 5. 逐 Issue 版本分布（建立 version_distribution 與 semver 範圍重算）
     "issue_versions": """
         SELECT
@@ -156,7 +161,8 @@ SQLS: Dict[str, str] = {
             COUNT(*) AS events,
             COUNT(DISTINCT installation_uuid) AS users
         FROM `{table}`
-        WHERE event_timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {days} DAY)
+        WHERE event_timestamp >= TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL {days} - 1 DAY))
+          AND event_timestamp < TIMESTAMP_ADD(TIMESTAMP(CURRENT_DATE()), INTERVAL 1 DAY)
         GROUP BY 1, 2
         ORDER BY events DESC
         LIMIT 500""",
@@ -167,7 +173,8 @@ SQLS: Dict[str, str] = {
             COUNT(*) AS events,
             COUNT(DISTINCT installation_uuid) AS users
         FROM `{table}`
-        WHERE event_timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {days} DAY)
+        WHERE event_timestamp >= TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL {days} - 1 DAY))
+          AND event_timestamp < TIMESTAMP_ADD(TIMESTAMP(CURRENT_DATE()), INTERVAL 1 DAY)
         GROUP BY 1
         ORDER BY events DESC
         LIMIT 30""",
@@ -178,7 +185,8 @@ SQLS: Dict[str, str] = {
             COUNT(*) AS events,
             COUNT(DISTINCT installation_uuid) AS users
         FROM `{table}`
-        WHERE event_timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {days} DAY)
+        WHERE event_timestamp >= TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL {days} - 1 DAY))
+          AND event_timestamp < TIMESTAMP_ADD(TIMESTAMP(CURRENT_DATE()), INTERVAL 1 DAY)
         GROUP BY 1
         ORDER BY events DESC
         LIMIT 30""",
@@ -189,20 +197,11 @@ SQLS: Dict[str, str] = {
             COUNT(*) AS events,
             COUNT(DISTINCT installation_uuid) AS users
         FROM `{table}`
-        WHERE event_timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {days} DAY)
+        WHERE event_timestamp >= TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL {days} - 1 DAY))
+          AND event_timestamp < TIMESTAMP_ADD(TIMESTAMP(CURRENT_DATE()), INTERVAL 1 DAY)
         GROUP BY 1
         ORDER BY events DESC
         LIMIT 30""",
-    # 9. 週趨勢（相容舊版快照與摘要）
-    "weekly_trend": """
-        SELECT
-            FORMAT_TIMESTAMP('%Y-%W', event_timestamp) AS week,
-            COUNT(*) AS events,
-            COUNT(DISTINCT installation_uuid) AS users
-        FROM `{table}`
-        WHERE event_timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {days} DAY)
-        GROUP BY 1
-        ORDER BY 1""",
 }
 
 
@@ -218,7 +217,8 @@ def build_custom_keys_sql(table: str, days: int, keys: List[str]) -> Optional[st
             key.value AS value,
             COUNT(*) AS events
         FROM `{table}`, UNNEST(custom_keys) AS key
-        WHERE event_timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {days} DAY)
+        WHERE event_timestamp >= TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL {days} - 1 DAY))
+          AND event_timestamp < TIMESTAMP_ADD(TIMESTAMP(CURRENT_DATE()), INTERVAL 1 DAY)
           AND key.key IN ({key_list})
         GROUP BY 1, 2
         ORDER BY events DESC
@@ -251,7 +251,6 @@ def format_iso_utc(ts: Any, fallback: Optional[str] = None) -> str:
         if is_valid_iso8601_utc(s):
             return s[:-6] + "Z" if s.endswith("+00:00") else s
 
-        # 解析常見 BigQuery 字串格式
         clean = s.replace(" UTC", "+00:00").replace(" ", "T")
         try:
             parsed = dt.datetime.fromisoformat(clean)
@@ -301,7 +300,7 @@ def make_client(project: str) -> bigquery.Client:
 
         creds = service_account.Credentials.from_service_account_file(str(sa_file))
         return bigquery.Client(project=project, credentials=creds)
-    return bigquery.Client(project=project)  # ADC（gcloud auth login）
+    return bigquery.Client(project=project)  # ADC
 
 
 def list_crash_tables(
@@ -310,17 +309,15 @@ def list_crash_tables(
     dataset: str,
     app_config: Optional[dict] = None,
 ) -> List[str]:
-    """列出 Crashlytics 批次表，並根據 App 設定過濾，避免跨 App 混淆。"""
+    """列出 Crashlytics 批次表，並根據 App 設定過濾，避免跨 App 混淆。找不到時回傳空陣列。"""
     tables = [t.table_id for t in client.list_tables(f"{project}.{dataset}")]
-    # 排除 _REALTIME（批次表才完整）
     batch_tables = [t for t in tables if not t.endswith("_REALTIME")]
 
     if not app_config:
         return batch_tables
 
-    # 依 app 設定精確過濾
     explicit_tables = app_config.get("tables")
-    if explicit_tables:
+    if explicit_tables is not None:
         return [t for t in batch_tables if t in explicit_tables]
 
     package_filters = []
@@ -336,8 +333,8 @@ def list_crash_tables(
             t for t in batch_tables
             if any(t.lower().startswith(pf.lower()) or pf.lower() in t.lower() for pf in package_filters)
         ]
-        if matched:
-            return matched
+        # 嚴格過濾：有設定 filter 但找不到 match 時回傳空陣列，絕不 silent fallback all
+        return matched
 
     return batch_tables
 
@@ -347,7 +344,6 @@ def run_query(client: bigquery.Client, sql: str) -> List[dict]:
     out: List[dict] = []
     for r in rows:
         d = dict(r)
-        # 轉換 datetime 為 ISO 8601 UTC 字串
         for k, v in d.items():
             if isinstance(v, (dt.datetime, dt.date)):
                 d[k] = format_iso_utc(v)
@@ -367,9 +363,10 @@ def transform_bq_to_v2(
 ) -> AppDashboardV2Data:
     """把 BigQuery 查詢結果字典轉換為嚴格符合 Schema V2 的 AppDashboardV2Data。"""
     end_dt = end_time.astimezone(dt.timezone.utc) if end_time else dt.datetime.now(dt.timezone.utc)
-    start_dt = end_dt - dt.timedelta(days=days)
-    start_time_iso = start_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-    end_time_iso = end_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+    end_date = end_dt.date()
+    start_date = end_date - dt.timedelta(days=days - 1)
+    start_time_iso = f"{start_date.isoformat()}T00:00:00Z"
+    end_time_iso = f"{end_date.isoformat()}T23:59:59Z"
     now_iso = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     app_id = str(app_config.get("app_id") or app_config.get("name") or "app")
@@ -381,7 +378,6 @@ def transform_bq_to_v2(
     tables_data: Dict[str, dict] = (bq_result or {}).get("tables") or {}
     queried_tables = list(tables_data.keys())
 
-    # 1. 偵測平台列表
     detected_platforms = sorted(list({extract_platform_from_table(t) for t in queried_tables}))
     if not detected_platforms:
         detected_platforms = [p for p in app_config.get("platforms", ["android"]) if p in ("ios", "android")]
@@ -430,9 +426,7 @@ def transform_bq_to_v2(
         },
     }
 
-    # 2. 每日趨勢序列初始化（嚴格包含 days 天，日期 YYYY-MM-DD 升冪）
-    end_date = end_dt.date()
-    start_date = end_date - dt.timedelta(days=days - 1)
+    # 日期序列精確對齊日曆日（長度恰為 days）
     date_keys = [(start_date + dt.timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days)]
 
     daily_buckets: Dict[str, dict] = {
@@ -447,7 +441,6 @@ def transform_bq_to_v2(
         for d in date_keys
     }
 
-    # 3. 聚合各表數據
     overview_total_events = 0
     overview_total_users = 0
     overview_fatal = 0
@@ -469,7 +462,6 @@ def transform_bq_to_v2(
         if platform not in platform_stats:
             platform_stats[platform] = {"events": 0, "users": 0}
 
-        # 3.1 Overview 聚合取數
         ov_rows = t_data.get("overview") or []
         t_events, t_users, t_fatal, t_anr, t_nonfatal = 0, 0, 0, 0, 0
         if ov_rows:
@@ -480,7 +472,6 @@ def transform_bq_to_v2(
             t_anr = int(ov.get("anr_events") or 0)
             t_nonfatal = int(ov.get("non_fatal_events") or 0)
         else:
-            # Fallback 從 daily_trend 累計
             for dr in t_data.get("daily_trend") or []:
                 t_events += int(dr.get("events") or 0)
                 t_users += int(dr.get("users") or 0)
@@ -497,13 +488,11 @@ def transform_bq_to_v2(
         platform_stats[platform]["events"] += t_events
         platform_stats[platform]["users"] += t_users
 
-        # 3.2 New Issues 聚合
         new_iss_rows = t_data.get("new_issues") or []
         if new_iss_rows:
             calculated_new_issues += int(new_iss_rows[0].get("new_issues_count") or 0)
             has_new_issues_data = True
 
-        # 3.3 每日趨勢取數與補零
         for dr in t_data.get("daily_trend") or []:
             d_str = dr.get("date")
             if d_str in daily_buckets:
@@ -525,7 +514,6 @@ def transform_bq_to_v2(
                     bucket["by_platform"][platform]["events"] += ev
                     bucket["by_platform"][platform]["users"] += us
 
-        # 3.4 Issue 與版本分布關聯
         for iv in t_data.get("issue_versions") or []:
             iid = str(iv.get("issue_id") or "")
             if iid:
@@ -550,7 +538,6 @@ def transform_bq_to_v2(
         for ck in t_data.get("custom_keys") or []:
             raw_custom_keys.append({**ck, "_platform": platform})
 
-    # 4. 組裝 DailyTrendPoint 陣列
     daily_trend: List[DailyTrendPoint] = []
     for d_str in date_keys:
         b = daily_buckets[d_str]
@@ -558,7 +545,6 @@ def transform_bq_to_v2(
         fat = b["fatal_events"]
         anr = b["anr_events"]
         nfat = b["non_fatal_events"]
-        # 嚴格一致性保證：fatal + anr + non_fatal == crash_events
         if fat + anr + nfat != ev:
             nfat = max(0, ev - fat - anr)
 
@@ -575,7 +561,6 @@ def transform_bq_to_v2(
             "by_platform": b["by_platform"],
         })
 
-    # 確保 KPI 與 Daily Trend 總量精確一致
     daily_sum_events = sum(d["crash_events"] for d in daily_trend)
     daily_sum_fatal = sum(d["fatal_events"] for d in daily_trend)
     daily_sum_anr = sum(d["anr_events"] for d in daily_trend)
@@ -594,7 +579,6 @@ def transform_bq_to_v2(
     if overview_fatal + overview_anr + overview_non_fatal != overview_total_events:
         overview_non_fatal = max(0, overview_total_events - overview_fatal - overview_anr)
 
-    # 5. 組裝 OverviewKPI
     new_issues_metric: KPIMetric
     if has_new_issues_data:
         new_issues_metric = {
@@ -650,7 +634,6 @@ def transform_bq_to_v2(
         },
     }
 
-    # 6. 組裝 Top Issues
     seen_issues: Dict[str, IssueSummary] = {}
 
     for it in raw_issues:
@@ -716,8 +699,6 @@ def transform_bq_to_v2(
 
     top_issues = sorted(seen_issues.values(), key=lambda x: (-x["events"], -x["affected_users"]))[:50]
 
-    # 7. 組裝 Distributions
-    # 7.1 Platform 分布
     platform_dist: List[PlatformDistItem] = []
     for p_name in detected_platforms:
         p_stat = platform_stats.get(p_name, {"events": 0, "users": 0})
@@ -730,7 +711,6 @@ def transform_bq_to_v2(
             "share": min(1.0, max(0.0, p_share)),
         })
 
-    # 7.2 Device models 分布
     device_models: List[DeviceDistItem] = []
     for dev in sorted(raw_devices, key=lambda x: -int(x.get("events") or 0))[:30]:
         dev_ev = int(dev.get("events") or 0)
@@ -744,7 +724,6 @@ def transform_bq_to_v2(
             "share": min(1.0, max(0.0, dev_share)),
         })
 
-    # 7.3 OS versions 分布
     os_versions: List[OSDistItem] = []
     for os_r in sorted(raw_os, key=lambda x: -int(x.get("events") or 0))[:30]:
         os_ev = int(os_r.get("events") or 0)
@@ -758,7 +737,6 @@ def transform_bq_to_v2(
             "share": min(1.0, max(0.0, os_share)),
         })
 
-    # 7.4 App versions 分布
     app_versions: List[AppVersionDistItem] = []
     for app_r in sorted(raw_apps, key=lambda x: -int(x.get("events") or 0))[:30]:
         app_ev = int(app_r.get("events") or 0)
@@ -772,7 +750,6 @@ def transform_bq_to_v2(
             "share": min(1.0, max(0.0, app_share)),
         })
 
-    # 7.5 Custom keys 分布
     custom_keys: List[CustomKeyDistributionItem] = []
     for ck_r in sorted(raw_custom_keys, key=lambda x: -int(x.get("events") or 0))[:60]:
         custom_keys.append({
@@ -790,7 +767,6 @@ def transform_bq_to_v2(
         "custom_keys": custom_keys,
     }
 
-    # 8. 組裝 Version Health
     version_health: List[VersionHealthItem] = []
     sorted_app_vers = sorted(raw_apps, key=lambda x: version_key(str(x.get("app_version") or "")), reverse=True)
     for idx, v_item in enumerate(sorted_app_vers[:20]):
@@ -809,7 +785,6 @@ def transform_bq_to_v2(
             "trend": "stable",
         })
 
-    # 9. 組裝 AI Summary
     ai_summary = {
         "status": "unavailable",
         "model": None,
@@ -821,6 +796,10 @@ def transform_bq_to_v2(
         "data_limitations": None,
     }
 
+    limitations = [
+        "New Issues 計算以 BigQuery 現存資料之 MIN(event_timestamp) 判定",
+    ]
+
     result_data: AppDashboardV2Data = {
         "metadata": metadata,
         "period": period,
@@ -831,7 +810,7 @@ def transform_bq_to_v2(
         "distributions": distributions,
         "top_issues": top_issues,
         "ai_summary": ai_summary,  # type: ignore
-        "limitations": [],
+        "limitations": limitations,
     }
 
     return result_data
@@ -851,7 +830,7 @@ def main() -> None:
     try:
         client = make_client(project)
         tables = list_crash_tables(client, project, dataset, app_config={**app, "app_id": args.app})
-    except Exception as e:  # dataset 不存在 / 憑證 / 權限
+    except Exception as e:
         write_json(out_dir(args.app) / "crashlytics_bq.json", {**result, "errors": {"dataset": str(e)[:800]}})
         sys.exit(
             f"[注意] 無法列出 {project}:{dataset} —— 尚未連結 BigQuery export、無資料，或憑證問題。\n"
@@ -862,7 +841,7 @@ def main() -> None:
 
     if not tables:
         write_json(out_dir(args.app) / "crashlytics_bq.json", result)
-        sys.exit("[注意] dataset 存在但沒有批次表（啟用當日屬正常，隔日再跑）")
+        sys.exit(f"[注意] 沒有找到符合 App {args.app} 的 Crashlytics 批次表")
 
     sqls = dict(SQLS)
     keys = [k for k in app.get("custom_keys", []) if re.fullmatch(r"[\w-]+", k)]
@@ -871,7 +850,6 @@ def main() -> None:
         fq = f"{project}.{dataset}.{table}"
         result["tables"][table] = {}
 
-        # 動態 custom_keys
         table_sqls = dict(sqls)
         if keys:
             ck_sql = build_custom_keys_sql(fq, args.days, keys)
@@ -887,10 +865,8 @@ def main() -> None:
                 result["errors"][f"{table}.{name}"] = str(e)[:800]
                 print(f"  ⚠ {table}.{name} 失敗：{str(e)[:200]}", file=sys.stderr)
 
-    # 寫入 raw bq 結果
     write_json(out_dir(args.app) / "crashlytics_bq.json", result)
 
-    # 產生並驗證 Schema V2 資料
     app_v2_data = transform_bq_to_v2(result, {**app, "app_id": args.app}, days=args.days)
     val_errors = validate_app_dashboard_v2(app_v2_data)
     if val_errors:

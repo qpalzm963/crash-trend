@@ -44,7 +44,6 @@ class TestBigQuerySQLAssembly(unittest.TestCase):
             "by_device",
             "by_os",
             "by_app_version",
-            "weekly_trend",
         ]
         for key in required_sqls:
             self.assertIn(key, SQLS, f"SQLS dictionary missing query key: {key}")
@@ -57,7 +56,7 @@ class TestBigQuerySQLAssembly(unittest.TestCase):
         self.assertIn("COUNTIF(UPPER(error_type) = 'FATAL') AS fatal_events", sql)
         self.assertIn("COUNTIF(UPPER(error_type) = 'ANR') AS anr_events", sql)
         self.assertIn("COUNTIF(UPPER(error_type) NOT IN ('FATAL', 'ANR') OR error_type IS NULL) AS non_fatal_events", sql)
-        self.assertIn("WHERE event_timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {days} DAY)", sql)
+        self.assertIn("DATE_SUB(CURRENT_DATE(), INTERVAL {days} - 1 DAY)", sql)
 
     def test_daily_trend_sql_format(self) -> None:
         sql = SQLS["daily_trend"]
@@ -70,11 +69,12 @@ class TestBigQuerySQLAssembly(unittest.TestCase):
         self.assertIn("GROUP BY 1", sql)
         self.assertIn("ORDER BY date ASC", sql)
 
-    def test_top_issues_sql_utc_timestamp_and_exceptions_formatting(self) -> None:
+    def test_top_issues_sql_utc_timestamp_and_cross_platform_coalesce(self) -> None:
         sql = SQLS["top_issues"]
-        # Real Crashlytics schema checks
+        # Real Crashlytics cross-platform schema checks
         self.assertIn("exceptions[SAFE_OFFSET(0)].type", sql)
-        self.assertIn("exceptions[SAFE_OFFSET(0)].name", sql)
+        self.assertIn("error[SAFE_OFFSET(0)].title", sql)
+        self.assertIn("threads[SAFE_OFFSET(0)].title", sql)
         self.assertIn("FORMAT_TIMESTAMP('%Y-%m-%dT%H:%M:%SZ', MIN(event_timestamp)) AS first_seen_timestamp", sql)
         self.assertIn("FORMAT_TIMESTAMP('%Y-%m-%dT%H:%M:%SZ', MAX(event_timestamp)) AS last_seen_timestamp", sql)
         self.assertIn("MIN(application.display_version) AS first_seen_version", sql)
@@ -84,8 +84,8 @@ class TestBigQuerySQLAssembly(unittest.TestCase):
 
     def test_new_issues_sql_format(self) -> None:
         sql = SQLS["new_issues"]
-        self.assertIn("COUNT(DISTINCT issue_id) AS new_issues_count", sql)
-        self.assertIn("NOT IN", sql)
+        self.assertIn("MIN(event_timestamp) AS first_seen", sql)
+        self.assertIn("COUNTIF(first_seen >= TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL {days} - 1 DAY))) AS new_issues_count", sql)
 
     def test_issue_versions_sql_format(self) -> None:
         sql = SQLS["issue_versions"]
@@ -102,7 +102,7 @@ class TestBigQuerySQLAssembly(unittest.TestCase):
         sql = build_custom_keys_sql(table, days, keys)
         self.assertIsNotNone(sql)
         self.assertIn(f"`{table}`", sql)
-        self.assertIn("INTERVAL 30 DAY", sql)
+        self.assertIn("INTERVAL 30 - 1 DAY", sql)
         self.assertIn("'user_tier', 'screen_name', 'network_type'", sql)
         self.assertIn("UNNEST(custom_keys) AS key", sql)
 
@@ -141,6 +141,17 @@ class TestTableFiltering(unittest.TestCase):
         self.assertIn("com_example_shop_IOS", res)
         self.assertNotIn("com_example_rider_ANDROID", res)
         self.assertNotIn("com_example_shop_ANDROID_REALTIME", res)
+
+    def test_list_crash_tables_returns_empty_when_no_match(self) -> None:
+        mock_client = MagicMock()
+        t_rider_and = MagicMock()
+        t_rider_and.table_id = "com_example_rider_ANDROID"
+        mock_client.list_tables.return_value = [t_rider_and]
+
+        # When filter has no match, return [] strictly, do NOT fallback to all tables
+        shop_cfg = {"package_name": "com.example.nonexistent", "app_id": "nonexistent_app"}
+        res = list_crash_tables(mock_client, "proj", "dataset", app_config=shop_cfg)
+        self.assertEqual(res, [])
 
 
 class TestTimestampAndDataHelpers(unittest.TestCase):
