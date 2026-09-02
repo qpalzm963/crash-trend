@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import sys
 from pathlib import Path
@@ -25,6 +26,80 @@ def get_vendor_chartjs() -> str:
     return "/* Chart.js vendor script not found */"
 
 
+def assemble_bundle_from_apps(cfg: Optional[dict] = None) -> Optional[dict]:
+    """Scans out/<app_id>/ for app-level V2 data and bundles them into a DashboardV2Bundle."""
+    if cfg is None:
+        try:
+            import yaml
+            apps_yaml = ROOT / "apps.yaml"
+            if not apps_yaml.exists():
+                apps_yaml = ROOT / "apps.example.yaml"
+            if apps_yaml.exists():
+                with open(apps_yaml, encoding="utf-8") as f:
+                    cfg = yaml.safe_load(f) or {}
+            else:
+                cfg = {}
+        except Exception:
+            cfg = {}
+
+    apps_cfg = (cfg or {}).get("apps") or {}
+    collected_apps: dict[str, dict] = {}
+
+    for app_id in apps_cfg.keys():
+        app_out_dir = ROOT / "out" / app_id
+        for ac in [app_out_dir / "dashboard_v2.json", app_out_dir / "app_v2.json"]:
+            if ac.is_file():
+                try:
+                    data = json.loads(ac.read_text(encoding="utf-8"))
+                    if "apps" in data and app_id in data["apps"]:
+                        collected_apps[app_id] = data["apps"][app_id]
+                    elif "metadata" in data and "kpi" in data:
+                        collected_apps[app_id] = data
+                    break
+                except Exception as e:
+                    print(f"  [Warning] Failed to load {ac}: {e}")
+
+    if not collected_apps:
+        out_root = ROOT / "out"
+        if out_root.is_dir():
+            for p in out_root.iterdir():
+                if p.is_dir() and p.name not in collected_apps:
+                    for ac in [p / "dashboard_v2.json", p / "app_v2.json"]:
+                        if ac.is_file():
+                            try:
+                                data = json.loads(ac.read_text(encoding="utf-8"))
+                                if "apps" in data and p.name in data["apps"]:
+                                    collected_apps[p.name] = data["apps"][p.name]
+                                elif "metadata" in data and "kpi" in data:
+                                    collected_apps[p.name] = data
+                                break
+                            except Exception:
+                                pass
+
+    if not collected_apps:
+        return None
+
+    default_app = list(collected_apps.keys())[0]
+    now_utc = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    bundle = {
+        "schema_version": "2.0",
+        "generated_at": now_utc,
+        "default_app": default_app,
+        "apps": collected_apps,
+    }
+
+    # Save assembled bundle to out/ and reports/
+    out_dir = ROOT / "out"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "dashboard_v2.json").write_text(json.dumps(bundle, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    reports_dir = ROOT / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    (reports_dir / "dashboard_v2.json").write_text(json.dumps(bundle, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    return bundle
+
+
 def collect_data(data_path: Optional[Union[str, Path]] = None) -> dict:
     """Loads Dashboard V2 bundle data from specified path or standard locations."""
     if data_path:
@@ -33,7 +108,12 @@ def collect_data(data_path: Optional[Union[str, Path]] = None) -> dict:
             return json.loads(p.read_text(encoding="utf-8"))
         raise FileNotFoundError(f"Specified data file not found: {data_path}")
 
-    # Search candidates
+    # 1. Try to assemble from multi-app out/<app>/ data
+    assembled = assemble_bundle_from_apps()
+    if assembled:
+        return assembled
+
+    # 2. Search candidates
     candidates = [
         ROOT / "reports" / "dashboard_v2.json",
         ROOT / "tests" / "fixtures" / "dashboard_v2.json",
