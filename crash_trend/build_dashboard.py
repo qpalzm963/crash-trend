@@ -2780,6 +2780,14 @@ function resolveLatestVersion(app, snap, platformFilter) {
   return versions[0].version;
 }
 
+function resolveLatestVersionsByPlatform(app, snap) {
+  const result = { android: null, ios: null };
+  if (!app) return result;
+  result.android = resolveLatestVersion(app, snap, "android");
+  result.ios = resolveLatestVersion(app, snap, "ios");
+  return result;
+}
+
 function updateVersionFilterOptions(preserveSelected = true) {
   const sel = $("filterVersion");
   if (!sel) return;
@@ -2790,17 +2798,35 @@ function updateVersionFilterOptions(preserveSelected = true) {
 
   const prevVal = preserveSelected ? sel.value : "ALL";
   const authVersions = getAppAuthoritativeVersions(app, snap, platFilter);
-  const latestVer = resolveLatestVersion(app, snap, platFilter);
+  const latestMap = resolveLatestVersionsByPlatform(app, snap);
 
   let html = `<option value="ALL">全部版本</option>`;
-  if (latestVer) {
-    html += `<option value="LATEST">最新版本 (${esc(latestVer)})</option>`;
+  if (platFilter !== "ALL") {
+    const latestVer = platFilter === "ios" ? latestMap.ios : latestMap.android;
+    if (latestVer) {
+      html += `<option value="LATEST">最新版本 (${esc(latestVer)})</option>`;
+    } else {
+      html += `<option value="LATEST">最新版本</option>`;
+    }
   } else {
-    html += `<option value="LATEST">最新版本</option>`;
+    const parts = [];
+    if (latestMap.android) parts.push(`Android: ${latestMap.android}`);
+    if (latestMap.ios) parts.push(`iOS: ${latestMap.ios}`);
+    if (parts.length > 1) {
+      html += `<option value="LATEST">最新版本 (依各平台: ${esc(parts.join(", "))})</option>`;
+    } else if (parts.length === 1) {
+      html += `<option value="LATEST">最新版本 (${esc(parts[0])})</option>`;
+    } else {
+      html += `<option value="LATEST">最新版本 (依平台)</option>`;
+    }
   }
 
   authVersions.forEach(v => {
-    html += `<option value="${esc(v.version)}">${esc(v.version)}${v.isLatest ? " (最新)" : ""}</option>`;
+    const isLatestPf = (v.platforms.has("android") && v.version === latestMap.android) ||
+                       (v.platforms.has("ios") && v.version === latestMap.ios);
+    const latestBadge = (v.isLatest || isLatestPf) ? " (最新)" : "";
+    const pfNote = (platFilter === "ALL" && v.platforms.size === 1) ? ` [${Array.from(v.platforms)[0]}]` : "";
+    html += `<option value="${esc(v.version)}">${esc(v.version)}${latestBadge}${pfNote}</option>`;
   });
 
   sel.innerHTML = html;
@@ -2833,18 +2859,24 @@ function renderIssuesList() {
   const filterLife = $("filterLifecycle") ? $("filterLifecycle").value : "ALL";
   const filterVer = $("filterVersion") ? $("filterVersion").value : "ALL";
 
-  // Resolve target version if version filter is active
-  let targetVersion = null;
-  if (filterVer === "LATEST") {
-    targetVersion = resolveLatestVersion(app, snap, filterPlat);
-  } else if (filterVer !== "ALL") {
-    targetVersion = filterVer;
-  }
+  const latestMap = resolveLatestVersionsByPlatform(app, snap);
 
   const filtered = issues.map(iss => {
     let scopedEvents = iss.events ?? 0;
     let scopedUsers = iss.affected_users ?? 0;
     let matchesVersion = true;
+    let targetVersion = null;
+
+    if (filterVer === "LATEST") {
+      if (filterPlat !== "ALL") {
+        targetVersion = filterPlat === "ios" ? latestMap.ios : latestMap.android;
+      } else {
+        const pf = (iss.platform || "android").toLowerCase();
+        targetVersion = latestMap[pf] || latestMap.android || latestMap.ios;
+      }
+    } else if (filterVer !== "ALL") {
+      targetVersion = filterVer;
+    }
 
     if (targetVersion) {
       const cleanTarget = String(targetVersion).replace(/^v/i, "").trim();
@@ -2863,6 +2895,7 @@ function renderIssuesList() {
       raw: iss,
       scopedEvents,
       scopedUsers,
+      targetVersion,
       matchesVersion,
     };
   }).filter(item => {
@@ -2905,7 +2938,20 @@ function renderIssuesList() {
     return 0;
   });
 
-  const verBadgeNote = targetVersion ? ` [版本: ${targetVersion}]` : "";
+  let verBadgeNote = "";
+  if (filterVer === "LATEST") {
+    if (filterPlat === "ALL") {
+      const parts = [];
+      if (latestMap.android) parts.push(`Android: ${latestMap.android}`);
+      if (latestMap.ios) parts.push(`iOS: ${latestMap.ios}`);
+      verBadgeNote = ` [版本: 最新 (依各平台: ${parts.join(', ')})]`;
+    } else {
+      const pfVer = filterPlat === "ios" ? latestMap.ios : latestMap.android;
+      verBadgeNote = ` [版本: 最新 (${pfVer || ''})]`;
+    }
+  } else if (filterVer !== "ALL") {
+    verBadgeNote = ` [版本: ${filterVer}]`;
+  }
   $("issuesCountBadge").textContent = `顯示 ${filtered.length} / ${issues.length} 個問題${verBadgeNote} (排序: ${curSortField} ${curSortAsc ? '▲' : '▼'})`;
 
   // Overview quick preview
@@ -2948,7 +2994,7 @@ function renderIssuesList() {
     const blame = iss.blame_frame || {};
     const detail = iss.detail || {};
     const lc = iss.lifecycle;
-    const verScopedTag = targetVersion ? ` <span class="badge" style="background:var(--bg-subtle);font-size:11px;font-weight:normal;color:var(--text-secondary)">v${esc(targetVersion)}</span>` : "";
+    const verScopedTag = item.targetVersion ? ` <span class="badge" style="background:var(--bg-subtle);font-size:11px;font-weight:normal;color:var(--text-secondary)">v${esc(item.targetVersion)}</span>` : "";
 
     return `
       <div class="issue-accordion" id="issue-acc-${idx}">
@@ -3079,7 +3125,18 @@ function copyFixPrompt(issueId) {
   const selVer = $("filterVersion") ? $("filterVersion").value : "ALL";
   if (selVer !== "ALL") {
     const platFilter = $("filterPlatform") ? $("filterPlatform").value : "ALL";
-    const targetVer = selVer === "LATEST" ? resolveLatestVersion(app, snap, platFilter) : selVer;
+    const latestMap = resolveLatestVersionsByPlatform(app, snap);
+    let targetVer = null;
+    if (selVer === "LATEST") {
+      if (platFilter !== "ALL") {
+        targetVer = platFilter === "ios" ? latestMap.ios : latestMap.android;
+      } else {
+        const pf = (iss.platform || "android").toLowerCase();
+        targetVer = latestMap[pf] || latestMap.android || latestMap.ios;
+      }
+    } else {
+      targetVer = selVer;
+    }
     if (targetVer) {
       const cleanTarget = String(targetVer).replace(/^v/i, "").trim();
       const vDist = (iss.version_distribution || []).find(v => String(v.version).replace(/^v/i, "").trim() === cleanTarget);
