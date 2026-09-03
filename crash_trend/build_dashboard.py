@@ -13,6 +13,14 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
+try:
+    from crash_trend.schema_v2 import validate_dashboard_v2
+except ImportError:
+    try:
+        from schema_v2 import validate_dashboard_v2
+    except ImportError:
+        from .schema_v2 import validate_dashboard_v2
+
 # Root directory
 ROOT = Path(__file__).resolve().parent.parent
 VENDOR_JS = ROOT / "vendor" / "chart.umd.min.js"
@@ -88,6 +96,14 @@ def assemble_bundle_from_apps(cfg: Optional[dict] = None) -> Optional[dict]:
         "apps": collected_apps,
     }
 
+    # 驗證組裝之 bundle 是否符合 Schema V2，失敗時不寫入正式檔案
+    val_errors = validate_dashboard_v2(bundle)
+    if val_errors:
+        print(f"  [警告] 組裝之 Dashboard V2 bundle 驗證失敗（{len(val_errors)} 項錯誤）：", file=sys.stderr)
+        for ve in val_errors[:5]:
+            print(f"    - {ve}", file=sys.stderr)
+        return None
+
     # Save assembled bundle to out/ and reports/
     out_dir = ROOT / "out"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -113,15 +129,19 @@ def collect_data(data_path: Optional[Union[str, Path]] = None) -> dict:
     if assembled:
         return assembled
 
-    # 2. Search candidates
+    # 2. Search production locations (嚴禁在正式環境偷偷 fallback 至測試 fixture)
     candidates = [
         ROOT / "reports" / "dashboard_v2.json",
-        ROOT / "tests" / "fixtures" / "dashboard_v2.json",
         ROOT / "out" / "dashboard_v2.json",
     ]
     for c in candidates:
         if c.is_file():
-            return json.loads(c.read_text(encoding="utf-8"))
+            try:
+                data = json.loads(c.read_text(encoding="utf-8"))
+                if not validate_dashboard_v2(data):
+                    return data
+            except Exception:
+                pass
 
     # Fallback to minimal bundle if nothing found
     return {
