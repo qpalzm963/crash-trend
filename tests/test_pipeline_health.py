@@ -8,6 +8,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from crash_trend.pipeline_health import (
     PipelineRunTracker,
@@ -436,6 +437,71 @@ class TestPipelineHealth(unittest.TestCase):
             self.assertEqual(app_sum["stages"]["mcp"]["status"], "skipped")
             self.assertEqual(app_sum["status"], "success")
             self.assertEqual(summary["status"], "success")
+
+    def test_invalid_ai_provider_degrades_gracefully_without_halting_pipeline(self) -> None:
+        """Regression test for Review 5099522953: Invalid AI provider config in app A must degrade app A's AI stage to failed, keep core success, allow app B to run, and write final pipeline_run.json."""
+        from crash_trend.pipeline_run import run_pipeline
+
+        fake_cfg = {
+            "apps": {
+                "app_a_typo": {
+                    "display_name": "App A with Typo Provider",
+                    "firebase_project": "proj-a",
+                    "data_sources": {"crashlytics_bigquery": True, "sessions": False, "mcp": "off"},
+                    "ai": {"provider": "openrouetr"},
+                },
+                "app_b_valid": {
+                    "display_name": "App B Valid",
+                    "firebase_project": "proj-b",
+                    "data_sources": {"crashlytics_bigquery": True, "sessions": False, "mcp": "off"},
+                    "ai": {"provider": "gemini"},
+                },
+            }
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmproot = Path(tmpdir)
+            out_a = tmproot / "out" / "app_a_typo"
+            out_b = tmproot / "out" / "app_b_valid"
+            out_a.mkdir(parents=True, exist_ok=True)
+            out_b.mkdir(parents=True, exist_ok=True)
+
+            sum_path = tmproot / "out" / "pipeline_run.json"
+
+            def fake_stage_exec(cmd, cwd=None, env=None):
+                return 0, "stage ok", ""
+
+            with patch("crash_trend.pipeline_run.ROOT", tmproot):
+                with patch("crash_trend.pipeline_run.load_config", return_value=fake_cfg):
+                    with patch("crash_trend.pipeline_run.run_stage_process", side_effect=fake_stage_exec):
+                        with patch.dict("os.environ", {"GEMINI_API_KEY": "valid-gemini-key"}):
+                            summary = run_pipeline(
+                                app_names=["app_a_typo", "app_b_valid"],
+                                summary_path=sum_path,
+                                skip_dashboard=True,
+                                verbose=False,
+                            )
+
+            # 1. Final pipeline_run.json MUST exist
+            self.assertTrue(sum_path.is_file())
+
+            # 2. App A core stages succeeded, but optional AI stage failed due to invalid_ai_config
+            app_a_sum = summary["apps"]["app_a_typo"]
+            self.assertEqual(app_a_sum["stages"]["crashlytics_bigquery"]["status"], "success")
+            self.assertEqual(app_a_sum["stages"]["normalize"]["status"], "success")
+            self.assertEqual(app_a_sum["stages"]["ai"]["status"], "failed")
+            self.assertEqual(app_a_sum["stages"]["ai"]["details"]["reason"], "invalid_ai_config")
+            self.assertIn("Unknown AI provider: 'openrouetr'", app_a_sum["stages"]["ai"]["error_message"])
+            self.assertEqual(app_a_sum["status"], "degraded")
+
+            # 3. App B was NOT blocked and completed successfully
+            app_b_sum = summary["apps"]["app_b_valid"]
+            self.assertEqual(app_b_sum["stages"]["crashlytics_bigquery"]["status"], "success")
+            self.assertEqual(app_b_sum["stages"]["ai"]["status"], "success")
+            self.assertEqual(app_b_sum["status"], "success")
+
+            # 4. Overall pipeline run status is degraded (not failed)
+            self.assertEqual(summary["status"], "degraded")
 
 
 if __name__ == "__main__":

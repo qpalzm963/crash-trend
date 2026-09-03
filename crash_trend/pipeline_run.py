@@ -93,7 +93,10 @@ def run_pipeline(
         if verbose:
             print(f"\n==================== [Pipeline: {app}] ====================")
 
-        app_cfg = get_app(app)
+        try:
+            app_cfg = get_app(app, cfg)
+        except TypeError:
+            app_cfg = get_app(app)
         app_out_dir = ROOT / "out" / app
         v2_path = app_out_dir / "dashboard_v2.json"
 
@@ -309,65 +312,88 @@ def run_pipeline(
         # 6. Analyze AI / Priority (Optional Stage)
         # -------------------------------------------------------------------
         t0 = now_utc_iso()
-        ai_provider = get_ai_provider(app_cfg, cfg)
-        has_ai_key = ai_provider.is_configured()
-        provider_name = ai_provider.provider_name
-        model_name = ai_provider.model_name
-        if verbose:
-            print(f"--- 6. analyze_ai: {app} (provider: {provider_name}, model: {model_name}, configured: {has_ai_key})")
-        rc, out, err = run_stage_process([py_exec, "-m", "crash_trend.analyze_ai", "--app", app])
-        if verbose and out:
-            print(out, end="")
-        t1 = now_utc_iso()
+        config_error: Optional[str] = None
+        try:
+            ai_provider = get_ai_provider(app_cfg, cfg)
+            has_ai_key = ai_provider.is_configured()
+            provider_name = ai_provider.provider_name
+            model_name = ai_provider.model_name
+        except ValueError as e:
+            config_error = str(e)
+            has_ai_key = False
+            provider_name = "unknown"
+            model_name = None
 
-        # Crucial: Check canonical artifact status even when rc == 0
-        ai_status = "available" if has_ai_key else "disabled"
-        ai_err_msg = None
-        if v2_path.is_file():
-            try:
-                v2_data = json.loads(v2_path.read_text(encoding="utf-8"))
-                ai_src = v2_data.get("sources", {}).get("ai") or v2_data.get("sources", {}).get("gemini_ai", {})
-                ai_sum = v2_data.get("ai_summary", {})
-                ai_status = ai_src.get("status") or ai_sum.get("status") or ai_status
-                ai_err_msg = ai_src.get("error_message") or ai_sum.get("data_limitations")
-            except Exception:
-                pass
-
-        if rc != 0 or ai_status == "error":
-            err_text = ai_err_msg or err.strip() or out.strip() or "AI analysis failed"
+        if config_error:
+            t1 = now_utc_iso()
+            safe_err = sanitize_error_message(config_error)
             tracker.record_stage(
                 app,
                 "ai",
                 "failed",
                 t0,
                 t1,
-                error_message=err_text,
-                details={"provider": provider_name, "model": model_name},
+                error_message=safe_err,
+                details={"reason": "invalid_ai_config"},
             )
             if verbose:
-                print(f"  [Warning] AI 分析失敗（優雅降級）：{sanitize_error_message(err_text)}", file=sys.stderr)
-        elif ai_status == "disabled" or not has_ai_key:
-            tracker.record_stage(
-                app,
-                "ai",
-                "disabled",
-                t0,
-                t1,
-                details={
-                    "provider": provider_name,
-                    "model": model_name,
-                    "reason": f"{provider_name.upper()} API key not configured",
-                },
-            )
+                print(f"  [Warning] AI 設定無效（優雅降級）：{safe_err}", file=sys.stderr)
         else:
-            tracker.record_stage(
-                app,
-                "ai",
-                "success",
-                t0,
-                t1,
-                details={"provider": provider_name, "model": model_name},
-            )
+            if verbose:
+                print(f"--- 6. analyze_ai: {app} (provider: {provider_name}, model: {model_name}, configured: {has_ai_key})")
+            rc, out, err = run_stage_process([py_exec, "-m", "crash_trend.analyze_ai", "--app", app])
+            if verbose and out:
+                print(out, end="")
+            t1 = now_utc_iso()
+
+            # Crucial: Check canonical artifact status even when rc == 0
+            ai_status = "available" if has_ai_key else "disabled"
+            ai_err_msg = None
+            if v2_path.is_file():
+                try:
+                    v2_data = json.loads(v2_path.read_text(encoding="utf-8"))
+                    ai_src = v2_data.get("sources", {}).get("ai") or v2_data.get("sources", {}).get("gemini_ai", {})
+                    ai_sum = v2_data.get("ai_summary", {})
+                    ai_status = ai_src.get("status") or ai_sum.get("status") or ai_status
+                    ai_err_msg = ai_src.get("error_message") or ai_sum.get("data_limitations")
+                except Exception:
+                    pass
+
+            if rc != 0 or ai_status == "error":
+                err_text = ai_err_msg or err.strip() or out.strip() or "AI analysis failed"
+                tracker.record_stage(
+                    app,
+                    "ai",
+                    "failed",
+                    t0,
+                    t1,
+                    error_message=err_text,
+                    details={"provider": provider_name, "model": model_name},
+                )
+                if verbose:
+                    print(f"  [Warning] AI 分析失敗（優雅降級）：{sanitize_error_message(err_text)}", file=sys.stderr)
+            elif ai_status == "disabled" or not has_ai_key:
+                tracker.record_stage(
+                    app,
+                    "ai",
+                    "disabled",
+                    t0,
+                    t1,
+                    details={
+                        "provider": provider_name,
+                        "model": model_name,
+                        "reason": f"{provider_name.upper()} API key not configured",
+                    },
+                )
+            else:
+                tracker.record_stage(
+                    app,
+                    "ai",
+                    "success",
+                    t0,
+                    t1,
+                    details={"provider": provider_name, "model": model_name},
+                )
 
         # -------------------------------------------------------------------
         # 7. Check Surge (Optional Stage)
