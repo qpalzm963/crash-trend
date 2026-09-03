@@ -362,6 +362,7 @@ def transform_bq_period_snapshot(
     start_date: dt.date,
     end_date: dt.date,
     master_daily_trend: Optional[List[DailyTrendPoint]] = None,
+    period_errors: Optional[List[str]] = None,
 ) -> AppPeriodSnapshot:
     """Computes an authoritative period snapshot conforming to AppPeriodSnapshot."""
     start_time_iso = f"{start_date.isoformat()}T00:00:00Z"
@@ -396,6 +397,8 @@ def transform_bq_period_snapshot(
     overview_non_fatal = 0
     calculated_new_issues = 0
     has_new_issues_data = False
+    has_any_overview = False
+    overview_failed_tables: List[str] = []
 
     platform_stats: Dict[str, Dict[str, int]] = {p: {"events": 0, "users": 0} for p in detected_platforms}
     raw_issues: List[dict] = []
@@ -419,15 +422,18 @@ def transform_bq_period_snapshot(
             t_fatal = int(ov.get("fatal_events") or 0)
             t_anr = int(ov.get("anr_events") or 0)
             t_nonfatal = int(ov.get("non_fatal_events") or 0)
+            has_any_overview = True
         else:
+            overview_failed_tables.append(table_name)
             for dr in t_data.get("daily_trend") or []:
                 dr_date = dr.get("date")
                 if dr_date and dr_date in date_keys_set:
                     t_events += int(dr.get("events") or 0)
-                    t_users += int(dr.get("users") or 0)
                     t_fatal += int(dr.get("fatal_events") or 0)
                     t_anr += int(dr.get("anr_events") or 0)
                     t_nonfatal += int(dr.get("non_fatal_events") or 0)
+                    # NOTE: Distinct users CANNOT be derived by summing daily points.
+                    # t_users is intentionally left as 0 to prevent false overcounting.
 
         overview_total_events += t_events
         overview_total_users += t_users
@@ -532,9 +538,22 @@ def transform_bq_period_snapshot(
     if overview_fatal + overview_anr + overview_non_fatal != overview_total_events:
         overview_non_fatal = max(0, overview_total_events - overview_fatal - overview_anr)
 
+    overview_missing = bool(tables_data) and not has_any_overview
+    has_errors = bool(period_errors)
+
+    if has_errors:
+        crash_events_status: SourceStatus = "error"
+        affected_users_status: SourceStatus = "error"
+    elif overview_missing:
+        crash_events_status = "available" if overview_total_events > 0 or not tables_data else "insufficient_data"
+        affected_users_status = "insufficient_data"
+    else:
+        crash_events_status = "available"
+        affected_users_status = "available"
+
     kpi: OverviewKPI = {
-        "crash_events": {"value": overview_total_events, "previous_value": None, "change_pct": None, "status": "available"},
-        "affected_users": {"value": overview_total_users, "previous_value": None, "change_pct": None, "status": "available"},
+        "crash_events": {"value": overview_total_events, "previous_value": None, "change_pct": None, "status": crash_events_status},
+        "affected_users": {"value": overview_total_users, "previous_value": None, "change_pct": None, "status": affected_users_status},
         "crash_free_users": {"rate": None, "total": None, "crashed": None, "previous_rate": None, "change_pct_points": None, "status": "unavailable", "unavailable_reason": "Firebase Sessions export 未開啟"},
         "crash_free_sessions": {"rate": None, "total": None, "crashed": None, "previous_rate": None, "change_pct_points": None, "status": "unavailable", "unavailable_reason": "Firebase Sessions export 未開啟"},
         "new_issues_count": {"value": calculated_new_issues, "previous_value": None, "change_pct": None, "status": "available" if has_new_issues_data else "insufficient_data"},
@@ -667,6 +686,16 @@ def transform_bq_period_snapshot(
             "trend": "stable",
         })
 
+    if period_errors:
+        snap_status: SourceStatus = "error"
+        snap_error: Optional[str] = "; ".join(period_errors)
+    elif overview_missing:
+        snap_status = "insufficient_data"
+        snap_error = f"Overview 權威彙總缺失 ({', '.join(overview_failed_tables)})"
+    else:
+        snap_status = "available"
+        snap_error = None
+
     return {
         "period": period,
         "kpi": kpi,
@@ -684,6 +713,8 @@ def transform_bq_period_snapshot(
             "recommended_actions": [],
             "data_limitations": None,
         },
+        "status": snap_status,
+        "error_message": snap_error,
     }
 
 
@@ -759,9 +790,10 @@ def transform_bq_to_v2(
         longest_k = sorted_keys[0] if sorted_keys else str(days)
         longest_p_days = int(longest_k)
         longest_start = end_date - dt.timedelta(days=longest_p_days - 1)
-        longest_tables = periods_data[longest_k].get("tables", {})
+        longest_entry = periods_data[longest_k]
+        longest_tables = longest_entry.get("tables", {})
         master_snap = transform_bq_period_snapshot(
-            longest_tables, detected_platforms, days=longest_p_days, start_date=longest_start, end_date=end_date
+            longest_tables, detected_platforms, days=longest_p_days, start_date=longest_start, end_date=end_date, period_errors=longest_entry.get("errors") or []
         )
         master_daily = master_snap.get("daily_trend") or []
 
@@ -769,15 +801,16 @@ def transform_bq_to_v2(
         for p_k in sorted(numeric_keys, key=int):
             p_d = int(p_k)
             p_s = end_date - dt.timedelta(days=p_d - 1)
-            p_t = periods_data[p_k].get("tables", {})
+            p_entry = periods_data[p_k]
+            p_t = p_entry.get("tables", {})
             periods_dict[p_k] = transform_bq_period_snapshot(
-                p_t, detected_platforms, days=p_d, start_date=p_s, end_date=end_date, master_daily_trend=master_daily
+                p_t, detected_platforms, days=p_d, start_date=p_s, end_date=end_date, master_daily_trend=master_daily, period_errors=p_entry.get("errors") or []
             )
 
         active_snap = periods_dict.get(str(days)) or periods_dict.get("90") or periods_dict[longest_k]
     else:
         snap = transform_bq_period_snapshot(
-            tables_data, detected_platforms, days=days, start_date=start_date, end_date=end_date
+            tables_data, detected_platforms, days=days, start_date=start_date, end_date=end_date, period_errors=bq_result.get("errors") or []
         )
         periods_dict[str(days)] = snap
         active_snap = snap

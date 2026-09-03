@@ -323,9 +323,13 @@ def build_crash_free_metric(
     }
 
 
-def build_unavailable_sessions_result(reason: str = DEFAULT_UNAVAILABLE_REASON) -> Dict[str, Any]:
+def build_unavailable_sessions_result(
+    reason: str = DEFAULT_UNAVAILABLE_REASON,
+    periods: Optional[List[int]] = None,
+) -> Dict[str, Any]:
     """Generates an explicit unavailable response conforming to Schema V2 graceful degradation."""
-    return {
+    p_list = periods or [7, 30, 90]
+    base_res = {
         "sources": {
             "status": "unavailable",
             "last_sync_timestamp": None,
@@ -339,6 +343,19 @@ def build_unavailable_sessions_result(reason: str = DEFAULT_UNAVAILABLE_REASON) 
         "daily_trend": {},
         "version_health": {},
     }
+    periods_dict = {}
+    for p in p_list:
+        periods_dict[str(p)] = {
+            "sources": dict(base_res["sources"]),
+            "kpi": {
+                "crash_free_users": build_crash_free_metric(None, None, status="unavailable", unavailable_reason=reason),
+                "crash_free_sessions": build_crash_free_metric(None, None, status="unavailable", unavailable_reason=reason),
+            },
+            "daily_trend": {},
+            "version_health": {},
+        }
+    base_res["periods"] = periods_dict
+    return base_res
 
 
 def compute_daily_sessions(rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
@@ -423,6 +440,7 @@ def fetch_sessions_data(
     crash_dataset: str = DEFAULT_CRASH_DATASET,
     crash_tables: Optional[List[str]] = None,
     app_config: Optional[dict] = None,
+    periods: Optional[List[int]] = None,
 ) -> Dict[str, Any]:
     """Fetches Firebase Sessions data from BigQuery with graceful degradation."""
     if client is None:
@@ -431,14 +449,14 @@ def fetch_sessions_data(
         except Exception as exc:
             reason = f"BigQuery client initialization failed: {exc}"
             print(f"  [Sessions] {reason}", file=sys.stderr)
-            return build_unavailable_sessions_result(reason)
+            return build_unavailable_sessions_result(reason, periods=periods)
 
     if tables is None:
         tables = list_session_tables(client, project, dataset, app_config=app_config)
 
     if not tables:
         reason = f"Firebase Sessions export table not found in dataset {project}.{dataset}"
-        return build_unavailable_sessions_result(reason)
+        return build_unavailable_sessions_result(reason, periods=periods)
 
     now_utc_iso = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -513,7 +531,7 @@ def fetch_sessions_data(
     except Exception as exc:
         err_msg = f"Sessions query execution failed: {str(exc)[:500]}"
         print(f"  [Sessions] {err_msg}", file=sys.stderr)
-        return {
+        err_res = {
             "sources": {
                 "status": "error",
                 "last_sync_timestamp": None,
@@ -527,6 +545,9 @@ def fetch_sessions_data(
             "daily_trend": {},
             "version_health": {},
         }
+        if periods:
+            err_res["periods"] = {str(p): dict(err_res) for p in periods}
+        return err_res
 
     prev_user_rate = calculate_crash_free_rate(prev_total_users, prev_crashed_users) if prev_total_users > 0 else None
     prev_sess_rate = calculate_crash_free_rate(prev_total_sessions, prev_crashed_sessions) if prev_total_sessions > 0 else None
@@ -534,7 +555,7 @@ def fetch_sessions_data(
     daily_sessions = compute_daily_sessions(all_daily_rows)
     version_sessions = compute_version_sessions(all_version_rows, overall_total_sessions=total_sessions_all)
 
-    return {
+    primary_res = {
         "sources": {
             "status": "available",
             "last_sync_timestamp": now_utc_iso,
@@ -552,6 +573,34 @@ def fetch_sessions_data(
         "daily_trend": daily_sessions,
         "version_health": version_sessions,
     }
+
+    if periods:
+        periods_dict = {}
+        for p in periods:
+            if p == days:
+                periods_dict[str(p)] = {
+                    "sources": primary_res["sources"],
+                    "kpi": primary_res["kpi"],
+                    "daily_trend": primary_res["daily_trend"],
+                    "version_health": primary_res["version_health"],
+                }
+            else:
+                p_res = fetch_sessions_data(
+                    project=project,
+                    dataset=dataset,
+                    tables=tables,
+                    days=p,
+                    comparison_days=comparison_days,
+                    client=client,
+                    crash_dataset=crash_dataset,
+                    crash_tables=crash_tables,
+                    app_config=app_config,
+                    periods=None,
+                )
+                periods_dict[str(p)] = p_res
+        primary_res["periods"] = periods_dict
+
+    return primary_res
 
 
 def fetch_sessions_for_app(
@@ -579,6 +628,7 @@ def fetch_sessions_for_app(
         except Exception:
             crash_tables = None
 
+    supported_periods = sorted(list({7, 30, 90, days}))
     result = fetch_sessions_data(
         project=project,
         dataset=dataset,
@@ -588,6 +638,7 @@ def fetch_sessions_for_app(
         crash_dataset=crash_dataset,
         crash_tables=crash_tables,
         app_config=app_cfg,
+        periods=supported_periods,
     )
     return result
 
@@ -600,22 +651,23 @@ def enrich_app_dashboard_with_sessions(app_data: Dict[str, Any], sessions_result
     """Merges Sessions results into an existing AppDashboardV2Data dict.
     Strictly preserves Schema V2 contract compliance and graceful degradation.
     """
-    src_sessions = sessions_result.get("sources") or {}
-    kpi_sessions = sessions_result.get("kpi") or {}
-    daily_sessions = sessions_result.get("daily_trend") or {}
-    version_sessions = sessions_result.get("version_health") or {}
+    src_sessions = sessions_result.get("sources", {})
+    kpi_sessions = sessions_result.get("kpi", {})
+    daily_sessions = sessions_result.get("daily_trend", {})
+    version_sessions = sessions_result.get("version_health", {})
 
-    is_available = src_sessions.get("status") == "available"
+    status = src_sessions.get("status", "unavailable")
+    is_available = (status == "available")
 
+    # 1. Update SourcesAvailability
     if "sources" in app_data and isinstance(app_data["sources"], dict):
         app_data["sources"]["firebase_sessions"] = {
-            "status": src_sessions.get("status", "unavailable"),
+            "status": status,
             "last_sync_timestamp": src_sessions.get("last_sync_timestamp"),
             "error_message": src_sessions.get("error_message"),
         }
-        if src_sessions.get("tables_queried"):
-            app_data["sources"]["firebase_sessions"]["tables_queried"] = src_sessions["tables_queried"]
 
+    # 2. Update Top-level KPI
     if "kpi" in app_data and isinstance(app_data["kpi"], dict):
         app_data["kpi"]["crash_free_users"] = kpi_sessions.get(
             "crash_free_users",
@@ -626,6 +678,7 @@ def enrich_app_dashboard_with_sessions(app_data: Dict[str, Any], sessions_result
             build_crash_free_metric(None, None, status="unavailable", unavailable_reason=src_sessions.get("error_message")),
         )
 
+    # 3. Update Top-level Daily Trend Sessions Points
     if "daily_trend" in app_data and isinstance(app_data["daily_trend"], list):
         for point in app_data["daily_trend"]:
             if not isinstance(point, dict):
@@ -656,24 +709,37 @@ def enrich_app_dashboard_with_sessions(app_data: Dict[str, Any], sessions_result
                 item["crash_free_sessions_rate"] = None
                 item["adoption_rate"] = None
 
+    # 4. Multi-period Snapshot Enrichment
     if "periods" in app_data and isinstance(app_data["periods"], dict):
         sess_periods = sessions_result.get("periods") or {}
         for p_key, snap in app_data["periods"].items():
             if not isinstance(snap, dict):
                 continue
-            snap_sess = sess_periods.get(p_key) or {}
-            snap_kpi_sess = snap_sess.get("kpi") if snap_sess else (kpi_sessions if str(p_key) == str(app_data.get("period", {}).get("days")) else {})
-            snap_daily_sess = snap_sess.get("daily_trend") if snap_sess else daily_sessions
-            snap_ver_sess = snap_sess.get("version_health") if snap_sess else version_sessions
+            snap_sess = sess_periods.get(p_key)
+            if snap_sess and snap_sess.get("sources", {}).get("status") == "available":
+                snap_kpi_sess = snap_sess.get("kpi") or {}
+                snap_daily_sess = snap_sess.get("daily_trend") or {}
+                snap_ver_sess = snap_sess.get("version_health") or {}
+                snap_avail = True
+            elif str(p_key) == str(app_data.get("period", {}).get("days")) and is_available:
+                snap_kpi_sess = kpi_sessions
+                snap_daily_sess = daily_sessions
+                snap_ver_sess = version_sessions
+                snap_avail = True
+            else:
+                snap_kpi_sess = {}
+                snap_daily_sess = {}
+                snap_ver_sess = {}
+                snap_avail = False
 
             if "kpi" in snap and isinstance(snap["kpi"], dict):
                 snap["kpi"]["crash_free_users"] = snap_kpi_sess.get(
                     "crash_free_users",
-                    build_crash_free_metric(None, None, status="unavailable", unavailable_reason=src_sessions.get("error_message")),
+                    build_crash_free_metric(None, None, status="unavailable", unavailable_reason=src_sessions.get("error_message") or "該時間範圍無獨立 Sessions 資料"),
                 )
                 snap["kpi"]["crash_free_sessions"] = snap_kpi_sess.get(
                     "crash_free_sessions",
-                    build_crash_free_metric(None, None, status="unavailable", unavailable_reason=src_sessions.get("error_message")),
+                    build_crash_free_metric(None, None, status="unavailable", unavailable_reason=src_sessions.get("error_message") or "該時間範圍無獨立 Sessions 資料"),
                 )
 
             if "daily_trend" in snap and isinstance(snap["daily_trend"], list):
@@ -681,7 +747,7 @@ def enrich_app_dashboard_with_sessions(app_data: Dict[str, Any], sessions_result
                     if not isinstance(point, dict):
                         continue
                     date_key = point.get("date")
-                    if is_available and date_key in snap_daily_sess:
+                    if snap_avail and date_key in snap_daily_sess:
                         sess_info = snap_daily_sess[date_key]
                         point["sessions_total"] = sess_info.get("sessions_total")
                         point["crashed_sessions"] = sess_info.get("crashed_sessions")
@@ -696,7 +762,7 @@ def enrich_app_dashboard_with_sessions(app_data: Dict[str, Any], sessions_result
                     if not isinstance(item, dict):
                         continue
                     ver_key = item.get("version")
-                    if is_available and ver_key in snap_ver_sess:
+                    if snap_avail and ver_key in snap_ver_sess:
                         v_info = snap_ver_sess[ver_key]
                         item["crash_free_users_rate"] = v_info.get("crash_free_users_rate")
                         item["crash_free_sessions_rate"] = v_info.get("crash_free_sessions_rate")
@@ -741,7 +807,8 @@ def main() -> None:
         sys.exit(f"[錯誤] apps.yaml 裡的「{args.app}」未設定 firebase_project")
 
     print(f"=== 正在查詢 Firebase Sessions ({project}.{args.sessions_dataset}) ===")
-    result = fetch_sessions_data(project=project, dataset=args.sessions_dataset, days=args.days, app_config=app_cfg)
+    supported_periods = sorted(list({7, 30, 90, args.days}))
+    result = fetch_sessions_data(project=project, dataset=args.sessions_dataset, days=args.days, app_config=app_cfg, periods=supported_periods)
 
     target_path = out_dir(args.app) / "sessions.json"
     write_json(target_path, result)

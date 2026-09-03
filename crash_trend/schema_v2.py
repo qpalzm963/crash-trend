@@ -18,7 +18,8 @@ try:
 except ImportError:
     from typing_extensions import NotRequired  # type: ignore
 
-SCHEMA_VERSION = "2.0"
+SCHEMA_VERSION = "2.3.0"
+SUPPORTED_SCHEMA_VERSIONS = {"2.0", "2.3", "2.3.0"}
 
 # ---------------------------------------------------------------------------
 # TypedDict Definitions (Required by default)
@@ -287,6 +288,8 @@ class AppPeriodSnapshot(TypedDict):
     distributions: Distributions
     top_issues: List[IssueSummary]
     ai_summary: NotRequired[Optional[AISummary]]
+    status: NotRequired[SourceStatus]
+    error_message: NotRequired[Optional[str]]
 
 
 class AppDashboardV2Data(TypedDict):
@@ -885,6 +888,9 @@ def validate_app_dashboard_v2(data: dict, prefix: str = "") -> List[str]:
                     errors.append(f"{p}periods['{p_key}'].version_health is required")
                 if "distributions" not in p_val or not isinstance(p_val["distributions"], dict):
                     errors.append(f"{p}periods['{p_key}'].distributions is required")
+                if "status" in p_val and p_val["status"] is not None:
+                    if p_val["status"] not in ("available", "unavailable", "error", "disabled", "insufficient_data", "stale"):
+                        errors.append(f"{p}periods['{p_key}'].status '{p_val['status']}' is invalid")
 
     return errors
 
@@ -899,8 +905,8 @@ def validate_dashboard_v2(data: dict) -> List[str]:
         if req_k not in data:
             errors.append(f"Root {req_k} is required")
 
-    if data.get("schema_version") != SCHEMA_VERSION:
-        errors.append(f"Root schema_version must be '{SCHEMA_VERSION}', got {data.get('schema_version')}")
+    if data.get("schema_version") not in SUPPORTED_SCHEMA_VERSIONS:
+        errors.append(f"Root schema_version must be one of {sorted(list(SUPPORTED_SCHEMA_VERSIONS))}, got {data.get('schema_version')}")
 
     if not is_valid_iso8601_utc(data.get("generated_at")):
         errors.append("Root generated_at must be a valid ISO 8601 UTC timestamp string (ending in Z)")

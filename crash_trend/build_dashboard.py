@@ -18,9 +18,9 @@ try:
     from crash_trend.schema_v2 import validate_dashboard_v2
 except ImportError:
     try:
-        from schema_v2 import validate_dashboard_v2
+        from schema_v2 import validate_dashboard_v2, SCHEMA_VERSION
     except ImportError:
-        from .schema_v2 import validate_dashboard_v2
+        from .schema_v2 import validate_dashboard_v2, SCHEMA_VERSION
 
 # Root directory
 ROOT = Path(__file__).resolve().parent.parent
@@ -91,7 +91,7 @@ def assemble_bundle_from_apps(cfg: Optional[dict] = None) -> Optional[dict]:
     default_app = list(collected_apps.keys())[0]
     now_utc = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     bundle = {
-        "schema_version": "2.0",
+        "schema_version": SCHEMA_VERSION,
         "generated_at": now_utc,
         "default_app": default_app,
         "apps": collected_apps,
@@ -154,7 +154,7 @@ def collect_data(data_path: Optional[Union[str, Path]] = None) -> dict:
 
     # Fallback to minimal bundle if nothing found
     return {
-        "schema_version": "2.0",
+        "schema_version": SCHEMA_VERSION,
         "generated_at": "2026-09-02T00:00:00Z",
         "default_app": "default_app",
         "apps": {
@@ -1918,8 +1918,8 @@ function switchApp(appId) {
     curAppId = appId;
     $("appSelector").value = appId;
     const app = DATA.apps[appId];
-    if (app.periods && !app.periods[String(curPeriodDays)]) {
-      const avail = Object.keys(app.periods).map(Number).sort((a,b) => a - b);
+    if (app.periods && (!app.periods[String(curPeriodDays)] || app.periods[String(curPeriodDays)].status === "error")) {
+      const avail = Object.keys(app.periods).map(Number).filter(d => app.periods[String(d)]?.status !== "error").sort((a,b) => a - b);
       curPeriodDays = avail.includes(30) ? 30 : (avail[0] || 90);
     }
     renderAll();
@@ -1933,9 +1933,14 @@ function setPeriod(days) {
   const app = getCurAppData();
   if (!app) return;
   const availableDays = (app?.daily_trend || []).length || app?.period?.days || 30;
-  const hasPeriod = (app.periods && app.periods[String(days)]) || (!app.periods && days <= availableDays);
+  const snap = app.periods ? app.periods[String(days)] : null;
+  const hasPeriod = (snap != null) || (!app.periods && days <= availableDays);
   if (!hasPeriod) {
     showToast(`目前資料無 ${days} 天之獨立數據`);
+    return;
+  }
+  if (snap && (snap.status === "error" || snap.kpi?.affected_users?.status === "error")) {
+    showToast(`${days} 天數據查詢異常：${snap.error_message || "權威查詢失敗"}`);
     return;
   }
   curPeriodDays = Number(days);
@@ -2103,10 +2108,18 @@ function renderHeader() {
   [7, 30, 90].forEach(d => {
     const btn = $("p-" + d + "d");
     if (btn) {
-      const hasPeriod = (app.periods && app.periods[String(d)]) || (!app.periods && d <= availableDays);
+      const snap = app.periods ? app.periods[String(d)] : null;
+      const hasPeriod = (snap != null) || (!app.periods && d <= availableDays);
+      const isError = snap && (snap.status === "error" || snap.kpi?.affected_users?.status === "error");
       if (!hasPeriod) {
         btn.disabled = true;
         btn.title = `目前資料無 ${d} 天之獨立數據`;
+        btn.classList.add("disabled");
+        btn.style.opacity = "0.45";
+        btn.style.cursor = "not-allowed";
+      } else if (isError) {
+        btn.disabled = true;
+        btn.title = `${d} 天數據異常：${snap.error_message || "權威彙總失敗"}`;
         btn.classList.add("disabled");
         btn.style.opacity = "0.45";
         btn.style.cursor = "not-allowed";
@@ -2278,29 +2291,45 @@ function renderKPIs() {
 
   // 2. Crash Events
   const ev = kpi.crash_events || {};
-  $("kpiEvents").textContent = fmt(totalEvents);
-  const evDelta = $("kpiEventsDelta");
-  if (ev.change_pct != null) {
-    const isDown = ev.change_pct <= 0;
-    evDelta.className = `delta-pill ${isDown ? "good" : "bad"}`;
-    evDelta.innerHTML = `${ev.change_pct > 0 ? "▲ +" : "▼ "}${ev.change_pct.toFixed(1)}% vs 上期`;
+  if (ev.status === "error") {
+    $("kpiEvents").innerHTML = `<span style="font-size:16px;color:var(--danger-text)">查詢失敗</span>`;
+    $("kpiEventsDelta").className = "delta-pill neutral";
+    $("kpiEventsDelta").textContent = "BigQuery 錯誤";
   } else {
-    evDelta.className = "delta-pill neutral";
-    evDelta.textContent = "無基期";
+    $("kpiEvents").textContent = fmt(totalEvents);
+    const evDelta = $("kpiEventsDelta");
+    if (ev.change_pct != null) {
+      const isDown = ev.change_pct <= 0;
+      evDelta.className = `delta-pill ${isDown ? "good" : "bad"}`;
+      evDelta.innerHTML = `${ev.change_pct > 0 ? "▲ +" : "▼ "}${ev.change_pct.toFixed(1)}% vs 上期`;
+    } else {
+      evDelta.className = "delta-pill neutral";
+      evDelta.textContent = "無基期";
+    }
   }
   $("kpiErrorBreakdown").textContent = `Fatal: ${fmt(fatalEvents)} · ANR: ${fmt(anrEvents)} · Non-fatal: ${fmt(nonFatalEvents)}`;
 
   // 3. Affected Users
   const us = kpi.affected_users || {};
-  $("kpiUsers").textContent = fmt(totalUsers);
-  const usDelta = $("kpiUsersDelta");
-  if (us.change_pct != null) {
-    const isDown = us.change_pct <= 0;
-    usDelta.className = `delta-pill ${isDown ? "good" : "bad"}`;
-    usDelta.innerHTML = `${us.change_pct > 0 ? "▲ +" : "▼ "}${us.change_pct.toFixed(1)}% vs 上期`;
+  if (us.status === "error") {
+    $("kpiUsers").innerHTML = `<span style="font-size:16px;color:var(--danger-text)">查詢失敗</span>`;
+    $("kpiUsersDelta").className = "delta-pill neutral";
+    $("kpiUsersDelta").textContent = "Overview 錯誤";
+  } else if (us.status === "insufficient_data") {
+    $("kpiUsers").innerHTML = `<span style="font-size:16px;color:var(--warning-text)">資料不足</span>`;
+    $("kpiUsersDelta").className = "delta-pill neutral";
+    $("kpiUsersDelta").textContent = "無去重指標";
   } else {
-    usDelta.className = "delta-pill neutral";
-    usDelta.textContent = "無基期";
+    $("kpiUsers").textContent = fmt(totalUsers);
+    const usDelta = $("kpiUsersDelta");
+    if (us.change_pct != null) {
+      const isDown = us.change_pct <= 0;
+      usDelta.className = `delta-pill ${isDown ? "good" : "bad"}`;
+      usDelta.innerHTML = `${us.change_pct > 0 ? "▲ +" : "▼ "}${us.change_pct.toFixed(1)}% vs 上期`;
+    } else {
+      usDelta.className = "delta-pill neutral";
+      usDelta.textContent = "無基期";
+    }
   }
 
   // 4. New Issues
