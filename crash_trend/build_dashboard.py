@@ -1338,7 +1338,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         <div class="kpi-card" id="cardCrashFreeUsers">
           <div class="kpi-top">
             <div class="kpi-meta">
-              <span class="kpi-title">Crash-free Users</span>
+              <span class="kpi-title">無當機用戶率 <small style="font-weight: normal; opacity: 0.7;">(Crash-free Users)</small></span>
               <div class="kpi-value-row" id="cfUsersValueRow">
                 <span class="kpi-value" id="kpiCFUsers">—</span>
               </div>
@@ -1360,7 +1360,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         <div class="kpi-card" id="cardCrashEvents">
           <div class="kpi-top">
             <div class="kpi-meta">
-              <span class="kpi-title">Crash Events</span>
+              <span class="kpi-title">當機事件總數 <small style="font-weight: normal; opacity: 0.7;">(Crash Events)</small></span>
               <div class="kpi-value-row">
                 <span class="kpi-value" id="kpiEvents">0</span>
               </div>
@@ -1379,7 +1379,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         <div class="kpi-card" id="cardAffectedUsers">
           <div class="kpi-top">
             <div class="kpi-meta">
-              <span class="kpi-title">Affected Users</span>
+              <span class="kpi-title">受影響人數 <small style="font-weight: normal; opacity: 0.7;">(Affected Users)</small></span>
               <div class="kpi-value-row">
                 <span class="kpi-value" id="kpiUsers">0</span>
               </div>
@@ -1398,7 +1398,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         <div class="kpi-card" id="cardNewIssues">
           <div class="kpi-top">
             <div class="kpi-meta">
-              <span class="kpi-title">New Issues</span>
+              <span class="kpi-title">新增問題數 <small style="font-weight: normal; opacity: 0.7;">(New Issues)</small></span>
               <div class="kpi-value-row">
                 <span class="kpi-value" id="kpiNewIssues">0</span>
               </div>
@@ -1943,12 +1943,12 @@ function renderKPIs() {
     cfuCounts.textContent = `${fmt(cfu.crashed)} 崩潰 / ${fmt(cfu.total)} 用戶`;
   } else {
     // Explicit Unavailable semantics - strictly no 0%
-    cfuVal.innerHTML = `<span class="kpi-badge-unavailable">Unavailable</span>`;
+    cfuVal.innerHTML = `<span class="kpi-badge-unavailable">未開啟</span>`;
     cfuVal.classList.add("unavailable-text");
     cfuProg.style.strokeDashoffset = 113.097;
     cfuDelta.className = "delta-pill neutral";
-    cfuDelta.textContent = cfu.unavailable_reason || "Firebase Sessions 未啟用";
-    cfuCounts.textContent = "—";
+    cfuDelta.textContent = "未開啟連線統計";
+    cfuCounts.textContent = "缺少總上線人數";
   }
 
   // 2. Crash Events

@@ -119,21 +119,8 @@ crash_trend/
   post_report.py         # 月度摘要卡發送（聊天整合，可選）
   config.py              # apps.yaml 讀取與路徑工具
 scripts/
-  weekly_sync.sh         # 週同步主要進入點（Docker/launchd/手動皆呼叫此腳本）
-  create_sa.sh           # 一鍵建 BigQuery 唯讀 SA
+  weekly_sync.sh         # 週同步主要排程入口
+  create_sa.sh           # GCP 服務帳號一鍵建立
+  export_from_bq.py      # 手動單次 query dump 工具
+tests/                   # 單元測試與整合測試
 ```
-
----
-
-## 容錯與優雅降級 (Graceful Degradation)
-
-- **無 Firebase Sessions**：自動將 Sessions 來源標記為 `unavailable`，Crash-free 卡片顯示明確的 "Unavailable" 字樣，**絕不顯示 0%**。
-- **無 GEMINI_API_KEY**：AI 分析標為 `disabled`，Priority Score 依然以確定性權重公式精確計算。
-- **MCP 未登入**：自動以 BigQuery sample events 或 subtitle 啟發式解析 Blame Frame，流程不中斷。
-- **空資料期間**：無 Crash 事件時安全輸出 0 與空列表，不發生除以零或 Null 錯誤。
-
----
-
-## License
-
-MIT

@@ -331,7 +331,7 @@ def main() -> None:
     mcp_report_path = odir / "mcp_report.json"
 
     try:
-        result["app_ids"] = firebase_app_ids(app["firebase_project"])
+        result["app_ids"] = app.get("app_ids") or firebase_app_ids(app["firebase_project"])
     except Exception as e:  # apps:list 失敗原因多樣（未登入/無權限/CLI 缺），一律記下不擋
         return bail("apps_list", f"解 Firebase app_id 失敗：{e}")
 
