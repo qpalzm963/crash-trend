@@ -57,12 +57,18 @@ DASHBOARD_URL=http://<主機>:8787
 
 ---
 
-## Migration 指引（從 V1 升級至 V2）
+## Migration 指引（從 V1 升級至 V2.3）
 
 1. **設定檔**：檢查 `apps.yaml`，若有使用 Sessions export，可補充 `sessions_dataset: firebase_sessions`（預設值通常為 `firebase_sessions`）。
 2. **多 App 過濾**：若多 App 共享同一個 BigQuery dataset，可在 `apps.yaml` 指定 `package_name` 或 `bundle_id` 確保資料隔離。
-3. **歷史月報**：舊版 `reports/data/<app>/YYYY-MM.json` 依然受到 `pm_brief.py` 與 `normalize.py` 完整支援與向下相容。
-4. **全新 Dashboard**：執行 `./scripts/weekly_sync.sh` 即可自動產出全新 Dashboard V2 `dashboard.html` 與 `reports/dashboard_v2.json`。
+3. **歷史目錄冷啟動（Historical Catalog Bootstrap）**：
+   Dashboard V2.3 具備跨版本生命週期與回歸偵測能力（`IssueHistoricalCatalog`）。
+   BigQuery Crashlytics Export 預設保留 90 天，管線首次查詢時會自動回溯 90 天完整 retention。
+   若專案具備超過 90 天之歷史月報檔案（`reports/data/<app>/*.json`）或歷史 `unified.json`，建議於初次升級時手動執行一次離線冷啟動：
+   ```bash
+   python3 -m crash_trend.lifecycle --app <app_id> --bootstrap
+   ```
+4. **全新 Dashboard**：執行 `./scripts/weekly_sync.sh` 即可自動產出全新 Dashboard V2.3 `dashboard.html` 與 `reports/dashboard_v2.json`。
 
 ---
 

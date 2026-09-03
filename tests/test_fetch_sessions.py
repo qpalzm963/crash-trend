@@ -386,5 +386,167 @@ class TestFetchSessionsMetrics(unittest.TestCase):
         self.assertIsNone(res["kpi"]["crash_free_users"]["rate"])
 
 
+class TestSessionsPlatformIsolationAndSchema(unittest.TestCase):
+    """Verifies Must Fix 1 & Must Fix 2: Materialized 0-crash VersionHealthItem conforms to Schema V2.3,
+    and Sessions version evidence strictly isolates Android and iOS.
+    """
+
+    def setUp(self) -> None:
+        self.fixtures_dir = ROOT / "tests" / "fixtures"
+        base_bundle = json.loads((self.fixtures_dir / "dashboard_v2.json").read_text(encoding="utf-8"))
+        self.base_app = base_bundle["apps"]["shop_app"]
+
+    def test_materialized_0_crash_version_conforms_to_schema_v2_3(self):
+        """Must Fix 1: Sessions materialize 0-crash latest -> validate_app_dashboard_v2(enriched) == []."""
+        app_data = copy.deepcopy(self.base_app)
+        # Add a 30-day period snapshot to test both top-level and periods
+        app_data["periods"] = {
+            "30": {
+                "period": {"days": 30, "start_time": "2026-08-05T00:00:00Z", "end_time": "2026-09-03T23:59:59Z"},
+                "kpi": copy.deepcopy(app_data["kpi"]),
+                "version_health": copy.deepcopy(app_data["version_health"]),
+                "distributions": copy.deepcopy(app_data["distributions"]),
+                "top_issues": copy.deepcopy(app_data["top_issues"]),
+            }
+        }
+
+        # 1.0.11 is a new version only present in Sessions with 0 crashes
+        sessions_res = {
+            "sources": {"status": "available", "last_sync_timestamp": "2026-09-03T12:00:00Z"},
+            "kpi": {
+                "crash_free_users": build_crash_free_metric(10000, 10, previous_rate=0.98, status="available"),
+                "crash_free_sessions": build_crash_free_metric(50000, 5, previous_rate=0.998, status="available"),
+            },
+            "daily_trend": {},
+            "version_health": {
+                "android:1.0.11": {
+                    "version": "1.0.11",
+                    "platform": "android",
+                    "crash_free_users_rate": 1.0,
+                    "crash_free_sessions_rate": 1.0,
+                    "adoption_rate": 0.25,
+                }
+            },
+            "periods": {
+                "30": {
+                    "sources": {"status": "available"},
+                    "kpi": {
+                        "crash_free_users": build_crash_free_metric(10000, 10, previous_rate=0.98, status="available"),
+                        "crash_free_sessions": build_crash_free_metric(50000, 5, previous_rate=0.998, status="available"),
+                    },
+                    "daily_trend": {},
+                    "version_health": {
+                        "android:1.0.11": {
+                            "version": "1.0.11",
+                            "platform": "android",
+                            "crash_free_users_rate": 1.0,
+                            "crash_free_sessions_rate": 1.0,
+                            "adoption_rate": 0.25,
+                        }
+                    },
+                }
+            },
+        }
+
+        enriched = enrich_app_dashboard_with_sessions(app_data, sessions_res)
+
+        # 1.0.11 must be in top-level version_health with release_date, trend, status, platform
+        v_top = next((v for v in enriched["version_health"] if v.get("version") == "1.0.11"), None)
+        self.assertIsNotNone(v_top)
+        self.assertIn("release_date", v_top)
+        self.assertIn("trend", v_top)
+        self.assertEqual(v_top["trend"], "new")
+        self.assertEqual(v_top["status"], "latest")
+        self.assertEqual(v_top["platform"], "android")
+
+        # 1.0.11 must be in period 30 version_health with release_date, trend, status, platform
+        v_snap = next((v for v in enriched["periods"]["30"]["version_health"] if v.get("version") == "1.0.11"), None)
+        self.assertIsNotNone(v_snap)
+        self.assertIn("release_date", v_snap)
+        self.assertIn("trend", v_snap)
+        self.assertEqual(v_snap["trend"], "new")
+        self.assertEqual(v_snap["status"], "latest")
+        self.assertEqual(v_snap["platform"], "android")
+
+        # Strict Schema validation must succeed with 0 errors!
+        errs = validate_app_dashboard_v2(enriched, require_lifecycle=True)
+        self.assertEqual(errs, [])
+
+    def test_sessions_version_evidence_multi_platform_isolation(self):
+        """Must Fix 2:
+        - Android 1.0.10 + iOS 2.1.0 (iOS 0 crash) -> 2.1.0 materialize as ios latest, not android.
+        - Android/iOS both have 1.0.10, but different adoption -> sample evidence preserves respective values.
+        """
+        app_data = copy.deepcopy(self.base_app)
+        app_data["metadata"]["platforms"] = ["android", "ios"]
+        app_data["version_health"] = [
+            {
+                "version": "1.0.10",
+                "platform": "android",
+                "release_date": None,
+                "crash_events": 10,
+                "affected_users": 2,
+                "crash_free_users_rate": None,
+                "crash_free_sessions_rate": None,
+                "adoption_rate": None,
+                "status": "active",
+                "trend": "stable",
+            },
+            {
+                "version": "1.0.10",
+                "platform": "ios",
+                "release_date": None,
+                "crash_events": 5,
+                "affected_users": 1,
+                "crash_free_users_rate": None,
+                "crash_free_sessions_rate": None,
+                "adoption_rate": None,
+                "status": "active",
+                "trend": "stable",
+            },
+        ]
+
+        # Sessions has Android 1.0.10 (adoption 0.35), iOS 1.0.10 (adoption 0.85), and iOS 2.1.0 (0 crashes, adoption 0.10)
+        session_rows = [
+            {"version": "1.0.10", "_platform": "android", "sessions_total": 3500, "crashed_sessions": 10, "users_total": 500, "crashed_users": 2},
+            {"version": "1.0.9", "_platform": "android", "sessions_total": 6500, "crashed_sessions": 20, "users_total": 1000, "crashed_users": 5},
+            {"version": "1.0.10", "_platform": "ios", "sessions_total": 8500, "crashed_sessions": 5, "users_total": 1200, "crashed_users": 1},
+            {"version": "2.1.0", "_platform": "ios", "sessions_total": 1500, "crashed_sessions": 0, "users_total": 300, "crashed_users": 0},
+        ]
+
+        computed = compute_version_sessions(session_rows)
+
+        # Verify computed metrics are separate for android:1.0.10 and ios:1.0.10
+        self.assertAlmostEqual(computed["android:1.0.10"]["adoption_rate"], 0.35, places=2)
+        self.assertAlmostEqual(computed["ios:1.0.10"]["adoption_rate"], 0.85, places=2)
+        self.assertEqual(computed["ios:2.1.0"]["platform"], "ios")
+
+        sessions_res = {
+            "sources": {"status": "available"},
+            "kpi": {"crash_free_users": {"rate": 0.99, "status": "available"}, "crash_free_sessions": {"rate": 0.999, "status": "available"}},
+            "daily_trend": {},
+            "version_health": computed,
+        }
+
+        enriched = enrich_app_dashboard_with_sessions(app_data, sessions_res)
+
+        # Android 1.0.10 must get 0.35 adoption, iOS 1.0.10 must get 0.85 adoption
+        v_and_10 = next((v for v in enriched["version_health"] if v.get("version") == "1.0.10" and v.get("platform") == "android"), None)
+        v_ios_10 = next((v for v in enriched["version_health"] if v.get("version") == "1.0.10" and v.get("platform") == "ios"), None)
+        self.assertIsNotNone(v_and_10)
+        self.assertIsNotNone(v_ios_10)
+        self.assertAlmostEqual(v_and_10["adoption_rate"], 0.35, places=2)
+        self.assertAlmostEqual(v_ios_10["adoption_rate"], 0.85, places=2)
+
+        # iOS 2.1.0 must be materialized with platform = 'ios', NOT 'android'!
+        v_ios_21 = next((v for v in enriched["version_health"] if v.get("version") == "2.1.0"), None)
+        self.assertIsNotNone(v_ios_21)
+        self.assertEqual(v_ios_21["platform"], "ios")
+        self.assertEqual(v_ios_21["status"], "latest")
+
+        # Android 1.0.10 must still be marked latest for Android!
+        self.assertEqual(v_and_10["status"], "latest")
+
+
 if __name__ == "__main__":
     unittest.main()

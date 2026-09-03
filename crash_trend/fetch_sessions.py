@@ -47,6 +47,16 @@ DEFAULT_CRASH_DATASET = "firebase_crashlytics"
 DEFAULT_UNAVAILABLE_REASON = "Firebase Sessions export table not found in dataset"
 
 
+def extract_platform_from_table(table_name: str) -> str:
+    """Infer platform (ios / android) from table name."""
+    t = str(table_name).upper()
+    if t.endswith("_IOS") or "_IOS_" in t or t.endswith("IOS"):
+        return "ios"
+    if t.endswith("_ANDROID") or "_ANDROID_" in t or t.endswith("ANDROID"):
+        return "android"
+    return "ios" if "ios" in str(table_name).lower() else "android"
+
+
 # ---------------------------------------------------------------------------
 # SQL Query Templates (對齊 Firebase Sessions 官方 Schema 與 Crashlytics Join)
 # ---------------------------------------------------------------------------
@@ -389,32 +399,49 @@ def compute_daily_sessions(rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, An
 def compute_version_sessions(
     rows: List[Dict[str, Any]], overall_total_sessions: Optional[int] = None
 ) -> Dict[str, Dict[str, Any]]:
-    """Aggregates version query rows into version-indexed health metrics."""
+    """Aggregates version query rows into version-indexed health metrics with platform isolation."""
     result: Dict[str, Dict[str, Any]] = {}
-    sum_sessions = overall_total_sessions or sum(int(r.get("sessions_total") or 0) for r in rows)
 
+    # Calculate total sessions per platform
+    pf_total_sessions: Dict[str, int] = {}
+    for r in rows:
+        pf = r.get("_platform") or r.get("platform") or "android"
+        pf_total_sessions[pf] = pf_total_sessions.get(pf, 0) + int(r.get("sessions_total") or 0)
+
+    # Group metrics by (platform, version)
+    grouped: Dict[Tuple[str, str], Dict[str, int]] = {}
     for r in rows:
         ver = str(r.get("version") or "unknown").strip()
         if not ver:
             continue
-        tot_sess = int(r.get("sessions_total") or 0)
-        cra_sess = int(r.get("crashed_sessions") or 0)
-        tot_usr = int(r.get("users_total") or 0)
-        cra_usr = int(r.get("crashed_users") or 0)
+        pf = r.get("_platform") or r.get("platform") or "android"
+        pair = (pf, ver)
+        if pair not in grouped:
+            grouped[pair] = {
+                "sessions_total": 0,
+                "crashed_sessions": 0,
+                "users_total": 0,
+                "crashed_users": 0,
+            }
+        grouped[pair]["sessions_total"] += int(r.get("sessions_total") or 0)
+        grouped[pair]["crashed_sessions"] += int(r.get("crashed_sessions") or 0)
+        grouped[pair]["users_total"] += int(r.get("users_total") or 0)
+        grouped[pair]["crashed_users"] += int(r.get("crashed_users") or 0)
 
-        if ver in result:
-            prev = result[ver]
-            tot_sess += prev["sessions_total"]
-            cra_sess += prev["crashed_sessions"]
-            tot_usr += prev["users_total"]
-            cra_usr += prev["crashed_users"]
+    for (pf, ver), metrics in grouped.items():
+        tot_sess = metrics["sessions_total"]
+        cra_sess = metrics["crashed_sessions"]
+        tot_usr = metrics["users_total"]
+        cra_usr = metrics["crashed_users"]
 
         cf_sess_rate = calculate_crash_free_rate(tot_sess, cra_sess)
         cf_usr_rate = calculate_crash_free_rate(tot_usr, cra_usr)
-        adoption = calculate_adoption_rate(tot_sess, sum_sessions)
+        sum_sessions_for_pf = pf_total_sessions.get(pf) or overall_total_sessions or tot_sess
+        adoption = calculate_adoption_rate(tot_sess, sum_sessions_for_pf)
 
-        result[ver] = {
+        entry = {
             "version": ver,
+            "platform": pf,
             "sessions_total": tot_sess,
             "crashed_sessions": cra_sess,
             "crash_free_sessions_rate": cf_sess_rate,
@@ -423,6 +450,12 @@ def compute_version_sessions(
             "crash_free_users_rate": cf_usr_rate,
             "adoption_rate": adoption,
         }
+        # Index by composite platform:version
+        result[f"{pf}:{ver}"] = entry
+        # Also index by plain version for backward compatibility (if not conflicting or first seen)
+        if ver not in result:
+            result[ver] = entry
+
     return result
 
 
@@ -504,10 +537,14 @@ def fetch_sessions_data(
             all_daily_rows.extend(daily_rows)
 
             # 3. Version Health Query
+            table_pf = extract_platform_from_table(table)
             ver_sql = SQLS["versions_joined"].format(
                 sessions_table=sessions_fq, crash_table=matching_crash_table, days=days
             )
             ver_rows = run_sessions_query(client, ver_sql)
+            for vr in ver_rows:
+                if isinstance(vr, dict):
+                    vr["_platform"] = table_pf
             all_version_rows.extend(ver_rows)
 
             # 4. Previous Period Comparison (獨立前一期間: [now - 2*days, now - days))
@@ -699,8 +736,12 @@ def enrich_app_dashboard_with_sessions(app_data: Dict[str, Any], sessions_result
             if not isinstance(item, dict):
                 continue
             ver_key = item.get("version")
-            if is_available and ver_key in version_sessions:
-                v_info = version_sessions[ver_key]
+            item_pf = item.get("platform", "android")
+            v_info = None
+            if is_available and ver_key:
+                v_info = version_sessions.get(f"{item_pf}:{ver_key}") or version_sessions.get(ver_key)
+
+            if v_info:
                 item["crash_free_users_rate"] = v_info.get("crash_free_users_rate")
                 item["crash_free_sessions_rate"] = v_info.get("crash_free_sessions_rate")
                 item["adoption_rate"] = v_info.get("adoption_rate")
@@ -709,28 +750,49 @@ def enrich_app_dashboard_with_sessions(app_data: Dict[str, Any], sessions_result
                 item["crash_free_sessions_rate"] = None
                 item["adoption_rate"] = None
 
-        # Materialize versions from Sessions that had 0 crashes (Must Fix 2)
+        # Materialize versions from Sessions that had 0 crashes (Must Fix 1 & 2)
         if is_available and version_sessions:
             app_pfs = app_data.get("metadata", {}).get("platforms") or ["android"]
             default_pf = app_pfs[0] if len(app_pfs) == 1 else "android"
-            existing_vers = {str(item.get("version")).strip() for item in app_data["version_health"] if isinstance(item, dict) and item.get("version")}
-            for ver_key, v_info in version_sessions.items():
-                if ver_key and ver_key not in existing_vers:
-                    v_pf = v_info.get("platform") or default_pf
+
+            existing_pairs = {
+                (item.get("platform", "android"), str(item.get("version")).strip())
+                for item in app_data["version_health"]
+                if isinstance(item, dict) and item.get("version")
+            }
+
+            for k, v_info in version_sessions.items():
+                if not isinstance(v_info, dict):
+                    continue
+                k_str = str(k).strip()
+                if ":" in k_str:
+                    split_pf, split_ver = k_str.split(":", 1)
+                else:
+                    split_pf, split_ver = default_pf, k_str
+
+                ver_key = v_info.get("version") or split_ver
+                v_pf = v_info.get("platform") or split_pf
+                if not ver_key or not v_pf:
+                    continue
+
+                pair = (v_pf, ver_key)
+                if pair not in existing_pairs:
                     app_data["version_health"].append({
                         "version": ver_key,
                         "platform": v_pf,
-                        "status": "active",
+                        "release_date": None,
                         "crash_events": 0,
                         "affected_users": 0,
                         "crash_free_users_rate": v_info.get("crash_free_users_rate", 1.0),
                         "crash_free_sessions_rate": v_info.get("crash_free_sessions_rate", 1.0),
                         "adoption_rate": v_info.get("adoption_rate", 0.0),
+                        "status": "active",
+                        "trend": "new",
                     })
-                    existing_vers.add(ver_key)
+                    existing_pairs.add(pair)
 
             # Update latest version marker per platform
-            if existing_vers:
+            if existing_pairs:
                 try:
                     from crash_trend.versions import max_version
                 except ImportError:
@@ -810,8 +872,12 @@ def enrich_app_dashboard_with_sessions(app_data: Dict[str, Any], sessions_result
                     if not isinstance(item, dict):
                         continue
                     ver_key = item.get("version")
-                    if snap_avail and ver_key in snap_ver_sess:
-                        v_info = snap_ver_sess[ver_key]
+                    item_pf = item.get("platform", "android")
+                    v_info = None
+                    if snap_avail and ver_key:
+                        v_info = snap_ver_sess.get(f"{item_pf}:{ver_key}") or snap_ver_sess.get(ver_key)
+
+                    if v_info:
                         item["crash_free_users_rate"] = v_info.get("crash_free_users_rate")
                         item["crash_free_sessions_rate"] = v_info.get("crash_free_sessions_rate")
                         item["adoption_rate"] = v_info.get("adoption_rate")
@@ -820,27 +886,48 @@ def enrich_app_dashboard_with_sessions(app_data: Dict[str, Any], sessions_result
                         item["crash_free_sessions_rate"] = None
                         item["adoption_rate"] = None
 
-                # Materialize 0-crash versions in snap["version_health"]
+                # Materialize 0-crash versions in snap["version_health"] (Must Fix 1 & 2)
                 if snap_avail and snap_ver_sess:
                     app_pfs = app_data.get("metadata", {}).get("platforms") or ["android"]
                     default_pf = app_pfs[0] if len(app_pfs) == 1 else "android"
-                    snap_existing_vers = {str(item.get("version")).strip() for item in snap["version_health"] if isinstance(item, dict) and item.get("version")}
-                    for ver_key, v_info in snap_ver_sess.items():
-                        if ver_key and ver_key not in snap_existing_vers:
-                            v_pf = v_info.get("platform") or default_pf
+
+                    snap_existing_pairs = {
+                        (item.get("platform", "android"), str(item.get("version")).strip())
+                        for item in snap["version_health"]
+                        if isinstance(item, dict) and item.get("version")
+                    }
+
+                    for k, v_info in snap_ver_sess.items():
+                        if not isinstance(v_info, dict):
+                            continue
+                        k_str = str(k).strip()
+                        if ":" in k_str:
+                            split_pf, split_ver = k_str.split(":", 1)
+                        else:
+                            split_pf, split_ver = default_pf, k_str
+
+                        ver_key = v_info.get("version") or split_ver
+                        v_pf = v_info.get("platform") or split_pf
+                        if not ver_key or not v_pf:
+                            continue
+
+                        pair = (v_pf, ver_key)
+                        if pair not in snap_existing_pairs:
                             snap["version_health"].append({
                                 "version": ver_key,
                                 "platform": v_pf,
-                                "status": "active",
+                                "release_date": None,
                                 "crash_events": 0,
                                 "affected_users": 0,
                                 "crash_free_users_rate": v_info.get("crash_free_users_rate", 1.0),
                                 "crash_free_sessions_rate": v_info.get("crash_free_sessions_rate", 1.0),
                                 "adoption_rate": v_info.get("adoption_rate", 0.0),
+                                "status": "active",
+                                "trend": "new",
                             })
-                            snap_existing_vers.add(ver_key)
+                            snap_existing_pairs.add(pair)
 
-                    if snap_existing_vers:
+                    if snap_existing_pairs:
                         try:
                             from crash_trend.versions import max_version
                         except ImportError:

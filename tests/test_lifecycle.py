@@ -765,6 +765,28 @@ class TestPlatformIsolation(unittest.TestCase):
             self.assertEqual(hist_and["first_seen_version"], "1.0.0")
             self.assertEqual(hist_ios["first_seen_version"], "2.0.0")
 
+    def test_get_issue_history_strict_platform_isolation(self):
+        """Should Fix: When platform is specified, lookup must NEVER fall back to other platforms."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cat_path = Path(tmpdir) / "historical_catalog.json"
+            catalog = IssueHistoricalCatalog(cat_path, app_id="test_app")
+            catalog.update_from_issues([
+                {"issue_id": "ios_only_issue", "platform": "ios", "first_seen_version": "2.0.0", "last_seen_version": "2.1.0"},
+            ])
+            catalog.save()
+
+            cat_reloaded = IssueHistoricalCatalog(cat_path, app_id="test_app")
+            cat_reloaded.load()
+
+            # Looking up with platform="android" must return None (no cross-platform fallback!)
+            self.assertIsNone(cat_reloaded.get_issue_history("ios_only_issue", platform="android"))
+
+            # Looking up with platform="ios" returns the issue
+            self.assertIsNotNone(cat_reloaded.get_issue_history("ios_only_issue", platform="ios"))
+
+            # Looking up with platform=None falls back and returns the issue
+            self.assertIsNotNone(cat_reloaded.get_issue_history("ios_only_issue", platform=None))
+
 
 class TestHistoricalBootstrap(unittest.TestCase):
     """Verifies true historical bootstrap from disk archives and retention queries."""

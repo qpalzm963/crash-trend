@@ -56,9 +56,11 @@ def get_latest_app_version(
         if platform is None or v_pf is None or v_pf == platform or v_pf == "all":
             filtered_vh.append(v)
 
-    for v in filtered_vh:
-        if v.get("status") == "latest" and v.get("version"):
-            return str(v["version"]).strip()
+    latest_candidates = [
+        str(v["version"]).strip() for v in filtered_vh if v.get("status") == "latest" and v.get("version")
+    ]
+    if latest_candidates:
+        return max_version(latest_candidates)
 
     vh_versions = [str(v.get("version")).strip() for v in filtered_vh if v.get("version")]
     if vh_versions:
@@ -485,9 +487,8 @@ class IssueHistoricalCatalog:
     def get_issue_history(self, issue_id: str, platform: Optional[str] = None) -> Optional[Dict[str, Any]]:
         if platform:
             canonical = self._canonical_key(platform, issue_id)
-            if canonical in self.issues:
-                return self.issues[canonical]
-        # Fallback lookups
+            return self.issues.get(canonical)
+        # Fallback lookups only when platform is not specified (None)
         for pf in ("android", "ios"):
             ck = self._canonical_key(pf, issue_id)
             if ck in self.issues:
