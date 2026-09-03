@@ -1947,8 +1947,8 @@ function renderKPIs() {
     cfuVal.classList.add("unavailable-text");
     cfuProg.style.strokeDashoffset = 113.097;
     cfuDelta.className = "delta-pill neutral";
-    cfuDelta.textContent = "未開啟 Sessions 匯出";
-    cfuCounts.textContent = "缺少總連線人數，無法計算無當機率";
+    cfuDelta.textContent = "未開啟連線統計";
+    cfuCounts.textContent = "缺少總上線人數";
   }
 
   // 2. Crash Events
