@@ -363,6 +363,104 @@ class TestAIRouter(unittest.TestCase):
         self.assertIsNone(src_ai["error_message"])
         self.assertIn("routing_reason", src_ai)
 
+    def test_13_legacy_openrouter_config_without_allow_paid_models_rejects_paid_model(self) -> None:
+        """Test 13 (Review 5103409751): Legacy config with provider: openrouter and non-free model must be rejected if allow_paid_models is not explicitly True."""
+        legacy_cfg = {
+            "ai": {
+                "provider": "openrouter",
+                "model": "anthropic/claude-3.5-sonnet",
+                "api_key": "sk-or-fake",
+            }
+        }
+        router = get_ai_router(app_cfg=legacy_cfg)
+        self.assertFalse(router.config.allow_paid_models)
+        with self.assertRaises(ValueError) as ctx:
+            router.route("deep_analysis")
+        self.assertIn("Paid model 'anthropic/claude-3.5-sonnet' not allowed", str(ctx.exception))
+
+        # Explicit allow_paid_models: True must succeed
+        legacy_cfg_allowed = {
+            "ai": {
+                "provider": "openrouter",
+                "model": "anthropic/claude-3.5-sonnet",
+                "api_key": "sk-or-fake",
+                "allow_paid_models": True,
+            }
+        }
+        router_allowed = get_ai_router(app_cfg=legacy_cfg_allowed)
+        self.assertTrue(router_allowed.config.allow_paid_models)
+        d = router_allowed.route("deep_analysis")
+        self.assertEqual(d.selected_model, "anthropic/claude-3.5-sonnet")
+
+    @patch("crash_trend.pipeline_run.run_stage_process")
+    def test_14_pipeline_health_full_routing_telemetry(self, mock_run_proc: MagicMock) -> None:
+        """Test 14 (Review 5103409751): Pipeline health records complete routing telemetry matching canonical sources.ai."""
+        import tempfile
+        from pathlib import Path
+        from crash_trend.pipeline_run import run_pipeline
+
+        mock_run_proc.return_value = (0, "ok", "")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmproot = Path(tmpdir)
+            out_app = tmproot / "out" / "shop_app"
+            out_app.mkdir(parents=True, exist_ok=True)
+            v2_path = out_app / "dashboard_v2.json"
+
+            # Synthetic enriched V2 artifact with full router telemetry
+            mock_v2 = {
+                "metadata": {"app_id": "shop_app", "display_name": "Shop"},
+                "ai_summary": {"status": "available"},
+                "sources": {
+                    "ai": {
+                        "status": "available",
+                        "provider": "gemini",
+                        "model": "gemini-2.5-flash",
+                        "requested_mode": "auto",
+                        "task_type": "deep_analysis",
+                        "selected_provider": "gemini",
+                        "selected_model": "gemini-2.5-flash",
+                        "routing_reason": "Routing task 'deep_analysis' to primary Gemini Direct",
+                        "fallback_used": False,
+                        "fallback_reason": None,
+                        "paid_model_allowed": False,
+                        "last_sync_timestamp": "2026-09-03T12:00:00Z",
+                        "error_message": None,
+                    }
+                },
+            }
+            v2_path.write_text(json.dumps(mock_v2), encoding="utf-8")
+
+            fake_cfg = {
+                "apps": {
+                    "shop_app": {
+                        "display_name": "Shop",
+                        "firebase_project": "proj-shop",
+                        "data_sources": {"crashlytics_bigquery": True, "sessions": False, "mcp": "off"},
+                        "ai": {"mode": "auto", "primary": {"api_key": "AIzaTest"}},
+                    }
+                }
+            }
+            sum_path = tmproot / "out" / "pipeline_run.json"
+
+            with patch("crash_trend.pipeline_run.ROOT", tmproot):
+                with patch("crash_trend.pipeline_run.load_config", return_value=fake_cfg):
+                    summary = run_pipeline(
+                        app_names=["shop_app"],
+                        summary_path=sum_path,
+                        skip_dashboard=True,
+                        verbose=False,
+                    )
+
+            ai_details = summary["apps"]["shop_app"]["stages"]["ai"]["details"]
+            self.assertEqual(ai_details["requested_mode"], "auto")
+            self.assertEqual(ai_details["task_type"], "deep_analysis")
+            self.assertEqual(ai_details["selected_provider"], "gemini")
+            self.assertEqual(ai_details["selected_model"], "gemini-2.5-flash")
+            self.assertIn("Gemini Direct", ai_details["routing_reason"])
+            self.assertFalse(ai_details["fallback_used"])
+            self.assertIsNone(ai_details["fallback_reason"])
+            self.assertFalse(ai_details["paid_model_allowed"])
+
 
 if __name__ == "__main__":
     unittest.main()

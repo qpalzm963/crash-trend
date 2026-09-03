@@ -374,10 +374,18 @@ def run_pipeline(
                         ai_details["model"] = ai_src["model"]
                     if ai_src.get("requested_mode"):
                         ai_details["mode"] = ai_src["requested_mode"]
-                    if ai_src.get("routing_reason"):
-                        ai_details["routing_reason"] = ai_src["routing_reason"]
-                    if "fallback_used" in ai_src:
-                        ai_details["fallback_used"] = ai_src["fallback_used"]
+                    for k in (
+                        "requested_mode",
+                        "task_type",
+                        "selected_provider",
+                        "selected_model",
+                        "routing_reason",
+                        "fallback_used",
+                        "fallback_reason",
+                        "paid_model_allowed",
+                    ):
+                        if k in ai_src:
+                            ai_details[k] = ai_src[k]
                 except Exception:
                     pass
 

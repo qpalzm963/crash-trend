@@ -146,7 +146,7 @@ def resolve_router_config(
         else:
             mode = "auto"
 
-    # 2. Allow paid models resolution (default False)
+    # 2. Allow paid models resolution (default False; strictly opt-in)
     allow_paid = False
     if "allow_paid_models" in app_ai:
         allow_paid = bool(app_ai["allow_paid_models"])
@@ -154,8 +154,6 @@ def resolve_router_config(
         allow_paid = bool(global_ai["allow_paid_models"])
     elif os.environ.get("AI_ALLOW_PAID_MODELS"):
         allow_paid = os.environ.get("AI_ALLOW_PAID_MODELS", "").strip().lower() in ("true", "1", "yes")
-    elif not raw_mode and (app_ai.get("provider") == "openrouter" or global_ai.get("provider") == "openrouter"):
-        allow_paid = True
 
     # 3. Privacy settings resolution (default True)
     app_privacy = app_ai.get("privacy") or {}

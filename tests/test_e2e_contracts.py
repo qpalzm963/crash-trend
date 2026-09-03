@@ -546,6 +546,7 @@ class TestE2EContracts(unittest.TestCase):
                 "provider": "openrouter",
                 "model": "google/gemini-2.0-flash-001",
                 "api_key": "sk-or-v1-fake-openrouter-key",
+                "allow_paid_models": True,
             },
         }
         fake_cfg = {
