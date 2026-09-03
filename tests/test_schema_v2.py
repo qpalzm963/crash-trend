@@ -18,6 +18,7 @@ from crash_trend.schema_v2 import (
     is_valid_iso8601_utc,
     validate_app_dashboard_v2,
     validate_dashboard_v2,
+    validate_historical_catalog,
 )
 
 
@@ -220,6 +221,77 @@ class TestDashboardV2Schema(unittest.TestCase):
             errors = validate_dashboard_v2(case)
             self.assertIsInstance(errors, list)
             self.assertTrue(len(errors) > 0, f"Case {idx} should produce validation errors")
+
+    def test_historical_catalog_validation_success(self) -> None:
+        valid_cat = {
+            "schema_version": "2.3.0",
+            "updated_at": "2026-09-03T12:00:00Z",
+            "app_id": "shop_app",
+            "issues": {
+                "android:iss_1": {
+                    "issue_id": "iss_1",
+                    "platform": "android",
+                    "title": "Crash 1",
+                    "subtitle": "Sub",
+                    "error_type": "FATAL",
+                    "first_seen_version": "1.0.0",
+                    "last_seen_version": "1.0.1",
+                    "first_seen_timestamp": None,
+                    "last_seen_timestamp": None,
+                    "versions_seen": ["1.0.0", "1.0.1"],
+                    "last_updated": "2026-09-03T12:00:00Z",
+                }
+            },
+            "app_versions": {
+                "android": {
+                    "1.0.1": {
+                        "version": "1.0.1",
+                        "platform": "android",
+                        "status": "latest",
+                        "adoption_rate": 0.5,
+                        "sessions_total": 5000,
+                        "crash_events": 10,
+                        "sample_sufficient": True,
+                        "last_updated": "2026-09-03T12:00:00Z",
+                    }
+                }
+            },
+        }
+        errs = validate_historical_catalog(valid_cat)
+        self.assertEqual(errs, [])
+
+    def test_historical_catalog_validation_failure(self) -> None:
+        invalid_cat = {
+            "schema_version": "999.0",
+            "issues": "not a dict",
+        }
+        errs = validate_historical_catalog(invalid_cat)
+        self.assertTrue(len(errs) > 0)
+        self.assertTrue(any("schema_version" in e for e in errs))
+        self.assertTrue(any("updated_at is required" in e for e in errs))
+
+    def test_v2_3_bundle_requires_lifecycle_on_top_issues(self) -> None:
+        fixture_path = self.fixtures_dir / "dashboard_v2.json"
+        data = json.loads(fixture_path.read_text(encoding="utf-8"))
+        data["schema_version"] = "2.3.0"
+        errs = validate_dashboard_v2(data)
+        self.assertTrue(any("lifecycle is required in Schema V2.3" in e for e in errs))
+
+        for app in data["apps"].values():
+            for iss in app.get("top_issues", []):
+                iss["lifecycle"] = {
+                    "status": "persistent",
+                    "latest_version": "1.0.10",
+                    "first_seen_version": "1.0.8",
+                    "last_seen_version": "1.0.10",
+                    "versions_seen": 2,
+                    "confidence": "high",
+                    "previously_absent_since": None,
+                    "reappeared_version": None,
+                    "reason": "Persistent",
+                }
+        errs2 = validate_dashboard_v2(data)
+        self.assertEqual(errs2, [])
 
 
 if __name__ == "__main__":

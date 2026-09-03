@@ -194,6 +194,10 @@ def calculate_priority(
     core_matched = any(k.lower() in search_target for k in core_paths) if core_paths else False
     core_path_boost = 3 if core_matched else 0
 
+    # Lifecycle regression check
+    lc = issue.get("lifecycle") or {}
+    regressed_boost = 2 if lc.get("status") == "regressed" else 0
+
     # 4. Raw score sum (max 49 points)
     raw_points = (
         (u_norm * 3.0)
@@ -202,6 +206,7 @@ def calculate_priority(
         + worsening_boost
         + latest_version_boost
         + core_path_boost
+        + regressed_boost
     )
 
     # Scale to 0-100
@@ -215,6 +220,7 @@ def calculate_priority(
         "worsening_boost": worsening_boost,
         "latest_version_boost": latest_version_boost,
         "core_path_boost": core_path_boost,
+        "regressed_boost": regressed_boost,
     }
 
     return {
@@ -715,6 +721,19 @@ def enrich_app_data_with_priority_and_ai(
       4. 解析回傳填入 ai_summary 與各 issue 的 ai_analysis，同步更新 sources.ai 與 sources.gemini_ai。
       5. 若未配置 Key，執行優雅降級，標為 disabled / unavailable。
     """
+    # 0. 刷新確定性 Lifecycle 狀態（確保已整合最新的 Sessions adoption evidence）
+    try:
+        from crash_trend.lifecycle import enrich_app_data_with_lifecycle
+        app_id = app_data.get("metadata", {}).get("app_id")
+        enrich_app_data_with_lifecycle(app_data, app_name=app_id)
+    except ImportError:
+        try:
+            from lifecycle import enrich_app_data_with_lifecycle
+            app_id = app_data.get("metadata", {}).get("app_id")
+            enrich_app_data_with_lifecycle(app_data, app_name=app_id)
+        except ImportError:
+            pass
+
     raw_issues = app_data.get("top_issues", [])
     prev_issues = (prev_app_data.get("top_issues") if prev_app_data else None) or []
     repo = source_repo or app_data.get("metadata", {}).get("source_repo")
