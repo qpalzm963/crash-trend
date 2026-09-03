@@ -46,6 +46,15 @@ try:
         validate_app_dashboard_v2,
     )
     from .versions import max_version, min_version, version_key
+    from .ai_provider import (
+        AIProvider,
+        CANONICAL_AI_RESPONSE_SCHEMA,
+        GeminiProvider,
+        OpenRouterProvider,
+        get_ai_provider,
+        resolve_gemini_key,
+    )
+    from .pipeline_health import sanitize_error_message
 except ImportError:
     try:
         from config import ROOT, app_argparser, get_app, write_json
@@ -60,6 +69,15 @@ except ImportError:
             validate_app_dashboard_v2,
         )
         from versions import max_version, min_version, version_key
+        from ai_provider import (
+            AIProvider,
+            CANONICAL_AI_RESPONSE_SCHEMA,
+            GeminiProvider,
+            OpenRouterProvider,
+            get_ai_provider,
+            resolve_gemini_key,
+        )
+        from pipeline_health import sanitize_error_message
     except ImportError:
         from crash_trend.config import ROOT, app_argparser, get_app, write_json
         from crash_trend.schema_v2 import (
@@ -73,6 +91,15 @@ except ImportError:
             validate_app_dashboard_v2,
         )
         from crash_trend.versions import max_version, min_version, version_key
+        from crash_trend.ai_provider import (
+            AIProvider,
+            CANONICAL_AI_RESPONSE_SCHEMA,
+            GeminiProvider,
+            OpenRouterProvider,
+            get_ai_provider,
+            resolve_gemini_key,
+        )
+        from crash_trend.pipeline_health import sanitize_error_message
 
 
 API = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
@@ -308,7 +335,6 @@ def source_snippet(source_repo: Path | str | None, subtitle_or_path: str, max_li
 # ---------------------------------------------------------------------------
 # 3. Gemini API Key 解析與優雅降級預設結構
 # ---------------------------------------------------------------------------
-
 def resolve_api_key(raise_on_missing: bool = False) -> str | None:
     """取得 Gemini API Key。順序：GEMINI_API_KEY env → GEMINI_KEY_URL。"""
     key = os.environ.get("GEMINI_API_KEY")
@@ -334,10 +360,11 @@ def resolve_api_key(raise_on_missing: bool = False) -> str | None:
     return None
 
 
-def generate_disabled_ai_summary(reason: str = "未配置 GEMINI_API_KEY") -> AISummary:
-    """未啟用 Gemini AI 時的優雅降級 AISummary 結構。"""
+def generate_disabled_ai_summary(reason: str = "未配置 AI API 金鑰", provider: Optional[str] = None) -> AISummary:
+    """未啟用 AI 時的優雅降級 AISummary 結構。"""
     return {
         "status": "disabled",
+        "provider": provider,
         "model": None,
         "generated_at": None,
         "overview": f"AI 分析功能未啟用（{reason}）",
@@ -349,7 +376,7 @@ def generate_disabled_ai_summary(reason: str = "未配置 GEMINI_API_KEY") -> AI
 
 
 def generate_disabled_issue_analysis() -> AIIssueAnalysis:
-    """未啟用 Gemini AI 時單一 Issue 的優雅降級 AIIssueAnalysis 結構。"""
+    """未啟用 AI 時單一 Issue 的優雅降級 AIIssueAnalysis 結構。"""
     return {
         "status": "unavailable",
         "root_cause": None,
@@ -360,10 +387,11 @@ def generate_disabled_issue_analysis() -> AIIssueAnalysis:
     }
 
 
-def generate_error_ai_summary(error_msg: str) -> AISummary:
+def generate_error_ai_summary(error_msg: str, provider: Optional[str] = None) -> AISummary:
     """AI 呼叫失敗時的降級 AISummary 結構。"""
     return {
         "status": "error",
+        "provider": provider,
         "model": None,
         "generated_at": None,
         "overview": f"AI 分析過程發生錯誤：{error_msg}",
@@ -375,56 +403,10 @@ def generate_error_ai_summary(error_msg: str) -> AISummary:
 
 
 # ---------------------------------------------------------------------------
-# 4. Gemini Structured Output Schema & API 調用
+# 4. Gemini Structured Output Schema & API 調用 (Backward Compatibility)
 # ---------------------------------------------------------------------------
 
-RESPONSE_SCHEMA_V2 = {
-    "type": "OBJECT",
-    "properties": {
-        "overview": {"type": "STRING"},
-        "key_takeaways": {
-            "type": "ARRAY",
-            "items": {"type": "STRING"},
-        },
-        "distribution_insights": {"type": "STRING"},
-        "recommended_actions": {
-            "type": "ARRAY",
-            "items": {
-                "type": "OBJECT",
-                "properties": {
-                    "priority": {"type": "STRING", "enum": ["P0", "P1", "P2", "P3"]},
-                    "issue_id": {"type": "STRING"},
-                    "action": {"type": "STRING"},
-                    "effort": {"type": "STRING", "enum": ["S", "M", "L"]},
-                },
-                "required": ["priority", "issue_id", "action", "effort"],
-            },
-        },
-        "data_limitations": {"type": "STRING"},
-        "items": {
-            "type": "ARRAY",
-            "items": {
-                "type": "OBJECT",
-                "properties": {
-                    "issue_id": {"type": "STRING"},
-                    "root_cause": {"type": "STRING"},
-                    "suggested_fix": {"type": "STRING"},
-                    "effort": {"type": "STRING", "enum": ["S", "M", "L"]},
-                    "confidence": {
-                        "type": "STRING",
-                        "enum": ["high", "medium", "low", "needs_manual_review"],
-                    },
-                    "reasoning_sources": {
-                        "type": "ARRAY",
-                        "items": {"type": "STRING"},
-                    },
-                },
-                "required": ["issue_id", "root_cause", "suggested_fix", "effort", "confidence"],
-            },
-        },
-    },
-    "required": ["overview", "key_takeaways", "distribution_insights", "recommended_actions", "data_limitations", "items"],
-}
+RESPONSE_SCHEMA_V2 = CANONICAL_AI_RESPONSE_SCHEMA
 
 
 def call_gemini(
@@ -433,43 +415,9 @@ def call_gemini(
     api_key: str | None = None,
     model: str | None = None,
 ) -> dict:
-    """呼叫 Gemini generateContent API，強制使用 Structured JSON Schema 輸出。"""
-    key = api_key or resolve_api_key(raise_on_missing=True)
-    model_name = model or os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
-    body = {
-        "contents": [{"parts": [{"text": payload_text}]}],
-        "generationConfig": {
-            "responseMimeType": "application/json",
-            "responseSchema": schema or RESPONSE_SCHEMA_V2,
-            "temperature": 0.2,
-        },
-    }
-
-    last_err: Exception | None = None
-    for attempt in (1, 2, 3):
-        try:
-            r = requests.post(API.format(model=model_name), params={"key": key}, json=body, timeout=300)
-            if r.status_code in (429, 500, 503) and attempt < 3:
-                time.sleep(3 * attempt)
-                continue
-            if r.status_code != 200:
-                raise RuntimeError(f"Gemini API 回傳狀態碼 {r.status_code}：{r.text[:300]}")
-            text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
-            return json.loads(text)
-        except (requests.Timeout, requests.ConnectionError) as e:
-            last_err = e
-            if attempt < 3:
-                time.sleep(3 * attempt)
-                continue
-            raise RuntimeError(f"Gemini API 連線逾時（已重試 3 次）：{e}") from e
-        except json.JSONDecodeError as e:
-            last_err = e
-            if attempt < 3:
-                time.sleep(2)
-                continue
-            raise RuntimeError(f"Gemini 回傳非合法 JSON：{e}") from e
-
-    raise last_err or RuntimeError("Gemini API 調用失敗")
+    """呼叫 Gemini generateContent API，強制使用 Structured JSON Schema 輸出（向下相容包裝）。"""
+    provider = GeminiProvider(api_key=api_key, model=model)
+    return provider.analyze(payload_text, schema=schema or CANONICAL_AI_RESPONSE_SCHEMA)
 
 
 # ---------------------------------------------------------------------------
@@ -560,8 +508,9 @@ def parse_gemini_response(
     ai_json: dict,
     scored_issues: list[dict],
     model_name: str | None = None,
+    provider_name: str | None = None,
 ) -> tuple[AISummary, dict[str, AIIssueAnalysis]]:
-    """解析並防禦性清洗 Gemini 回傳的 JSON 結構，對齊 Dashboard V2 Schema。"""
+    """解析並防禦性清洗 AI 回傳的 JSON 結構，對齊 Dashboard V2/V2.3 Schema。"""
     valid_priorities = {"P0", "P1", "P2", "P3"}
     valid_efforts = {"S", "M", "L"}
     valid_confidences = {"high", "medium", "low", "needs_manual_review"}
@@ -597,6 +546,7 @@ def parse_gemini_response(
 
     ai_summary: AISummary = {
         "status": "available",
+        "provider": provider_name or "gemini",
         "model": model_name or os.environ.get("GEMINI_MODEL", "gemini-flash-latest"),
         "generated_at": iso_utc_now(),
         "overview": str(ai_json.get("overview") or "本期穩定性分析完成。"),
@@ -650,6 +600,9 @@ def parse_gemini_response(
     return ai_summary, analysis_map
 
 
+parse_ai_response = parse_gemini_response
+
+
 # ---------------------------------------------------------------------------
 # 6. 端到端資料契約整合 (Enrich App Dashboard V2 Data)
 # ---------------------------------------------------------------------------
@@ -662,14 +615,17 @@ def enrich_app_data_with_priority_and_ai(
     api_key: str | None = None,
     model: str | None = None,
     top_limit: int = 10,
+    provider: Optional[AIProvider] = None,
+    app_cfg: Optional[dict] = None,
 ) -> dict:
     """將 AppDashboardV2Data 資料字典進行確定性優先級計算與 AI 分析擴充。
 
     流程：
       1. 計算 top_issues 的確定性 Priority Score (0-100), Level (P0-P3), Trend。
-      2. 若有 GEMINI_API_KEY，擷取 stack traces / blame frame 原始碼片段並呼叫 Gemini。
-      3. 解析回傳填入 ai_summary 與各 issue 的 ai_analysis，更新 sources.gemini_ai。
-      4. 若無 API Key，執行優雅降級，標為 disabled / unavailable。
+      2. 根據設定解析 AIProvider (Gemini 或 OpenRouter)。
+      3. 若 Provider configured，擷取 stack traces / blame frame 原始碼片段並呼叫 Provider。
+      4. 解析回傳填入 ai_summary 與各 issue 的 ai_analysis，同步更新 sources.ai 與 sources.gemini_ai。
+      5. 若未配置 Key，執行優雅降級，標為 disabled / unavailable。
     """
     raw_issues = app_data.get("top_issues", [])
     prev_issues = (prev_app_data.get("top_issues") if prev_app_data else None) or []
@@ -684,24 +640,46 @@ def enrich_app_data_with_priority_and_ai(
         latest_app_version=latest_ver,
     )
 
-    # 2. 檢查 API Key
-    resolved_key = api_key or resolve_api_key(raise_on_missing=False)
-    model_name = model or os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
+    # 2. 解析 AIProvider
+    if provider is not None:
+        active_provider = provider
+    else:
+        base_provider = get_ai_provider(app_cfg)
+        p_name = base_provider.provider_name
+        p_model = model or base_provider.model_name
+        p_key = api_key or getattr(base_provider, "_explicit_key", None)
+        if p_name == "openrouter":
+            active_provider = OpenRouterProvider(api_key=p_key, model=p_model)
+        else:
+            active_provider = GeminiProvider(api_key=p_key, model=p_model)
 
-    if not resolved_key or not scored_issues:
+    is_configured = active_provider.is_configured()
+    provider_name = active_provider.provider_name
+    model_name = active_provider.model_name
+
+    if not is_configured or not scored_issues:
         # 優雅降級：未啟用 AI
-        ai_summary = generate_disabled_ai_summary("未配置 GEMINI_API_KEY" if not resolved_key else "本期無 Issue 資料")
+        reason = f"未配置 {provider_name.upper()} API 金鑰" if not is_configured else "本期無 Issue 資料"
+        ai_summary = generate_disabled_ai_summary(reason, provider=provider_name)
         disabled_analysis = generate_disabled_issue_analysis()
         for i in scored_issues:
             i["ai_analysis"] = disabled_analysis
 
         app_data["top_issues"] = scored_issues
         app_data["ai_summary"] = ai_summary
-        if "sources" in app_data and "gemini_ai" in app_data["sources"]:
-            app_data["sources"]["gemini_ai"]["status"] = "disabled"
-            app_data["sources"]["gemini_ai"]["last_sync_timestamp"] = None
-            app_data["sources"]["gemini_ai"]["model"] = None
-            app_data["sources"]["gemini_ai"]["error_message"] = None
+        if "sources" in app_data:
+            app_data["sources"]["ai"] = {
+                "status": "disabled",
+                "provider": provider_name,
+                "model": None,
+                "last_sync_timestamp": None,
+                "error_message": None,
+            }
+            if "gemini_ai" in app_data["sources"]:
+                app_data["sources"]["gemini_ai"]["status"] = "disabled"
+                app_data["sources"]["gemini_ai"]["last_sync_timestamp"] = None
+                app_data["sources"]["gemini_ai"]["model"] = None
+                app_data["sources"]["gemini_ai"]["error_message"] = None
         return app_data
 
     # 3. 準備原始碼片段與 Prompt
@@ -736,35 +714,55 @@ def enrich_app_data_with_priority_and_ai(
         snippets=snippets,
     )
 
-    # 4. 呼叫 Gemini 並防禦性解析
+    # 4. 呼叫 Provider 並防禦性解析
     try:
-        raw_ai_res = call_gemini(prompt, api_key=resolved_key, model=model_name)
-        ai_summary, analysis_map = parse_gemini_response(raw_ai_res, scored_issues, model_name=model_name)
+        raw_ai_res = active_provider.analyze(prompt, schema=CANONICAL_AI_RESPONSE_SCHEMA)
+        ai_summary, analysis_map = parse_gemini_response(
+            raw_ai_res, scored_issues, model_name=model_name, provider_name=provider_name
+        )
         for issue in scored_issues:
             issue["ai_analysis"] = analysis_map.get(issue.get("issue_id", ""), generate_disabled_issue_analysis())
 
         app_data["top_issues"] = scored_issues
         app_data["ai_summary"] = ai_summary
-        if "sources" in app_data and "gemini_ai" in app_data["sources"]:
-            app_data["sources"]["gemini_ai"]["status"] = "available"
-            app_data["sources"]["gemini_ai"]["last_sync_timestamp"] = iso_utc_now()
-            app_data["sources"]["gemini_ai"]["model"] = model_name
-            app_data["sources"]["gemini_ai"]["error_message"] = None
+        now_ts = iso_utc_now()
+        if "sources" in app_data:
+            app_data["sources"]["ai"] = {
+                "status": "available",
+                "provider": provider_name,
+                "model": model_name,
+                "last_sync_timestamp": now_ts,
+                "error_message": None,
+            }
+            if "gemini_ai" in app_data["sources"]:
+                app_data["sources"]["gemini_ai"]["status"] = "available"
+                app_data["sources"]["gemini_ai"]["last_sync_timestamp"] = now_ts
+                app_data["sources"]["gemini_ai"]["model"] = model_name
+                app_data["sources"]["gemini_ai"]["error_message"] = None
 
     except Exception as e:
-        # API 呼叫失敗時的優雅降級
-        ai_summary = generate_error_ai_summary(str(e))
+        # API 呼叫失敗時的優雅降級：對所有錯誤字串進行脫敏，避免洩漏金鑰、URL 或 token
+        safe_err = sanitize_error_message(str(e))
+        ai_summary = generate_error_ai_summary(safe_err, provider=provider_name)
         disabled_analysis = generate_disabled_issue_analysis()
         for i in scored_issues:
             i["ai_analysis"] = disabled_analysis
 
         app_data["top_issues"] = scored_issues
         app_data["ai_summary"] = ai_summary
-        if "sources" in app_data and "gemini_ai" in app_data["sources"]:
-            app_data["sources"]["gemini_ai"]["status"] = "error"
-            app_data["sources"]["gemini_ai"]["last_sync_timestamp"] = None
-            app_data["sources"]["gemini_ai"]["model"] = model_name
-            app_data["sources"]["gemini_ai"]["error_message"] = str(e)
+        if "sources" in app_data:
+            app_data["sources"]["ai"] = {
+                "status": "error",
+                "provider": provider_name,
+                "model": model_name,
+                "last_sync_timestamp": None,
+                "error_message": safe_err,
+            }
+            if "gemini_ai" in app_data["sources"]:
+                app_data["sources"]["gemini_ai"]["status"] = "error"
+                app_data["sources"]["gemini_ai"]["last_sync_timestamp"] = None
+                app_data["sources"]["gemini_ai"]["model"] = model_name
+                app_data["sources"]["gemini_ai"]["error_message"] = safe_err
 
     return app_data
 
@@ -849,145 +847,12 @@ def render_md(
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    p = app_argparser("Gemini 月報分析 (Dashboard V2)")
-    p.add_argument("--top", type=int, default=5, help="送分析的 top issues 數（預設 5）")
-    args = p.parse_args()
-    app = get_app(args.app)
-    month = dt.date.today().strftime("%Y-%m")
-    resolved_key = resolve_api_key(raise_on_missing=False)
-
-    # 1. 若有 Dashboard V2 資料，執行確定性 Priority Score 計算與 Gemini AI 分析
-    v2_path = ROOT / "out" / args.app / "dashboard_v2.json"
-    if v2_path.exists():
-        try:
-            app_v2 = json.loads(v2_path.read_text(encoding="utf-8"))
-            enriched_v2 = enrich_app_data_with_priority_and_ai(
-                app_v2,
-                api_key=resolved_key,
-                core_paths=app.get("core_paths", []),
-            )
-            val_errors = validate_app_dashboard_v2(enriched_v2)
-            if val_errors:
-                print(f"  [警告] Schema V2 驗證警告：{val_errors[:3]}", file=sys.stderr)
-            write_json(v2_path, enriched_v2)
-            print(f"  ✓ 已更新 {v2_path.relative_to(ROOT)} Priority Score 與 AI 策略摘要")
-        except Exception as e:
-            print(f"  ⚠ 更新 dashboard_v2.json AI 優先級分析失敗：{e}", file=sys.stderr)
-
-    # 2. 傳統月報 Markdown 與 reports/data 產出（若 unified.json 存在）
-    unified_path = ROOT / "out" / args.app / "unified.json"
-    if not unified_path.exists():
-        if v2_path.exists():
-            print(f"  （已完成 V2 分析，未找到 {unified_path.name}，略過傳統 Markdown 月報）")
-            return
-        sys.exit(f"[錯誤] 找不到 {unified_path}，先跑 fetch_bigquery.py 或 normalize.py")
-
-    u = json.loads(unified_path.read_text(encoding="utf-8"))
-
-    summary_path = ROOT / "reports" / "data" / args.app / f"{month}.json"
-    summary = json.loads(summary_path.read_text(encoding="utf-8")) if summary_path.exists() else {}
-    months = sorted(f.stem for f in summary_path.parent.glob("*.json")) if summary_path.parent.is_dir() else []
-    prev = {}
-    if len(months) > 1 and months[-1] == month:
-        prev = json.loads((summary_path.parent / f"{months[-2]}.json").read_text(encoding="utf-8"))
-
-    report_dir = ROOT / "reports" / args.app
-    report_dir.mkdir(parents=True, exist_ok=True)
-    report_path = report_dir / f"{month}.md"
-
-    issues = u.get("issues", [])
-    if not issues:
-        report_path.write_text(
-            f"# {u.get('display_name', args.app)} Crash 月報 {month}\n\n本期無 crash 資料"
-            f"（來源狀態：{u.get('sources')}）。\n",
-            encoding="utf-8",
-        )
-        print(f"  ✓ 本期無資料，已產出空月報 {report_path.relative_to(ROOT)}")
-        return
-
-    # 計算 Priority Score
-    scored = score_issues(issues, prev.get("top_issues", []), app.get("core_paths", []))
-
-    # 抓取真實 stack trace 與 blame frame
-    st_path = ROOT / "out" / args.app / "stacktraces.json"
-    stacks = json.loads(st_path.read_text(encoding="utf-8")).get("issues", {}) if st_path.exists() else {}
-    repo = Path(app.get("source_repo", "")).expanduser() if app.get("source_repo") else None
-
-    for i in scored:
-        st = stacks.get(i.get("issue_id") or "") or {}
-        if st:
-            if "blame_frame" not in i and st.get("blame_frame"):
-                i["blame_frame"] = st["blame_frame"]
-            if "detail" not in i:
-                i["detail"] = {
-                    "stack_trace": st.get("stack_trace"),
-                    "breadcrumbs": [],
-                    "logs": [],
-                    "custom_keys": None,
-                    "top_devices": None,
-                    "top_os": None,
-                }
-
-    if resolved_key:
-        snippets = []
-        for i in scored[:args.top]:
-            st = stacks.get(i.get("issue_id") or "")
-            if st and st.get("stack_trace"):
-                parts = [f"[issue {i.get('issue_id')}] Stack Trace:\n{st['stack_trace']}"]
-                bf = st.get("blame_frame") or {}
-                if repo and repo.is_dir() and bf.get("file"):
-                    snip = source_snippet(repo, f"{bf['file']}:{bf.get('line', '')}")
-                    if snip:
-                        parts.append(f"元兇 frame 原始碼：\n{snip}")
-                snippets.append("\n".join(parts))
-            elif repo and repo.is_dir() and i.get("subtitle"):
-                snip = source_snippet(repo, i["subtitle"])
-                if snip:
-                    snippets.append(f"[issue {i.get('issue_id')}]\n{snip}")
-
-        prompt = build_ai_prompt(
-            display_name=u.get("display_name", args.app),
-            kpi=summary.get("kpis", {}),
-            prev_kpi=prev.get("kpis"),
-            scored_issues=scored[:args.top],
-            distributions=u.get("distributions", {}),
-            custom_keys=u.get("custom_keys", []),
-            trend_data=u.get("weekly_trend", []),
-            snippets=snippets,
-        )
-        try:
-            raw_ai = call_gemini(prompt, api_key=resolved_key)
-            ai_summary, analysis_map = parse_gemini_response(raw_ai, scored)
-            for i in scored:
-                i["ai_analysis"] = analysis_map.get(i.get("issue_id", ""), generate_disabled_issue_analysis())
-        except Exception as e:
-            print(f"  ⚠ Gemini 分析失敗，優雅降級：{e}")
-            ai_summary = generate_error_ai_summary(str(e))
-            for i in scored:
-                i["ai_analysis"] = generate_disabled_issue_analysis()
-    else:
-        ai_summary = generate_disabled_ai_summary("未設定 GEMINI_API_KEY")
-        for i in scored:
-            i["ai_analysis"] = generate_disabled_issue_analysis()
-
-    report_path.write_text(
-        render_md(
-            args.app,
-            u.get("display_name", args.app),
-            month,
-            {"kpis": summary.get("kpis", {}), "prev_kpis": prev.get("kpis")},
-            ai_summary,
-            scored[:args.top],
-            summary.get("fix_review"),
-        ),
-        encoding="utf-8",
-    )
-    print(f"  ✓ 月報 {report_path.relative_to(ROOT)}")
-
-    if summary:
-        summary["priority_list"] = scored
-        summary["ai_summary"] = ai_summary
-        write_json(summary_path, summary)
+    """向下相容 CLI 入口：委託 analyze_ai.main 執行。"""
+    try:
+        from crash_trend.analyze_ai import main as ai_main
+    except ImportError:
+        from analyze_ai import main as ai_main
+    ai_main()
 
 
 if __name__ == "__main__":

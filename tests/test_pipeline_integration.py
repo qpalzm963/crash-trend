@@ -140,7 +140,7 @@ class TestPipelineIntegrationScenarios(unittest.TestCase):
             "recommended_actions": [{"issue_id": "issue_crash_1", "priority": "P0", "action": "修復空指標", "effort": "S"}],
             "items": [{"issue_id": "issue_crash_1", "root_cause": "空指標", "suggested_fix": "加上非空判斷", "effort": "S", "confidence": "high"}],
         }
-        with patch("crash_trend.analyze_gemini.call_gemini", return_value=mock_ai_resp):
+        with patch("crash_trend.ai_provider.GeminiProvider.analyze", return_value=mock_ai_resp):
             app_v2 = enrich_app_data_with_priority_and_ai(app_v2, api_key="test-key", core_paths=["checkout", "payment"])
 
         # Validate Schema

@@ -49,6 +49,7 @@ class PeriodInfo(TypedDict):
 class SourceStatus(TypedDict):
     status: Literal["available", "unavailable", "disabled", "error", "stale", "insufficient_data"]
     tables_queried: NotRequired[Optional[List[str]]]
+    provider: NotRequired[Optional[str]]
     model: NotRequired[Optional[str]]
     last_sync_timestamp: Optional[str]
     error_message: Optional[str]
@@ -58,7 +59,8 @@ class SourcesAvailability(TypedDict):
     crashlytics_bq: SourceStatus
     firebase_sessions: SourceStatus
     mcp_crashlytics: SourceStatus
-    gemini_ai: SourceStatus
+    gemini_ai: NotRequired[Optional[SourceStatus]]
+    ai: NotRequired[Optional[SourceStatus]]
     manual_console: NotRequired[Optional[SourceStatus]]
 
 
@@ -267,6 +269,7 @@ class RecommendedAction(TypedDict):
 
 class AISummary(TypedDict):
     status: Literal["available", "unavailable", "disabled", "error"]
+    provider: NotRequired[Optional[str]]
     model: Optional[str]
     generated_at: Optional[str]
     overview: str
@@ -475,7 +478,17 @@ def validate_app_dashboard_v2(data: dict, prefix: str = "") -> List[str]:
     sources = data.get("sources")
     if isinstance(sources, dict):
         valid_src_statuses = {"available", "unavailable", "disabled", "error", "stale", "insufficient_data"}
-        for s_name in ("crashlytics_bq", "firebase_sessions", "mcp_crashlytics", "gemini_ai"):
+        check_sources = ["crashlytics_bq", "firebase_sessions", "mcp_crashlytics"]
+        if "ai" in sources:
+            check_sources.append("ai")
+            if "gemini_ai" in sources:
+                check_sources.append("gemini_ai")
+        elif "gemini_ai" in sources:
+            check_sources.append("gemini_ai")
+        else:
+            errors.append(f"{p}sources.ai is required and must be an object")
+
+        for s_name in check_sources:
             s_obj = sources.get(s_name)
             if not isinstance(s_obj, dict):
                 errors.append(f"{p}sources.{s_name} is required and must be an object")

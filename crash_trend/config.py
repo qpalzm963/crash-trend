@@ -26,9 +26,10 @@ def load_config() -> dict:
         return yaml.safe_load(f) or {}
 
 
-def get_app(name: str) -> dict:
-    """回傳 app 設定。app 不存在時直接退出。"""
-    cfg = load_config()
+def get_app(name: str, cfg: Optional[dict] = None) -> dict:
+    """回傳 app 設定。app 不存在時直接退出。若未傳入 cfg 則自動呼叫 load_config()。"""
+    if cfg is None:
+        cfg = load_config()
     apps = cfg.get("apps") or {}
     if name not in apps:
         sys.exit(f"[錯誤] apps.yaml 沒有 app「{name}」；現有：{', '.join(apps)}")
@@ -187,5 +188,23 @@ def is_mcp_cache_fresh(
 
     is_fresh = age_days <= max_age_days
     return is_fresh, age_days, gen_at_str
+
+
+def get_ai_config(app_cfg: Optional[dict] = None, global_cfg: Optional[dict] = None) -> dict:
+    """Extracts and normalizes AI configuration.
+
+    Priority:
+      1. app_cfg["ai"]
+      2. global_cfg["ai"]
+      3. fallback to {}
+    """
+    g_cfg = global_cfg if global_cfg is not None else load_config()
+    global_ai = g_cfg.get("ai") or {}
+    app_ai = (app_cfg.get("ai") or {}) if app_cfg else {}
+
+    combined = dict(global_ai)
+    combined.update(app_ai)
+    return combined
+
 
 

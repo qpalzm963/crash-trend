@@ -144,7 +144,7 @@ class TestE2EContracts(unittest.TestCase):
                 "recommended_actions": [{"issue_id": "ios_crash_1", "priority": "P0", "action": "修復 MetalRenderer 緩衝區", "effort": "M"}],
                 "items": [{"issue_id": "ios_crash_1", "root_cause": "Buffer overflow", "suggested_fix": "Add boundary check", "effort": "M", "confidence": "high"}],
             }
-            with patch("crash_trend.analyze_gemini.call_gemini", return_value=mock_ai):
+            with patch("crash_trend.ai_provider.GeminiProvider.analyze", return_value=mock_ai):
                 app_v2 = enrich_app_data_with_priority_and_ai(app_v2, api_key="fake-key", core_paths=["Metal"])
 
             (out_app / "dashboard_v2.json").write_text(json.dumps(app_v2, ensure_ascii=False), encoding="utf-8")
@@ -484,7 +484,7 @@ class TestE2EContracts(unittest.TestCase):
                 with patch("crash_trend.pipeline_run.load_config", return_value=fake_cfg):
                     with patch("crash_trend.pipeline_run.get_app", return_value=app_cfg):
                         with patch("crash_trend.pipeline_run.run_stage_process", side_effect=fake_stage_exec):
-                            with patch("crash_trend.pipeline_run.resolve_api_key", return_value="fake-key"):
+                            with patch.dict("os.environ", {"GEMINI_API_KEY": "fake-key"}):
                                 summary = run_pipeline(
                                     app_names=["lifecycle_app"],
                                     summary_path=summary_path,
@@ -528,7 +528,160 @@ class TestE2EContracts(unittest.TestCase):
             self.assertIn("Lifecycle App", html_content)
             self.assertIn("overviewDataSourcesCard", html_content)
 
+    def test_profile_7_openrouter_provider_e2e(self) -> None:
+        """Profile 7: True OpenRouter production orchestration via run_pipeline() (Issue #26 / Review 5099212339)."""
+        import json as json_mod
+        from crash_trend.pipeline_run import run_pipeline
+        from crash_trend.build_dashboard import assemble_bundle_from_apps, generate_dashboard
+
+        app_cfg = {
+            "display_name": "OpenRouter App",
+            "firebase_project": "proj-openrouter",
+            "data_sources": {
+                "crashlytics_bigquery": True,
+                "sessions": False,
+                "mcp": "off",
+            },
+            "ai": {
+                "provider": "openrouter",
+                "model": "google/gemini-2.0-flash-001",
+                "api_key": "sk-or-v1-fake-openrouter-key",
+            },
+        }
+        fake_cfg = {
+            "apps": {
+                "openrouter_app": app_cfg
+            }
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmproot = Path(tmpdir)
+            out_app = tmproot / "out" / "openrouter_app"
+            out_app.mkdir(parents=True, exist_ok=True)
+
+            fixture_path = ROOT / "tests" / "fixtures" / "dashboard_v2_no_sessions.json"
+            fixture_data = json.loads(fixture_path.read_text(encoding="utf-8"))
+            base_app_data = fixture_data["apps"]["legacy_app"]
+            base_app_data["metadata"]["app_id"] = "openrouter_app"
+            base_app_data["metadata"]["display_name"] = "OpenRouter App"
+            (out_app / "dashboard_v2.json").write_text(
+                json.dumps(base_app_data, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+
+            fake_ai_resp = {
+                "overview": "OpenRouter analyzed the latest stability metrics.",
+                "key_takeaways": ["P0 checkout issue identified", "Crash rate below threshold"],
+                "distribution_insights": "Android 14 accounts for 80% crashes.",
+                "recommended_actions": [
+                    {
+                        "priority": "P0",
+                        "issue_id": base_app_data["top_issues"][0]["issue_id"],
+                        "action": "Immediate hotfix required",
+                        "effort": "S",
+                    }
+                ],
+                "data_limitations": None,
+                "items": [
+                    {
+                        "issue_id": base_app_data["top_issues"][0]["issue_id"],
+                        "root_cause": "NPE in CheckoutActivity",
+                        "suggested_fix": "Add safe call",
+                        "effort": "S",
+                        "confidence": "high",
+                        "reasoning_sources": ["stack_trace"],
+                    }
+                ],
+            }
+
+            # Intercept HTTP boundary at OpenRouter requests.post
+            def fake_openrouter_post(url, headers=None, json=None, timeout=None):
+                self.assertIn("https://openrouter.ai", url)
+                self.assertEqual(headers.get("Authorization"), "Bearer sk-or-v1-fake-openrouter-key")
+                self.assertEqual(json.get("model"), "google/gemini-2.0-flash-001")
+                self.assertEqual(json.get("response_format", {}).get("type"), "json_schema")
+                mock_resp = MagicMock()
+                mock_resp.status_code = 200
+                mock_resp.json.return_value = {
+                    "choices": [{
+                        "message": {
+                            "content": json_mod.dumps(fake_ai_resp)
+                        }
+                    }]
+                }
+                return mock_resp
+
+            # Run production subprocess executor
+            def fake_stage_exec(cmd, cwd=None, env=None):
+                cmd_str = " ".join(cmd)
+                if "analyze_ai" in cmd_str:
+                    from crash_trend.analyze_ai import main as ai_main
+                    import sys
+                    old_argv = sys.argv
+                    try:
+                        sys.argv = ["analyze_ai.py", "--app", "openrouter_app"]
+                        with patch("crash_trend.analyze_ai.ROOT", tmproot):
+                            with patch("crash_trend.analyze_ai.load_config", return_value=fake_cfg):
+                                with patch("crash_trend.ai_provider.requests.post", side_effect=fake_openrouter_post):
+                                    ai_main()
+                    finally:
+                        sys.argv = old_argv
+                    return 0, "analyze_ai finished", ""
+                elif "build_dashboard.py" in cmd_str:
+                    from crash_trend.build_dashboard import assemble_bundle_from_apps, generate_dashboard
+                    with patch("crash_trend.build_dashboard.ROOT", tmproot):
+                        bundle = assemble_bundle_from_apps(fake_cfg)
+                        if bundle:
+                            out_html = tmproot / "dashboard.html"
+                            generate_dashboard(bundle, output_path=out_html)
+                    return 0, "Dashboard build success", ""
+                return 0, "stage exit 0", ""
+
+            summary_path = tmproot / "out" / "pipeline_run.json"
+            with patch("crash_trend.pipeline_run.ROOT", tmproot):
+                with patch("crash_trend.pipeline_run.load_config", return_value=fake_cfg):
+                    with patch("crash_trend.pipeline_run.get_app", return_value=app_cfg):
+                        with patch("crash_trend.pipeline_run.run_stage_process", side_effect=fake_stage_exec):
+                            summary = run_pipeline(
+                                app_names=["openrouter_app"],
+                                summary_path=summary_path,
+                                skip_dashboard=False,
+                                verbose=False,
+                            )
+
+            # Assert 1: Pipeline Health recorded OpenRouter provider and model accurately
+            app_sum = summary["apps"]["openrouter_app"]
+            self.assertEqual(app_sum["stages"]["ai"]["status"], "success")
+            self.assertEqual(app_sum["stages"]["ai"]["details"]["provider"], "openrouter")
+            self.assertEqual(app_sum["stages"]["ai"]["details"]["model"], "google/gemini-2.0-flash-001")
+
+            # Assert 2: Canonical dashboard_v2.json bundle matching pipeline health
+            current_bundle_path = tmproot / "out" / "dashboard_v2.json"
+            self.assertTrue(current_bundle_path.is_file())
+            bundle_data = json.loads(current_bundle_path.read_text(encoding="utf-8"))
+            app_result = bundle_data["apps"]["openrouter_app"]
+
+            self.assertEqual(app_result["sources"]["ai"]["provider"], "openrouter")
+            self.assertEqual(app_result["sources"]["ai"]["model"], "google/gemini-2.0-flash-001")
+            self.assertEqual(app_result["sources"]["ai"]["status"], "available")
+            self.assertEqual(app_result["ai_summary"]["provider"], "openrouter")
+            self.assertEqual(app_result["ai_summary"]["model"], "google/gemini-2.0-flash-001")
+
+            # Provider and model consistency check between pipeline health and sources.ai (Review 5099212339)
+            self.assertEqual(app_result["sources"]["ai"]["provider"], app_sum["stages"]["ai"]["details"]["provider"])
+            self.assertEqual(app_result["sources"]["ai"]["model"], app_sum["stages"]["ai"]["details"]["model"])
+
+            # Assert 3: Schema V2 validation
+            val_errors = validate_dashboard_v2(bundle_data)
+            self.assertEqual(val_errors, [])
+
+            # Assert 4: HTML dashboard contains OpenRouter label
+            dashboard_html = tmproot / "dashboard.html"
+            self.assertTrue(dashboard_html.is_file())
+            html_content = dashboard_html.read_text(encoding="utf-8")
+            self.assertIn("OpenRouter AI", html_content)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

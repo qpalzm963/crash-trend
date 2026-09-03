@@ -406,8 +406,8 @@ class TestGracefulDegradation(unittest.TestCase):
         data = json.loads(self.fixture_path.read_text(encoding="utf-8"))
         shop_app = copy.deepcopy(data["apps"]["shop_app"])
 
-        # Mock call_gemini to raise an error
-        with patch("crash_trend.analyze_gemini.call_gemini", side_effect=RuntimeError("API Quota Exceeded")):
+        # Mock GeminiProvider.analyze to raise an error
+        with patch("crash_trend.ai_provider.GeminiProvider.analyze", side_effect=RuntimeError("API Quota Exceeded")):
             enriched = enrich_app_data_with_priority_and_ai(
                 shop_app,
                 api_key="mock_api_key_123",
@@ -461,7 +461,7 @@ class TestGracefulDegradation(unittest.TestCase):
             ],
         }
 
-        with patch("crash_trend.analyze_gemini.call_gemini", return_value=mock_response):
+        with patch("crash_trend.ai_provider.GeminiProvider.analyze", return_value=mock_response):
             enriched = enrich_app_data_with_priority_and_ai(
                 shop_app,
                 core_paths=["CheckoutActivity"],
