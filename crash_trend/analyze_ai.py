@@ -25,7 +25,9 @@ try:
         GeminiProvider,
         OpenRouterProvider,
         get_ai_provider,
+        get_ai_router,
     )
+    from .ai_router import AITaskRouter
     from .analyze_gemini import (
         AIIssueAnalysis,
         AISummary,
@@ -60,7 +62,9 @@ except ImportError:
         GeminiProvider,
         OpenRouterProvider,
         get_ai_provider,
+        get_ai_router,
     )
+    from crash_trend.ai_router import AITaskRouter
     from crash_trend.analyze_gemini import (
         AIIssueAnalysis,
         AISummary,
@@ -97,7 +101,7 @@ def main() -> None:
 
     cfg = load_config()
     app = get_app(args.app, cfg)
-    provider = get_ai_provider(app_cfg=app, global_cfg=cfg)
+    router = get_ai_router(app_cfg=app, global_cfg=cfg)
     month = dt.date.today().strftime("%Y-%m")
 
     # 1. Dashboard V2 契約分析
@@ -107,7 +111,7 @@ def main() -> None:
             app_v2 = json.loads(v2_path.read_text(encoding="utf-8"))
             enriched_v2 = enrich_app_data_with_priority_and_ai(
                 app_v2,
-                provider=provider,
+                router=router,
                 app_cfg=app,
                 core_paths=app.get("core_paths", []),
                 top_limit=args.top,
@@ -116,9 +120,10 @@ def main() -> None:
             if val_errors:
                 print(f"  [警告] Schema V2 驗證警告：{val_errors[:3]}", file=sys.stderr)
             write_json(v2_path, enriched_v2)
+            src_ai = enriched_v2.get("sources", {}).get("ai", {})
             print(
                 f"  ✓ 已更新 {v2_path.relative_to(ROOT)} Priority Score 與 AI 策略摘要 "
-                f"(provider: {provider.provider_name}, model: {provider.model_name})"
+                f"(mode: {src_ai.get('requested_mode')}, provider: {src_ai.get('provider')}, model: {src_ai.get('model')})"
             )
         except Exception as e:
             safe_err = sanitize_error_message(str(e))
@@ -177,22 +182,24 @@ def main() -> None:
                     "top_os": None,
                 }
 
-    if provider.is_configured():
+    decision = router.route("deep_analysis")
+    if router.is_configured(task_type="deep_analysis"):
         snippets = []
-        for i in scored[:args.top]:
-            st = stacks.get(i.get("issue_id") or "")
-            if st and st.get("stack_trace"):
-                parts = [f"[issue {i.get('issue_id')}] Stack Trace:\n{st['stack_trace']}"]
-                bf = st.get("blame_frame") or {}
-                if repo and repo.is_dir() and bf.get("file"):
-                    snip = source_snippet(repo, f"{bf['file']}:{bf.get('line', '')}")
+        if router.config.include_source_snippet:
+            for i in scored[:args.top]:
+                st = stacks.get(i.get("issue_id") or "")
+                if st and st.get("stack_trace"):
+                    parts = [f"[issue {i.get('issue_id')}] Stack Trace:\n{st['stack_trace']}"]
+                    bf = st.get("blame_frame") or {}
+                    if repo and repo.is_dir() and bf.get("file"):
+                        snip = source_snippet(repo, f"{bf['file']}:{bf.get('line', '')}")
+                        if snip:
+                            parts.append(f"元兇 frame 原始碼：\n{snip}")
+                    snippets.append("\n".join(parts))
+                elif repo and repo.is_dir() and i.get("subtitle"):
+                    snip = source_snippet(repo, i["subtitle"])
                     if snip:
-                        parts.append(f"元兇 frame 原始碼：\n{snip}")
-                snippets.append("\n".join(parts))
-            elif repo and repo.is_dir() and i.get("subtitle"):
-                snip = source_snippet(repo, i["subtitle"])
-                if snip:
-                    snippets.append(f"[issue {i.get('issue_id')}]\n{snip}")
+                        snippets.append(f"[issue {i.get('issue_id')}]\n{snip}")
 
         prompt = build_ai_prompt(
             display_name=u.get("display_name", args.app),
@@ -205,21 +212,21 @@ def main() -> None:
             snippets=snippets,
         )
         try:
-            raw_ai = provider.analyze(prompt, schema=CANONICAL_AI_RESPONSE_SCHEMA)
+            router_res = router.analyze(prompt, schema=CANONICAL_AI_RESPONSE_SCHEMA, task_type="deep_analysis")
             ai_summary, analysis_map = parse_gemini_response(
-                raw_ai, scored, model_name=provider.model_name, provider_name=provider.provider_name
+                router_res.data, scored, model_name=router_res.active_model, provider_name=router_res.active_provider
             )
             for i in scored:
                 i["ai_analysis"] = analysis_map.get(i.get("issue_id", ""), generate_disabled_issue_analysis())
         except Exception as e:
             safe_err = sanitize_error_message(str(e))
-            print(f"  ⚠ {provider.provider_name.upper()} 分析失敗，優雅降級：{safe_err}")
-            ai_summary = generate_error_ai_summary(safe_err, provider=provider.provider_name)
+            print(f"  ⚠ {decision.selected_provider.upper()} 分析失敗，優雅降級：{safe_err}")
+            ai_summary = generate_error_ai_summary(safe_err, provider=decision.selected_provider)
             for i in scored:
                 i["ai_analysis"] = generate_disabled_issue_analysis()
     else:
         ai_summary = generate_disabled_ai_summary(
-            f"未設定 {provider.provider_name.upper()} API 金鑰", provider=provider.provider_name
+            f"未設定 {decision.selected_provider.upper()} API 金鑰", provider=decision.selected_provider
         )
         for i in scored:
             i["ai_analysis"] = generate_disabled_issue_analysis()

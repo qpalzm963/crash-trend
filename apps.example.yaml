@@ -6,12 +6,23 @@ credentials:
   bq_service_account: ~/.config/crash-trend/sa.json
 
 ai:
-  # AI Provider 設定 (選填；可填 gemini 或 openrouter)
-  # 若未指定，會依據環境變數 (GEMINI_API_KEY / GEMINI_KEY_URL vs OPENROUTER_API_KEY) 自動切換
-  provider: gemini                            # gemini（預設）或 openrouter
-  model: gemini-2.5-flash                     # 模型名稱（例如 gemini-2.5-flash，或 openrouter 時填 google/gemini-2.5-flash）
-  # api_key: "..."                            # 選填；未填則自動讀取環境變數 OPENROUTER_API_KEY 或 GEMINI_API_KEY
-  # zdr: true                                 # OpenRouter 專用：Zero Data Retention 政策守護（預設 true，data_collection 亦預設 deny）
+  # AI Task Router 設定 (選填；Dashboard V2.4 - Issue #35)
+  # 支援 auto（deep_analysis 給 Gemini，lightweight 給 OpenRouter 免費模型）、gemini_only、openrouter_only
+  mode: auto                                  # auto（預設）| gemini_only | openrouter_only
+  primary:
+    provider: gemini                          # 主力 provider（預設 gemini）
+    model: gemini-2.5-flash                   # 主力模型
+    # api_key: "..."                          # 選填；未填則讀取 GEMINI_API_KEY 或 GEMINI_KEY_URL
+  lightweight:
+    provider: openrouter                      # 輕量 worker（預設 openrouter）
+    model: openrouter/free                    # 免費模型（限定 openrouter/free 或 :free 模型）
+    # api_key: "..."                          # 選填；未填則讀取 OPENROUTER_API_KEY
+    # zdr: true                               # Zero Data Retention 政策守護（預設 true）
+  allow_paid_models: false                    # 禁止偷偷使用付費模型（預設 false，保護錢包）
+  privacy:
+    include_source_snippet: true              # 隱私保護：是否放本地程式碼片段進 prompt（預設 true）
+  fallback:
+    enabled: false                            # 遇 transient failure (429/500/503) 是否自動容錯切換（預設 false）
 
 apps:
   shop_app:                               # 範例 1：完整模式 (Crashlytics + Sessions)

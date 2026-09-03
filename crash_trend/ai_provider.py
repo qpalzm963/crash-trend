@@ -512,3 +512,16 @@ def get_ai_provider(
         model=model,
         temperature=temp,
     )
+
+
+def get_ai_router(
+    app_cfg: Optional[Dict[str, Any]] = None,
+    global_cfg: Optional[Dict[str, Any]] = None,
+):
+    """Lazy imports and invokes get_ai_router from ai_router."""
+    try:
+        from .ai_router import get_ai_router as _get_ai_router
+    except ImportError:
+        from crash_trend.ai_router import get_ai_router as _get_ai_router
+    return _get_ai_router(app_cfg=app_cfg, global_cfg=global_cfg)
+

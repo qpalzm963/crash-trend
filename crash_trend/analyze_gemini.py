@@ -55,6 +55,7 @@ try:
         get_ai_provider,
         resolve_gemini_key,
     )
+    from .ai_router import AITaskRouter, get_ai_router
     from .pipeline_health import sanitize_error_message
 except ImportError:
     try:
@@ -79,6 +80,7 @@ except ImportError:
             get_ai_provider,
             resolve_gemini_key,
         )
+        from ai_router import AITaskRouter, get_ai_router
         from pipeline_health import sanitize_error_message
     except ImportError:
         from crash_trend.config import ROOT, app_argparser, get_app, write_json
@@ -102,6 +104,7 @@ except ImportError:
             get_ai_provider,
             resolve_gemini_key,
         )
+        from crash_trend.ai_router import AITaskRouter, get_ai_router
         from crash_trend.pipeline_health import sanitize_error_message
 
 
@@ -714,14 +717,16 @@ def enrich_app_data_with_priority_and_ai(
     top_limit: int = 10,
     provider: Optional[AIProvider] = None,
     app_cfg: Optional[dict] = None,
+    router: Optional[AITaskRouter] = None,
+    task_type: str = "deep_analysis",
 ) -> dict:
     """將 AppDashboardV2Data 資料字典進行確定性優先級計算與 AI 分析擴充。
 
     流程：
       1. 計算 top_issues 的確定性 Priority Score (0-100), Level (P0-P3), Trend。
-      2. 根據設定解析 AIProvider (Gemini 或 OpenRouter)。
-      3. 若 Provider configured，擷取 stack traces / blame frame 原始碼片段並呼叫 Provider。
-      4. 解析回傳填入 ai_summary 與各 issue 的 ai_analysis，同步更新 sources.ai 與 sources.gemini_ai。
+      2. 根據設定解析 AITaskRouter (支援 Auto / Gemini Only / OpenRouter Only, Fallback 與 Free Guard)。
+      3. 遵守 Privacy Guard（若 include_source_snippet 為 False，不傳送原始碼片段）。
+      4. 呼叫 Router / Provider 並解析回傳，記錄豐富的 routing 與 telemetry 資訊。
       5. 若未配置 Key，執行優雅降級，標為 disabled / unavailable。
     """
     # 0. 刷新確定性 Lifecycle 狀態（確保已整合最新的 Sessions adoption evidence）
@@ -750,10 +755,15 @@ def enrich_app_data_with_priority_and_ai(
         latest_app_version=latest_ver,
     )
 
-    # 2. 解析 AIProvider
-    if provider is not None:
+    # 2. 解析 AITaskRouter 或直接 Provider
+    active_router: Optional[AITaskRouter] = None
+    active_provider: Optional[AIProvider] = None
+
+    if router is not None:
+        active_router = router
+    elif provider is not None:
         active_provider = provider
-    else:
+    elif api_key is not None or model is not None:
         base_provider = get_ai_provider(app_cfg)
         p_name = base_provider.provider_name
         p_model = model or base_provider.model_name
@@ -762,10 +772,29 @@ def enrich_app_data_with_priority_and_ai(
             active_provider = OpenRouterProvider(api_key=p_key, model=p_model)
         else:
             active_provider = GeminiProvider(api_key=p_key, model=p_model)
+    else:
+        # Resolve through router by default
+        active_router = get_ai_router(app_cfg=app_cfg)
 
-    is_configured = active_provider.is_configured()
-    provider_name = active_provider.provider_name
-    model_name = active_provider.model_name
+    # Determine routing parameters & credentials
+    if active_router is not None:
+        decision = active_router.route(task_type=task_type)
+        provider_name = decision.selected_provider
+        model_name = decision.selected_model
+        requested_mode = decision.mode
+        routing_reason = decision.routing_reason
+        paid_model_allowed = decision.paid_model_allowed
+        include_source_snippet = active_router.config.include_source_snippet
+        is_configured = active_router.is_configured(task_type=task_type)
+    else:
+        # Explicit provider passed directly
+        provider_name = active_provider.provider_name
+        model_name = active_provider.model_name
+        requested_mode = "manual"
+        routing_reason = f"Direct provider instance ({provider_name})"
+        paid_model_allowed = True
+        include_source_snippet = bool((app_cfg or {}).get("ai", {}).get("privacy", {}).get("include_source_snippet", True))
+        is_configured = active_provider.is_configured()
 
     if not is_configured or not scored_issues:
         # 優雅降級：未啟用 AI
@@ -782,6 +811,14 @@ def enrich_app_data_with_priority_and_ai(
                 "status": "disabled",
                 "provider": provider_name,
                 "model": None,
+                "requested_mode": requested_mode,
+                "task_type": task_type,
+                "selected_provider": provider_name,
+                "selected_model": model_name,
+                "routing_reason": routing_reason,
+                "fallback_used": False,
+                "fallback_reason": None,
+                "paid_model_allowed": paid_model_allowed,
                 "last_sync_timestamp": None,
                 "error_message": None,
             }
@@ -793,25 +830,26 @@ def enrich_app_data_with_priority_and_ai(
         _sync_periods_priority_and_ai(app_data, prev_app_data=prev_app_data, core_paths=core_paths, latest_ver=latest_ver)
         return app_data
 
-    # 3. 準備原始碼片段與 Prompt
+    # 3. 準備原始碼片段與 Prompt（受 Privacy Guard 控制）
     snippets = []
-    for issue in scored_issues[:top_limit]:
-        detail = issue.get("detail") or {}
-        st_text = detail.get("stack_trace") or ""
-        bf = issue.get("blame_frame") or {}
-        parts = []
-        if st_text:
-            parts.append(f"[issue {issue.get('issue_id')}] Stack Trace:\n{st_text}")
-        if bf.get("file"):
-            snip = source_snippet(repo, f"{bf['file']}:{bf.get('line', '')}")
-            if snip:
-                parts.append(f"Blame Frame 原始碼：\n{snip}")
-        elif issue.get("subtitle"):
-            snip = source_snippet(repo, issue.get("subtitle", ""))
-            if snip:
-                parts.append(f"Subtitle 對應原始碼：\n{snip}")
-        if parts:
-            snippets.append("\n".join(parts))
+    if include_source_snippet:
+        for issue in scored_issues[:top_limit]:
+            detail = issue.get("detail") or {}
+            st_text = detail.get("stack_trace") or ""
+            bf = issue.get("blame_frame") or {}
+            parts = []
+            if st_text:
+                parts.append(f"[issue {issue.get('issue_id')}] Stack Trace:\n{st_text}")
+            if bf.get("file"):
+                snip = source_snippet(repo, f"{bf['file']}:{bf.get('line', '')}")
+                if snip:
+                    parts.append(f"Blame Frame 原始碼：\n{snip}")
+            elif issue.get("subtitle"):
+                snip = source_snippet(repo, issue.get("subtitle", ""))
+                if snip:
+                    parts.append(f"Subtitle 對應原始碼：\n{snip}")
+            if parts:
+                snippets.append("\n".join(parts))
 
     display_name = app_data.get("metadata", {}).get("display_name", "App")
     prompt = build_ai_prompt(
@@ -825,9 +863,20 @@ def enrich_app_data_with_priority_and_ai(
         snippets=snippets,
     )
 
-    # 4. 呼叫 Provider 並防禦性解析
+    # 4. 呼叫 Router / Provider 並防禦性解析
+    fallback_used = False
+    fallback_reason = None
     try:
-        raw_ai_res = active_provider.analyze(prompt, schema=CANONICAL_AI_RESPONSE_SCHEMA)
+        if active_router is not None:
+            router_res = active_router.analyze(prompt, schema=CANONICAL_AI_RESPONSE_SCHEMA, task_type=task_type)
+            raw_ai_res = router_res.data
+            provider_name = router_res.active_provider
+            model_name = router_res.active_model
+            fallback_used = router_res.fallback_used
+            fallback_reason = router_res.fallback_reason
+        else:
+            raw_ai_res = active_provider.analyze(prompt, schema=CANONICAL_AI_RESPONSE_SCHEMA)
+
         ai_summary, analysis_map = parse_gemini_response(
             raw_ai_res, scored_issues, model_name=model_name, provider_name=provider_name
         )
@@ -842,6 +891,14 @@ def enrich_app_data_with_priority_and_ai(
                 "status": "available",
                 "provider": provider_name,
                 "model": model_name,
+                "requested_mode": requested_mode,
+                "task_type": task_type,
+                "selected_provider": provider_name,
+                "selected_model": model_name,
+                "routing_reason": routing_reason,
+                "fallback_used": fallback_used,
+                "fallback_reason": fallback_reason,
+                "paid_model_allowed": paid_model_allowed,
                 "last_sync_timestamp": now_ts,
                 "error_message": None,
             }
@@ -866,6 +923,14 @@ def enrich_app_data_with_priority_and_ai(
                 "status": "error",
                 "provider": provider_name,
                 "model": model_name,
+                "requested_mode": requested_mode,
+                "task_type": task_type,
+                "selected_provider": provider_name,
+                "selected_model": model_name,
+                "routing_reason": routing_reason,
+                "fallback_used": fallback_used,
+                "fallback_reason": fallback_reason,
+                "paid_model_allowed": paid_model_allowed,
                 "last_sync_timestamp": None,
                 "error_message": safe_err,
             }

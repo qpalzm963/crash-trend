@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional
 ROOT = Path(__file__).resolve().parent.parent
 
 try:
-    from crash_trend.ai_provider import get_ai_provider
+    from crash_trend.ai_provider import get_ai_provider, get_ai_router
     from crash_trend.config import get_app, get_mcp_config, is_sessions_enabled, load_config
     from crash_trend.pipeline_health import (
         DEFAULT_RUN_SUMMARY_PATH,
@@ -29,7 +29,7 @@ try:
     )
 except ImportError:
     try:
-        from ai_provider import get_ai_provider
+        from ai_provider import get_ai_provider, get_ai_router
         from config import get_app, get_mcp_config, is_sessions_enabled, load_config
         from pipeline_health import (
             DEFAULT_RUN_SUMMARY_PATH,
@@ -39,7 +39,7 @@ except ImportError:
             sanitize_error_message,
         )
     except ImportError:
-        from .ai_provider import get_ai_provider  # type: ignore
+        from .ai_provider import get_ai_provider, get_ai_router  # type: ignore
         from .config import get_app, get_mcp_config, is_sessions_enabled, load_config  # type: ignore
         from .pipeline_health import (  # type: ignore
             DEFAULT_RUN_SUMMARY_PATH,
@@ -313,16 +313,22 @@ def run_pipeline(
         # -------------------------------------------------------------------
         t0 = now_utc_iso()
         config_error: Optional[str] = None
+        mode_name = "auto"
+        routing_reason = ""
         try:
-            ai_provider = get_ai_provider(app_cfg, cfg)
-            has_ai_key = ai_provider.is_configured()
-            provider_name = ai_provider.provider_name
-            model_name = ai_provider.model_name
-        except ValueError as e:
+            router = get_ai_router(app_cfg, cfg)
+            decision = router.route("deep_analysis")
+            has_ai_key = router.is_configured("deep_analysis")
+            provider_name = decision.selected_provider
+            model_name = decision.selected_model
+            mode_name = decision.mode
+            routing_reason = decision.routing_reason
+        except (ValueError, RuntimeError) as e:
             config_error = str(e)
             has_ai_key = False
             provider_name = "unknown"
             model_name = None
+            routing_reason = str(e)
 
         if config_error:
             t1 = now_utc_iso()
@@ -334,13 +340,13 @@ def run_pipeline(
                 t0,
                 t1,
                 error_message=safe_err,
-                details={"reason": "invalid_ai_config"},
+                details={"reason": "invalid_ai_config", "error": safe_err},
             )
             if verbose:
                 print(f"  [Warning] AI 設定無效（優雅降級）：{safe_err}", file=sys.stderr)
         else:
             if verbose:
-                print(f"--- 6. analyze_ai: {app} (provider: {provider_name}, model: {model_name}, configured: {has_ai_key})")
+                print(f"--- 6. analyze_ai: {app} (mode: {mode_name}, provider: {provider_name}, model: {model_name}, configured: {has_ai_key})")
             rc, out, err = run_stage_process([py_exec, "-m", "crash_trend.analyze_ai", "--app", app])
             if verbose and out:
                 print(out, end="")
@@ -349,6 +355,12 @@ def run_pipeline(
             # Crucial: Check canonical artifact status even when rc == 0
             ai_status = "available" if has_ai_key else "disabled"
             ai_err_msg = None
+            ai_details = {
+                "mode": mode_name,
+                "provider": provider_name,
+                "model": model_name,
+                "routing_reason": routing_reason,
+            }
             if v2_path.is_file():
                 try:
                     v2_data = json.loads(v2_path.read_text(encoding="utf-8"))
@@ -356,6 +368,24 @@ def run_pipeline(
                     ai_sum = v2_data.get("ai_summary", {})
                     ai_status = ai_src.get("status") or ai_sum.get("status") or ai_status
                     ai_err_msg = ai_src.get("error_message") or ai_sum.get("data_limitations")
+                    if ai_src.get("provider"):
+                        ai_details["provider"] = ai_src["provider"]
+                    if ai_src.get("model"):
+                        ai_details["model"] = ai_src["model"]
+                    if ai_src.get("requested_mode"):
+                        ai_details["mode"] = ai_src["requested_mode"]
+                    for k in (
+                        "requested_mode",
+                        "task_type",
+                        "selected_provider",
+                        "selected_model",
+                        "routing_reason",
+                        "fallback_used",
+                        "fallback_reason",
+                        "paid_model_allowed",
+                    ):
+                        if k in ai_src:
+                            ai_details[k] = ai_src[k]
                 except Exception:
                     pass
 
@@ -368,22 +398,19 @@ def run_pipeline(
                     t0,
                     t1,
                     error_message=err_text,
-                    details={"provider": provider_name, "model": model_name},
+                    details=ai_details,
                 )
                 if verbose:
                     print(f"  [Warning] AI 分析失敗（優雅降級）：{sanitize_error_message(err_text)}", file=sys.stderr)
             elif ai_status == "disabled" or not has_ai_key:
+                ai_details["reason"] = f"{ai_details['provider'].upper()} API key not configured"
                 tracker.record_stage(
                     app,
                     "ai",
                     "disabled",
                     t0,
                     t1,
-                    details={
-                        "provider": provider_name,
-                        "model": model_name,
-                        "reason": f"{provider_name.upper()} API key not configured",
-                    },
+                    details=ai_details,
                 )
             else:
                 tracker.record_stage(
@@ -392,7 +419,7 @@ def run_pipeline(
                     "success",
                     t0,
                     t1,
-                    details={"provider": provider_name, "model": model_name},
+                    details=ai_details,
                 )
 
         # -------------------------------------------------------------------
