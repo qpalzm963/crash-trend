@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
@@ -96,7 +97,8 @@ def assemble_bundle_from_apps(cfg: Optional[dict] = None) -> Optional[dict]:
         "apps": collected_apps,
     }
 
-    run_sum_path = ROOT / "out" / "pipeline_run.json"
+    run_sum_env = os.environ.get("PIPELINE_RUN_SUMMARY")
+    run_sum_path = Path(run_sum_env) if run_sum_env else ROOT / "out" / "pipeline_run.json"
     if run_sum_path.is_file():
         try:
             bundle["pipeline_run"] = json.loads(run_sum_path.read_text(encoding="utf-8"))

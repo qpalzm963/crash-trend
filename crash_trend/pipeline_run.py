@@ -8,6 +8,7 @@ structured stage outcomes, duration, and sanitized error messages, and saves
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -17,6 +18,7 @@ from typing import Any, Dict, List, Optional
 ROOT = Path(__file__).resolve().parent.parent
 
 try:
+    from crash_trend.analyze_gemini import resolve_api_key
     from crash_trend.config import get_app, get_mcp_config, is_sessions_enabled, load_config
     from crash_trend.pipeline_health import (
         DEFAULT_RUN_SUMMARY_PATH,
@@ -26,14 +28,26 @@ try:
         sanitize_error_message,
     )
 except ImportError:
-    from config import get_app, get_mcp_config, is_sessions_enabled, load_config
-    from pipeline_health import (
-        DEFAULT_RUN_SUMMARY_PATH,
-        PipelineRunTracker,
-        StageStatus,
-        now_utc_iso,
-        sanitize_error_message,
-    )
+    try:
+        from analyze_gemini import resolve_api_key
+        from config import get_app, get_mcp_config, is_sessions_enabled, load_config
+        from pipeline_health import (
+            DEFAULT_RUN_SUMMARY_PATH,
+            PipelineRunTracker,
+            StageStatus,
+            now_utc_iso,
+            sanitize_error_message,
+        )
+    except ImportError:
+        from .analyze_gemini import resolve_api_key  # type: ignore
+        from .config import get_app, get_mcp_config, is_sessions_enabled, load_config  # type: ignore
+        from .pipeline_health import (  # type: ignore
+            DEFAULT_RUN_SUMMARY_PATH,
+            PipelineRunTracker,
+            StageStatus,
+            now_utc_iso,
+            sanitize_error_message,
+        )
 
 
 def run_stage_process(
@@ -80,6 +94,8 @@ def run_pipeline(
             print(f"\n==================== [Pipeline: {app}] ====================")
 
         app_cfg = get_app(app)
+        app_out_dir = ROOT / "out" / app
+        v2_path = app_out_dir / "dashboard_v2.json"
 
         # -------------------------------------------------------------------
         # 1. BigQuery (Core Stage)
@@ -93,9 +109,29 @@ def run_pipeline(
         t1 = now_utc_iso()
 
         bq_failed = rc != 0
+        err_msg = err.strip() or out.strip() or ""
+
+        # Inspect canonical artifact even if rc == 0
+        if not bq_failed and v2_path.is_file():
+            try:
+                v2_data = json.loads(v2_path.read_text(encoding="utf-8"))
+                bq_src = v2_data.get("sources", {}).get("crashlytics_bq", {})
+                if bq_src.get("status") == "error":
+                    bq_failed = True
+                    err_msg = bq_src.get("error_message") or "BigQuery query failed"
+            except Exception:
+                pass
+        elif not bq_failed and (app_out_dir / "crashlytics_bq.json").is_file():
+            try:
+                bq_data = json.loads((app_out_dir / "crashlytics_bq.json").read_text(encoding="utf-8"))
+                if bq_data.get("errors") and not bq_data.get("tables"):
+                    bq_failed = True
+                    err_msg = str(bq_data.get("errors"))
+            except Exception:
+                pass
+
         if bq_failed:
-            err_msg = err.strip() or out.strip() or "BigQuery fetch returned non-zero exit code"
-            tracker.record_stage(app, "crashlytics_bigquery", "failed", t0, t1, error_message=err_msg)
+            tracker.record_stage(app, "crashlytics_bigquery", "failed", t0, t1, error_message=err_msg or "BigQuery fetch failed")
             if verbose:
                 print(f"  [Error] BigQuery 查詢失敗：{sanitize_error_message(err_msg)}", file=sys.stderr)
         else:
@@ -130,7 +166,38 @@ def run_pipeline(
             if verbose:
                 print(f"  [Warning] Sessions 查詢失敗（優雅降級）：{sanitize_error_message(err_msg)}", file=sys.stderr)
         else:
-            tracker.record_stage(app, "sessions", "success", t0, t1)
+            # Crucial: Check canonical artifact status even when rc == 0
+            sess_json_path = app_out_dir / "sessions.json"
+            sess_status = "available"
+            sess_err_msg = None
+
+            if sess_json_path.is_file():
+                try:
+                    s_data = json.loads(sess_json_path.read_text(encoding="utf-8"))
+                    src_obj = s_data.get("sources", {})
+                    sess_status = src_obj.get("status", "available")
+                    sess_err_msg = src_obj.get("error_message")
+                except Exception:
+                    pass
+            elif v2_path.is_file():
+                try:
+                    v2_data = json.loads(v2_path.read_text(encoding="utf-8"))
+                    src_obj = v2_data.get("sources", {}).get("firebase_sessions", {})
+                    sess_status = src_obj.get("status", "available")
+                    sess_err_msg = src_obj.get("error_message")
+                except Exception:
+                    pass
+
+            if sess_status == "error":
+                tracker.record_stage(app, "sessions", "failed", t0, t1, error_message=sess_err_msg or "Sessions query returned error")
+                if verbose:
+                    print(f"  [Warning] Sessions 查詢失敗（優雅降級）：{sanitize_error_message(sess_err_msg)}", file=sys.stderr)
+            elif sess_status == "disabled" or (sess_err_msg and ("disabled" in sess_err_msg.lower() or "已停用" in sess_err_msg)):
+                tracker.record_stage(app, "sessions", "disabled", t0, t1, error_message=sess_err_msg)
+            elif sess_status == "unavailable" and sess_err_msg and "disabled" not in sess_err_msg.lower():
+                tracker.record_stage(app, "sessions", "failed", t0, t1, error_message=sess_err_msg)
+            else:
+                tracker.record_stage(app, "sessions", "success", t0, t1)
 
         # -------------------------------------------------------------------
         # 3. MCP Stacktraces (Optional Stage)
@@ -163,12 +230,30 @@ def run_pipeline(
             )
         else:
             # weekly mode
+            mcp_err_file = app_out_dir / "stacktraces_last_error.json"
             rc, out, err = run_stage_process([py_exec, str(ROOT / "crash_trend" / "fetch_stacktraces.py"), "--app", app, "--weekly-check"])
             if verbose and out:
                 print(out, end="")
             t1 = now_utc_iso()
 
-            if "快取仍有效" in out:
+            # Crucial: Check if MCP failed (wrote stacktraces_last_error.json) even when rc == 0!
+            mcp_has_error = False
+            mcp_err_msg = None
+            if mcp_err_file.is_file():
+                try:
+                    err_data = json.loads(mcp_err_file.read_text(encoding="utf-8"))
+                    if err_data.get("errors") or err_data.get("error_message"):
+                        mcp_has_error = True
+                        mcp_err_msg = err_data.get("error_message") or str(err_data.get("errors"))
+                except Exception:
+                    mcp_has_error = True
+
+            if rc != 0 or mcp_has_error:
+                err_text = mcp_err_msg or err.strip() or out.strip() or "MCP refresh failed"
+                tracker.record_stage(app, "mcp", "failed", t0, t1, error_message=err_text)
+                if verbose:
+                    print(f"  [Warning] MCP 刷新失敗（優雅降級）：{sanitize_error_message(err_text)}", file=sys.stderr)
+            elif "快取仍有效" in out or "略過" in out:
                 tracker.record_stage(
                     app,
                     "mcp",
@@ -177,11 +262,6 @@ def run_pipeline(
                     t1,
                     details={"reason": "Cache is fresh, skipped refresh"},
                 )
-            elif rc != 0:
-                err_msg = err.strip() or out.strip() or "MCP refresh failed"
-                tracker.record_stage(app, "mcp", "failed", t0, t1, error_message=err_msg)
-                if verbose:
-                    print(f"  [Warning] MCP 刷新失敗（優雅降級）：{sanitize_error_message(err_msg)}", file=sys.stderr)
             else:
                 tracker.record_stage(app, "mcp", "success", t0, t1)
 
@@ -225,7 +305,8 @@ def run_pipeline(
         # 6. Analyze Gemini / Priority (Optional Stage)
         # -------------------------------------------------------------------
         t0 = now_utc_iso()
-        has_gemini_key = bool(os.environ.get("GEMINI_API_KEY"))
+        # High Priority fix: Use resolve_api_key(False) which supports both GEMINI_API_KEY and GEMINI_KEY_URL
+        has_gemini_key = bool(resolve_api_key(False))
         if verbose:
             print(f"--- 6. analyze_gemini: {app} (has_gemini_key: {has_gemini_key})")
         rc, out, err = run_stage_process([py_exec, str(ROOT / "crash_trend" / "analyze_gemini.py"), "--app", app])
@@ -233,20 +314,33 @@ def run_pipeline(
             print(out, end="")
         t1 = now_utc_iso()
 
-        if not has_gemini_key:
+        # Crucial: Check canonical artifact status even when rc == 0
+        ai_status = "available" if has_gemini_key else "disabled"
+        ai_err_msg = None
+        if v2_path.is_file():
+            try:
+                v2_data = json.loads(v2_path.read_text(encoding="utf-8"))
+                ai_src = v2_data.get("sources", {}).get("gemini_ai", {})
+                ai_sum = v2_data.get("ai_summary", {})
+                ai_status = ai_src.get("status") or ai_sum.get("status") or ai_status
+                ai_err_msg = ai_src.get("error_message") or ai_sum.get("data_limitations")
+            except Exception:
+                pass
+
+        if rc != 0 or ai_status == "error":
+            err_text = ai_err_msg or err.strip() or out.strip() or "AI analysis failed"
+            tracker.record_stage(app, "ai", "failed", t0, t1, error_message=err_text)
+            if verbose:
+                print(f"  [Warning] AI 分析失敗（優雅降級）：{sanitize_error_message(err_text)}", file=sys.stderr)
+        elif ai_status == "disabled" or not has_gemini_key:
             tracker.record_stage(
                 app,
                 "ai",
                 "disabled",
                 t0,
                 t1,
-                details={"reason": "GEMINI_API_KEY not set"},
+                details={"reason": "GEMINI_API_KEY / GEMINI_KEY_URL not configured"},
             )
-        elif rc != 0:
-            err_msg = err.strip() or out.strip() or "AI analysis failed"
-            tracker.record_stage(app, "ai", "failed", t0, t1, error_message=err_msg)
-            if verbose:
-                print(f"  [Warning] AI 分析失敗（優雅降級）：{sanitize_error_message(err_msg)}", file=sys.stderr)
         else:
             tracker.record_stage(app, "ai", "success", t0, t1)
 
@@ -270,16 +364,24 @@ def run_pipeline(
     # -----------------------------------------------------------------------
     # 8. Build Dashboard (Core Stage)
     # -----------------------------------------------------------------------
+    effective_summary_path = summary_path or DEFAULT_RUN_SUMMARY_PATH
+    dashboard_rc = 0
     if not skip_dashboard:
+        # Blocking 2 fix: Save current summary BEFORE build_dashboard so dashboard embeds the current run!
+        tracker.save_summary(effective_summary_path)
+
         t0 = now_utc_iso()
         if verbose:
             print("\n--- 8. build_dashboard (Dashboard V2 Bundle)")
-        rc, out, err = run_stage_process([py_exec, str(ROOT / "crash_trend" / "build_dashboard.py")])
+        dashboard_rc, out, err = run_stage_process(
+            [py_exec, str(ROOT / "crash_trend" / "build_dashboard.py")],
+            env={"PIPELINE_RUN_SUMMARY": str(effective_summary_path)},
+        )
         if verbose and out:
             print(out, end="")
         t1 = now_utc_iso()
 
-        if rc != 0:
+        if dashboard_rc != 0:
             err_msg = err.strip() or out.strip() or "Dashboard build failed"
             tracker.record_stage(None, "build_dashboard", "failed", t0, t1, error_message=err_msg)
             if verbose:
@@ -287,8 +389,19 @@ def run_pipeline(
         else:
             tracker.record_stage(None, "build_dashboard", "success", t0, t1)
 
-    saved_file = tracker.save_summary(summary_path or DEFAULT_RUN_SUMMARY_PATH)
+    saved_file = tracker.save_summary(effective_summary_path)
     summary = tracker.build_summary()
+
+    # Ensure the finalized summary (including build_dashboard stage) is updated in the saved bundle
+    if not skip_dashboard and dashboard_rc == 0:
+        for b_path in [ROOT / "out" / "dashboard_v2.json", ROOT / "reports" / "dashboard_v2.json"]:
+            if b_path.is_file():
+                try:
+                    b_data = json.loads(b_path.read_text(encoding="utf-8"))
+                    b_data["pipeline_run"] = summary
+                    b_path.write_text(json.dumps(b_data, ensure_ascii=False, indent=2), encoding="utf-8")
+                except Exception:
+                    pass
 
     if verbose:
         print("\n==================== [Pipeline Run Summary] ====================")

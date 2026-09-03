@@ -403,6 +403,125 @@ class TestE2EContracts(unittest.TestCase):
         errors = validate_dashboard_v2(app_issue)
         self.assertEqual(errors, [])
 
+    # -----------------------------------------------------------------------
+    # Production Lifecycle & Regression Coverage (Blocking 1 & 2)
+    # -----------------------------------------------------------------------
+    def test_production_lifecycle_pipeline_run_graceful_failures_and_fresh_dashboard(self) -> None:
+        """Lifecycle E2E test verifying:
+        1. Subprocesses exit 0 but produce graceful error artifacts -> pipeline_run correctly detects failure
+        2. Dashboard embeds the CURRENT pipeline_run summary, NOT an old/stale run from disk
+        3. Generated dashboard HTML and bundle pass strict validation without false green.
+        """
+        from crash_trend.pipeline_run import run_pipeline
+
+        app_cfg = {
+            "app_id": "lifecycle_app",
+            "firebase_project": "lifecycle-proj",
+            "display_name": "Lifecycle App",
+            "platforms": ["android"],
+            "sessions_dataset": "firebase_sessions",
+            "mcp": {"mode": "weekly", "max_age_days": 7},
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmproot = Path(tmpdir)
+            out_dir = tmproot / "out"
+            out_app = out_dir / "lifecycle_app"
+            out_app.mkdir(parents=True, exist_ok=True)
+
+            # 1. Pre-seed a STALE old pipeline_run.json from years ago
+            old_run = {
+                "started_at": "2020-01-01T00:00:00Z",
+                "finished_at": "2020-01-01T00:00:10Z",
+                "status": "failed",
+                "duration_sec": 10.0,
+                "apps": {"lifecycle_app": {"status": "failed", "stages": {}}},
+            }
+            summary_path = out_dir / "pipeline_run.json"
+            summary_path.write_text(json.dumps(old_run), encoding="utf-8")
+
+            # 2. Build base dashboard_v2.json for lifecycle_app
+            base_app = copy.deepcopy(self.base_v2_bundle["apps"]["shop_app"])
+            base_app["metadata"]["app_id"] = "lifecycle_app"
+            base_app["metadata"]["display_name"] = "Lifecycle App"
+            # Set graceful degradation errors in artifacts
+            base_app["sources"]["firebase_sessions"]["status"] = "error"
+            base_app["sources"]["firebase_sessions"]["error_message"] = "Sessions 404 table not found"
+            base_app["sources"]["gemini_ai"]["status"] = "error"
+            base_app["sources"]["gemini_ai"]["error_message"] = "Gemini quota exceeded"
+            base_app["ai_summary"]["status"] = "error"
+            base_app["ai_summary"]["data_limitations"] = "Gemini quota exceeded"
+            (out_app / "dashboard_v2.json").write_text(json.dumps(base_app, ensure_ascii=False), encoding="utf-8")
+
+            # Write sessions.json artifact indicating error
+            (out_app / "sessions.json").write_text(json.dumps({
+                "sources": {"status": "error", "error_message": "Sessions 404 table not found"}
+            }), encoding="utf-8")
+
+            # Write MCP failure artifact (stacktraces_last_error.json)
+            (out_app / "stacktraces_last_error.json").write_text(json.dumps({
+                "error_message": "Firebase login required",
+                "errors": [{"stage": "auth", "message": "Firebase login required"}]
+            }), encoding="utf-8")
+
+            fake_cfg = {"apps": {"lifecycle_app": app_cfg}}
+
+            # Mock subprocesses to return exit 0 (simulating graceful degradation CLIs)
+            def fake_stage_exec(cmd, cwd=None, env=None):
+                cmd_str = " ".join(cmd)
+                if "build_dashboard.py" in cmd_str:
+                    # Let build_dashboard assemble from tmproot
+                    from crash_trend.build_dashboard import assemble_bundle_from_apps, generate_dashboard
+                    with patch("crash_trend.build_dashboard.ROOT", tmproot):
+                        bundle = assemble_bundle_from_apps(fake_cfg)
+                        if bundle:
+                            out_html = tmproot / "dashboard.html"
+                            generate_dashboard(bundle, output_path=out_html)
+                    return 0, "Dashboard build success", ""
+                return 0, "stage exit 0", ""
+
+            with patch("crash_trend.pipeline_run.ROOT", tmproot):
+                with patch("crash_trend.pipeline_run.load_config", return_value=fake_cfg):
+                    with patch("crash_trend.pipeline_run.get_app", return_value=app_cfg):
+                        with patch("crash_trend.pipeline_run.run_stage_process", side_effect=fake_stage_exec):
+                            with patch("crash_trend.pipeline_run.resolve_api_key", return_value="fake-key"):
+                                summary = run_pipeline(
+                                    app_names=["lifecycle_app"],
+                                    summary_path=summary_path,
+                                    skip_dashboard=False,
+                                    verbose=False,
+                                )
+
+            # Assert 1: Graceful failure detection (Blocking 1 resolved)
+            app_sum = summary["apps"]["lifecycle_app"]
+            self.assertEqual(app_sum["stages"]["sessions"]["status"], "failed")
+            self.assertEqual(app_sum["stages"]["mcp"]["status"], "failed")
+            self.assertEqual(app_sum["stages"]["ai"]["status"], "failed")
+            self.assertEqual(app_sum["status"], "degraded")
+            self.assertEqual(summary["status"], "degraded")
+
+            # Assert 2: Freshness of embedded pipeline_run (Blocking 2 resolved)
+            # Must NOT be 2020-01-01!
+            self.assertNotEqual(summary["started_at"][:4], "2020")
+            current_bundle_path = out_dir / "dashboard_v2.json"
+            self.assertTrue(current_bundle_path.is_file())
+            bundle_data = json.loads(current_bundle_path.read_text(encoding="utf-8"))
+            self.assertIn("pipeline_run", bundle_data)
+            self.assertNotEqual(bundle_data["pipeline_run"]["started_at"][:4], "2020")
+            self.assertEqual(bundle_data["pipeline_run"]["status"], "degraded")
+
+            # Assert 3: Strict Schema V2 validation
+            val_errors = validate_dashboard_v2(bundle_data)
+            self.assertEqual(val_errors, [])
+
+            # Assert 4: Dashboard HTML rendered without issues and contains degradation notices
+            dashboard_html = tmproot / "dashboard.html"
+            self.assertTrue(dashboard_html.is_file())
+            html_content = dashboard_html.read_text(encoding="utf-8")
+            self.assertIn("Lifecycle App", html_content)
+            self.assertIn("overviewDataSourcesCard", html_content)
+
 
 if __name__ == "__main__":
     unittest.main()
+

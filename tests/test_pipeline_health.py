@@ -228,7 +228,128 @@ class TestPipelineHealth(unittest.TestCase):
                         loaded = json.loads(sum_path.read_text(encoding="utf-8"))
                         self.assertEqual(loaded["status"], "degraded")
 
+    def test_graceful_failures_exit_zero_detected_from_artifacts(self) -> None:
+        """Regression test for Blocking 1: Subprocesses exit 0 but artifacts indicate error."""
+        from unittest.mock import patch
+        from crash_trend.pipeline_run import run_pipeline
+
+        fake_cfg = {
+            "apps": {
+                "graceful_app": {
+                    "firebase_project": "p1",
+                    "sessions_dataset": "sessions",
+                    "mcp": {"mode": "weekly"},
+                }
+            }
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmproot = Path(tmpdir)
+            out_app = tmproot / "out" / "graceful_app"
+            out_app.mkdir(parents=True, exist_ok=True)
+
+            # Artifacts with graceful failure (exit code was 0, but content contains error)
+            (out_app / "dashboard_v2.json").write_text(json.dumps({
+                "sources": {
+                    "crashlytics_bq": {"status": "available"},
+                    "firebase_sessions": {"status": "error", "error_message": "Sessions query returned 404 table not found"},
+                    "gemini_ai": {"status": "error", "error_message": "Gemini quota exceeded"},
+                },
+                "ai_summary": {"status": "error", "data_limitations": "Gemini quota exceeded"},
+            }), encoding="utf-8")
+
+            (out_app / "sessions.json").write_text(json.dumps({
+                "sources": {"status": "error", "error_message": "Sessions query returned 404 table not found"}
+            }), encoding="utf-8")
+
+            # MCP wrote stacktraces_last_error.json and exited 0
+            (out_app / "stacktraces_last_error.json").write_text(json.dumps({
+                "error_message": "Firebase login required",
+                "errors": [{"stage": "mcp_handshake", "message": "Firebase login required"}]
+            }), encoding="utf-8")
+
+            sum_path = tmproot / "out" / "pipeline_run.json"
+
+            with patch("crash_trend.pipeline_run.ROOT", tmproot):
+                with patch("crash_trend.pipeline_run.load_config", return_value=fake_cfg):
+                    with patch("crash_trend.pipeline_run.get_app", return_value=fake_cfg["apps"]["graceful_app"]):
+                        with patch("crash_trend.pipeline_run.run_stage_process", return_value=(0, "ok", "")):
+                            with patch("crash_trend.pipeline_run.resolve_api_key", return_value="fake-key"):
+                                summary = run_pipeline(
+                                    app_names=["graceful_app"],
+                                    summary_path=sum_path,
+                                    skip_dashboard=True,
+                                    verbose=False,
+                                )
+
+            app_sum = summary["apps"]["graceful_app"]
+            # Sessions must be recorded as failed, NOT success!
+            self.assertEqual(app_sum["stages"]["sessions"]["status"], "failed")
+            self.assertIn("404", app_sum["stages"]["sessions"]["error_message"])
+
+            # MCP must be recorded as failed, NOT success!
+            self.assertEqual(app_sum["stages"]["mcp"]["status"], "failed")
+            self.assertIn("Firebase login required", app_sum["stages"]["mcp"]["error_message"])
+
+            # AI must be recorded as failed, NOT success!
+            self.assertEqual(app_sum["stages"]["ai"]["status"], "failed")
+            self.assertIn("quota", app_sum["stages"]["ai"]["error_message"])
+
+            # App status must be degraded (since BQ was success, but optional stages failed)
+            self.assertEqual(app_sum["status"], "degraded")
+            self.assertEqual(summary["status"], "degraded")
+
+    def test_ai_enabled_with_gemini_key_url(self) -> None:
+        """Regression test for High Priority issue: AI enabled detection supports GEMINI_KEY_URL."""
+        from unittest.mock import patch
+        from crash_trend.pipeline_run import run_pipeline
+
+        fake_cfg = {
+            "apps": {
+                "ai_url_app": {
+                    "firebase_project": "p1",
+                    "data_sources": {"sessions": False},
+                    "mcp": "off",
+                }
+            }
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmproot = Path(tmpdir)
+            out_app = tmproot / "out" / "ai_url_app"
+            out_app.mkdir(parents=True, exist_ok=True)
+
+            (out_app / "dashboard_v2.json").write_text(json.dumps({
+                "sources": {
+                    "crashlytics_bq": {"status": "available"},
+                    "gemini_ai": {"status": "available"},
+                },
+                "ai_summary": {"status": "available"},
+            }), encoding="utf-8")
+
+            sum_path = tmproot / "out" / "pipeline_run.json"
+
+            # No GEMINI_API_KEY in env, but resolve_api_key returns a key from GEMINI_KEY_URL
+            with patch.dict("os.environ", {}, clear=True):
+                with patch("crash_trend.pipeline_run.ROOT", tmproot):
+                    with patch("crash_trend.pipeline_run.load_config", return_value=fake_cfg):
+                        with patch("crash_trend.pipeline_run.get_app", return_value=fake_cfg["apps"]["ai_url_app"]):
+                            with patch("crash_trend.pipeline_run.run_stage_process", return_value=(0, "ok", "")):
+                                with patch("crash_trend.pipeline_run.resolve_api_key", return_value="key-from-url"):
+                                    summary = run_pipeline(
+                                        app_names=["ai_url_app"],
+                                        summary_path=sum_path,
+                                        skip_dashboard=True,
+                                        verbose=False,
+                                    )
+
+            app_sum = summary["apps"]["ai_url_app"]
+            # AI stage must be success, NOT disabled!
+            self.assertEqual(app_sum["stages"]["ai"]["status"], "success")
+            self.assertEqual(app_sum["status"], "success")
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
