@@ -21,6 +21,8 @@ from crash_trend.ai_provider import (
     OpenRouterProvider,
     extract_json_block,
     get_ai_provider,
+    resolve_gemini_key,
+    to_gemini_schema,
 )
 from crash_trend.analyze_gemini import enrich_app_data_with_priority_and_ai
 from crash_trend.config import ROOT
@@ -443,6 +445,166 @@ class TestAIProviders(unittest.TestCase):
             text=True,
         )
         self.assertEqual(result_direct.returncode, 0, f"Direct script execution failed: {result_direct.stderr}")
+
+    @patch("crash_trend.ai_provider.requests.post")
+    def test_gemini_request_uses_header_auth_and_no_query_key(self, mock_post: MagicMock) -> None:
+        """Issue #34 Test 1: Gemini Direct API uses x-goog-api-key header and omits key in query string."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "candidates": [{"content": {"parts": [{"text": '{"overview": "Header Auth OK", "items": []}'}]}}]
+        }
+        mock_post.return_value = mock_resp
+
+        provider = GeminiProvider(api_key="AIzaSyDirectSecretKey", model="gemini-2.5-flash")
+        res = provider.analyze("Test prompt")
+        self.assertEqual(res, {"overview": "Header Auth OK", "items": []})
+
+        call_args, call_kwargs = mock_post.call_args
+        target_url = call_args[0]
+        # Query string must NOT contain API key
+        self.assertNotIn("key=", target_url)
+        self.assertNotIn("AIzaSyDirectSecretKey", target_url)
+        # params must NOT contain API key
+        self.assertNotIn("params", call_kwargs)
+
+        # Header must contain x-goog-api-key
+        headers = call_kwargs.get("headers", {})
+        self.assertEqual(headers.get("x-goog-api-key"), "AIzaSyDirectSecretKey")
+        self.assertEqual(headers.get("Content-Type"), "application/json")
+
+    @patch("crash_trend.ai_provider.requests.post")
+    def test_gemini_3_x_generation_config_omits_hardcoded_temperature(self, mock_post: MagicMock) -> None:
+        """Issue #34 Test 2: Gemini 3.x / 2.5 models do not send old hardcoded temperature: 0.2."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "candidates": [{"content": {"parts": [{"text": '{"overview": "3.x OK", "items": []}'}]}}]
+        }
+        mock_post.return_value = mock_resp
+
+        # 1. Default Gemini 3.x / 2.5 model should NOT send temperature: 0.2
+        provider_3x = GeminiProvider(api_key="test-key", model="gemini-2.5-flash")
+        provider_3x.analyze("Prompt")
+        gen_cfg = mock_post.call_args[1]["json"]["generationConfig"]
+        self.assertNotIn("temperature", gen_cfg)
+
+        # 2. Another 3.x model (e.g. gemini-3.0-flash) also omits temperature
+        provider_3_0 = GeminiProvider(api_key="test-key", model="gemini-3.0-flash")
+        provider_3_0.analyze("Prompt")
+        gen_cfg_3_0 = mock_post.call_args[1]["json"]["generationConfig"]
+        self.assertNotIn("temperature", gen_cfg_3_0)
+
+        # 3. Explicit temperature override is respected
+        provider_override = GeminiProvider(api_key="test-key", model="gemini-2.5-flash", temperature=0.7)
+        provider_override.analyze("Prompt")
+        gen_cfg_ov = mock_post.call_args[1]["json"]["generationConfig"]
+        self.assertEqual(gen_cfg_ov.get("temperature"), 0.7)
+
+    def test_global_and_per_app_model_override_gemini(self) -> None:
+        """Issue #34 Test 3: Global, per-app, and env model override regression test."""
+        # 1. Default model is stable gemini-2.5-flash
+        self.assertEqual(DEFAULT_GEMINI_MODEL, "gemini-2.5-flash")
+        p_default = get_ai_provider()
+        self.assertEqual(p_default.model_name, "gemini-2.5-flash")
+
+        # 2. Global override
+        global_cfg = {"ai": {"provider": "gemini", "model": "gemini-2.5-pro"}}
+        p_global = get_ai_provider(None, global_cfg)
+        self.assertEqual(p_global.model_name, "gemini-2.5-pro")
+
+        # 3. Per-app override
+        app_cfg = {"ai": {"provider": "gemini", "model": "gemini-3.0-flash"}}
+        p_app = get_ai_provider(app_cfg, global_cfg)
+        self.assertEqual(p_app.model_name, "gemini-3.0-flash")
+
+        # 4. Env override
+        with patch.dict("os.environ", {"GEMINI_MODEL": "gemini-custom-env"}):
+            p_env = GeminiProvider()
+            self.assertEqual(p_env.model_name, "gemini-custom-env")
+
+    @patch("crash_trend.ai_provider.requests.get")
+    def test_gemini_key_url_resolver(self, mock_get: MagicMock) -> None:
+        """Issue #34 Test 4: GEMINI_KEY_URL resolver works and does not leak keys."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"api_key": "resolved-remote-key"}
+        mock_get.return_value = mock_resp
+
+        with patch.dict("os.environ", {"GEMINI_KEY_URL": "https://vault.internal/key"}, clear=True):
+            resolved = resolve_gemini_key(raise_on_missing=False)
+            self.assertEqual(resolved, "resolved-remote-key")
+
+    def test_to_gemini_schema_adaptation(self) -> None:
+        """Issue #34 Test 5: Structured output schema adapter handles additionalProperties and nullable types."""
+        schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "summary": {"type": "string"},
+                "limitations": {"type": ["string", "null"]},
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+            },
+            "required": ["summary"],
+        }
+        adapted = to_gemini_schema(schema)
+        self.assertNotIn("additionalProperties", adapted)
+        self.assertEqual(adapted["type"], "OBJECT")
+        self.assertEqual(adapted["properties"]["summary"]["type"], "STRING")
+        self.assertEqual(adapted["properties"]["limitations"]["type"], "STRING")
+        self.assertTrue(adapted["properties"]["limitations"]["nullable"])
+        self.assertEqual(adapted["properties"]["tags"]["type"], "ARRAY")
+        self.assertEqual(adapted["properties"]["tags"]["items"]["type"], "STRING")
+
+    @patch("crash_trend.ai_provider.requests.post")
+    def test_production_lifecycle_gemini_e2e_bundle(self, mock_post: MagicMock) -> None:
+        """Issue #34 Test 7: Production lifecycle E2E: Gemini provider -> artifact -> Pipeline Health."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "candidates": [{
+                "content": {
+                    "parts": [{
+                        "text": json.dumps({
+                            "overview": "Production Gemini 3.x Analysis Passed",
+                            "key_takeaways": ["Stability is high"],
+                            "distribution_insights": "No regressions detected",
+                            "recommended_actions": [],
+                            "data_limitations": None,
+                            "items": [],
+                        })
+                    }]
+                }
+            }]
+        }
+        mock_post.return_value = mock_resp
+
+        fixture_path = ROOT / "tests" / "fixtures" / "dashboard_v2_no_sessions.json"
+        fixture_data = json.loads(fixture_path.read_text(encoding="utf-8"))
+        app_data = copy.deepcopy(fixture_data["apps"]["legacy_app"])
+
+        provider = GeminiProvider(api_key="AIzaSyProductionKey", model="gemini-2.5-flash")
+        enriched = enrich_app_data_with_priority_and_ai(app_data, provider=provider)
+
+        # 1. Check sources.ai and sources.gemini_ai
+        self.assertEqual(enriched["sources"]["ai"]["status"], "available")
+        self.assertEqual(enriched["sources"]["ai"]["provider"], "gemini")
+        self.assertEqual(enriched["sources"]["ai"]["model"], "gemini-2.5-flash")
+        self.assertEqual(enriched["sources"]["gemini_ai"]["status"], "available")
+        self.assertEqual(enriched["sources"]["gemini_ai"]["model"], "gemini-2.5-flash")
+
+        # 2. Check ai_summary
+        self.assertEqual(enriched["ai_summary"]["status"], "available")
+        self.assertEqual(enriched["ai_summary"]["provider"], "gemini")
+        self.assertEqual(enriched["ai_summary"]["model"], "gemini-2.5-flash")
+
+        # 3. Schema V2 contract validation
+        errors = validate_app_dashboard_v2(enriched)
+        self.assertEqual(errors, [])
+
 
 
 if __name__ == "__main__":

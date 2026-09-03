@@ -58,7 +58,7 @@ open dashboard.html
 | 檔案 | 內容 | 版控 |
 |---|---|---|
 | `apps.yaml` | 各 App 的 Firebase 專案、BQ dataset、Sessions dataset、core_paths、custom_keys | 建議放私有 instance repo |
-| `.env` | `GEMINI_API_KEY`、`GEMINI_MODEL`（預設 gemini-flash-latest） | ✗ 永不進版控 |
+| `.env` | `GEMINI_API_KEY`、`GEMINI_MODEL`（預設 gemini-2.5-flash） | ✗ 永不進版控 |
 | `~/.config/crash-trend/sa.json` | BigQuery 唯讀 SA 金鑰（`create_sa.sh` 產生） | ✗ 永不進版控（Docker read-only 掛載） |
 
 ### 多 App 設定與 Data Source Profile (`apps.yaml`)

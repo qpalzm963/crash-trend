@@ -9,7 +9,7 @@ ai:
   # AI Provider 設定 (選填；可填 gemini 或 openrouter)
   # 若未指定，會依據環境變數 (GEMINI_API_KEY / GEMINI_KEY_URL vs OPENROUTER_API_KEY) 自動切換
   provider: gemini                            # gemini（預設）或 openrouter
-  model: gemini-flash-latest                  # 模型名稱（例如 openrouter 時可填 google/gemini-2.5-flash 或 google/gemini-3.7-flash）
+  model: gemini-2.5-flash                     # 模型名稱（例如 gemini-2.5-flash，或 openrouter 時填 google/gemini-2.5-flash）
   # api_key: "..."                            # 選填；未填則自動讀取環境變數 OPENROUTER_API_KEY 或 GEMINI_API_KEY
   # zdr: true                                 # OpenRouter 專用：Zero Data Retention 政策守護（預設 true，data_collection 亦預設 deny）
 
