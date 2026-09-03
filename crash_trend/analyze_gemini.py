@@ -138,6 +138,7 @@ def calculate_priority(
     prev_issue: dict | None = None,
     core_paths: list[str] | None = None,
     latest_app_version: str | None = None,
+    has_baseline: bool = True,
 ) -> PriorityInfo:
     """Calculates deterministic PriorityInfo and score breakdown for a single issue.
 
@@ -156,8 +157,10 @@ def calculate_priority(
     events = issue.get("events", 0)
 
     # 1. Trend calculation
-    if prev_issue is None:
-        trend: Literal["new", "worsening", "stable", "improving"] = "new"
+    if not has_baseline:
+        trend: Literal["new", "worsening", "stable", "improving"] = "stable"
+    elif prev_issue is None:
+        trend = "new"
     else:
         prev_e = prev_issue.get("events", 0)
         if prev_e > 0 and events > prev_e * 1.2:
@@ -178,7 +181,7 @@ def calculate_priority(
     is_fatal = issue.get("fatal") is True or error_type in ("FATAL", "ANR")
     fatal_anr_boost = 2 if is_fatal else 0
 
-    worsening_boost = 2 if trend in ("worsening", "new") else 0
+    worsening_boost = 2 if (has_baseline and trend in ("worsening", "new")) else 0
 
     last_ver = issue.get("last_seen_version") or ""
     latest_version_boost = 2 if (latest_app_version and last_ver == latest_app_version) else 0
@@ -256,6 +259,7 @@ def score_issues(
     prev_issues: list[dict] | None = None,
     core_paths: list[str] | None = None,
     latest_app_version: str | None = None,
+    has_baseline: bool = True,
 ) -> list[dict]:
     """Scores a list of issues and returns them sorted by priority score descending."""
     if not issues:
@@ -282,6 +286,7 @@ def score_issues(
             prev_issue=prev,
             core_paths=core_paths,
             latest_app_version=latest_app_version,
+            has_baseline=has_baseline,
         )
         scored.append({
             **i,
@@ -603,6 +608,89 @@ def parse_gemini_response(
 parse_ai_response = parse_gemini_response
 
 
+def _sync_periods_priority_and_ai(
+    app_data: dict,
+    prev_app_data: dict | list | None = None,
+    core_paths: list[str] | None = None,
+    latest_ver: str | None = None,
+) -> None:
+    if "periods" not in app_data or not isinstance(app_data["periods"], dict):
+        return
+
+    ai_analysis_by_id = {
+        iss["issue_id"]: iss.get("ai_analysis")
+        for iss in app_data.get("top_issues", [])
+        if iss.get("issue_id") and iss.get("ai_analysis")
+    }
+
+    main_period_days = str(app_data.get("period", {}).get("days") or "90")
+    main_ai = app_data.get("ai_summary") or {}
+
+    # Support backward-compatibility if caller passes prev_issues as a list
+    if isinstance(prev_app_data, list):
+        prev_periods = {}
+        prev_main_days = None
+        fallback_prev_issues = prev_app_data
+    elif isinstance(prev_app_data, dict):
+        prev_periods = prev_app_data.get("periods") or {}
+        prev_main_days = str(prev_app_data.get("period", {}).get("days") or "")
+        fallback_prev_issues = prev_app_data.get("top_issues") or []
+    else:
+        prev_periods = {}
+        prev_main_days = None
+        fallback_prev_issues = []
+
+    for p_key, snap in app_data["periods"].items():
+        if not isinstance(snap, dict):
+            continue
+
+        # 同 period baseline 解析：優先使用 prev_app_data.periods[p_key].top_issues
+        if str(p_key) in prev_periods and isinstance(prev_periods[str(p_key)], dict):
+            snap_prev_issues = prev_periods[str(p_key)].get("top_issues") or []
+            has_baseline = True
+        elif prev_main_days and str(p_key) == prev_main_days:
+            snap_prev_issues = fallback_prev_issues
+            has_baseline = True
+        elif isinstance(prev_app_data, list) and str(p_key) == main_period_days:
+            snap_prev_issues = fallback_prev_issues
+            has_baseline = True
+        else:
+            snap_prev_issues = []
+            has_baseline = False
+
+        # snapshot-specific latest_ver scope
+        snap_latest_ver = get_latest_app_version(snap) or latest_ver
+
+        snap_issues = snap.get("top_issues", [])
+        if snap_issues and isinstance(snap_issues, list):
+            snap_scored = score_issues(
+                snap_issues,
+                prev_issues=snap_prev_issues,
+                core_paths=core_paths,
+                latest_app_version=snap_latest_ver,
+                has_baseline=has_baseline,
+            )
+            for si in snap_scored:
+                iid = si.get("issue_id")
+                if iid in ai_analysis_by_id:
+                    si["ai_analysis"] = ai_analysis_by_id[iid]
+                elif "ai_analysis" not in si or not si["ai_analysis"]:
+                    si["ai_analysis"] = generate_disabled_issue_analysis()
+            snap["top_issues"] = snap_scored
+
+        if str(p_key) == main_period_days:
+            snap["ai_summary"] = main_ai
+        else:
+            snap_days = snap.get("period", {}).get("days", p_key)
+            snap_ai = dict(main_ai)
+            if snap_ai.get("status") == "available":
+                orig_ov = snap_ai.get("overview", "")
+                prefix = f"【注意：當前檢視為 {snap_days} 天指標；AI 綜合診斷係依據全期 ({main_period_days} 天) 資料深度分析】\n"
+                if not orig_ov.startswith("【注意：當前檢視為"):
+                    snap_ai["overview"] = prefix + orig_ov
+            snap["ai_summary"] = snap_ai
+
+
 # ---------------------------------------------------------------------------
 # 6. 端到端資料契約整合 (Enrich App Dashboard V2 Data)
 # ---------------------------------------------------------------------------
@@ -680,6 +768,7 @@ def enrich_app_data_with_priority_and_ai(
                 app_data["sources"]["gemini_ai"]["last_sync_timestamp"] = None
                 app_data["sources"]["gemini_ai"]["model"] = None
                 app_data["sources"]["gemini_ai"]["error_message"] = None
+        _sync_periods_priority_and_ai(app_data, prev_app_data=prev_app_data, core_paths=core_paths, latest_ver=latest_ver)
         return app_data
 
     # 3. 準備原始碼片段與 Prompt
@@ -764,6 +853,7 @@ def enrich_app_data_with_priority_and_ai(
                 app_data["sources"]["gemini_ai"]["model"] = model_name
                 app_data["sources"]["gemini_ai"]["error_message"] = safe_err
 
+    _sync_periods_priority_and_ai(app_data, prev_app_data=prev_app_data, core_paths=core_paths, latest_ver=latest_ver)
     return app_data
 
 

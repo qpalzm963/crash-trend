@@ -15,12 +15,12 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
 try:
-    from crash_trend.schema_v2 import validate_dashboard_v2
+    from crash_trend.schema_v2 import validate_dashboard_v2, SCHEMA_VERSION
 except ImportError:
     try:
-        from schema_v2 import validate_dashboard_v2
+        from schema_v2 import validate_dashboard_v2, SCHEMA_VERSION
     except ImportError:
-        from .schema_v2 import validate_dashboard_v2
+        from .schema_v2 import validate_dashboard_v2, SCHEMA_VERSION
 
 # Root directory
 ROOT = Path(__file__).resolve().parent.parent
@@ -91,7 +91,7 @@ def assemble_bundle_from_apps(cfg: Optional[dict] = None) -> Optional[dict]:
     default_app = list(collected_apps.keys())[0]
     now_utc = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     bundle = {
-        "schema_version": "2.0",
+        "schema_version": SCHEMA_VERSION,
         "generated_at": now_utc,
         "default_app": default_app,
         "apps": collected_apps,
@@ -154,7 +154,7 @@ def collect_data(data_path: Optional[Union[str, Path]] = None) -> dict:
 
     # Fallback to minimal bundle if nothing found
     return {
-        "schema_version": "2.0",
+        "schema_version": SCHEMA_VERSION,
         "generated_at": "2026-09-02T00:00:00Z",
         "default_app": "default_app",
         "apps": {
@@ -1913,10 +1913,29 @@ function switchView(viewName) {
   }
 }
 
+function isUsablePeriodSnapshot(snap) {
+  if (!snap) return false;
+  if (snap.status === "error" || snap.status === "insufficient_data") return false;
+  const usStatus = snap.kpi?.affected_users?.status;
+  if (usStatus === "error" || usStatus === "insufficient_data") return false;
+  return true;
+}
+
 function switchApp(appId) {
   if (DATA.apps && DATA.apps[appId]) {
     curAppId = appId;
     $("appSelector").value = appId;
+    const app = DATA.apps[appId];
+    if (app.periods) {
+      const curSnap = app.periods[String(curPeriodDays)];
+      if (!isUsablePeriodSnapshot(curSnap)) {
+        const avail = Object.keys(app.periods)
+          .map(Number)
+          .filter(d => isUsablePeriodSnapshot(app.periods[String(d)]))
+          .sort((a,b) => a - b);
+        curPeriodDays = avail.includes(30) ? 30 : (avail[0] || (Object.keys(app.periods).map(Number).sort((a,b) => a - b)[0] || 30));
+      }
+    }
     renderAll();
   }
 }
@@ -1926,18 +1945,20 @@ let curSortAsc = false;
 
 function setPeriod(days) {
   const app = getCurAppData();
+  if (!app) return;
   const availableDays = (app?.daily_trend || []).length || app?.period?.days || 30;
-  if (days > availableDays) {
-    showToast(`目前資料僅有 ${availableDays} 天，無法檢視 ${days} 天`);
+  const snap = app.periods ? app.periods[String(days)] : null;
+  const hasPeriod = (snap != null) || (!app.periods && days <= availableDays);
+  if (!hasPeriod) {
+    showToast(`目前資料無 ${days} 天之獨立數據`);
+    return;
+  }
+  if (snap && !isUsablePeriodSnapshot(snap)) {
+    showToast(`${days} 天數據查詢異常：${snap.error_message || "權威彙總缺失"}`);
     return;
   }
   curPeriodDays = Number(days);
-  document.querySelectorAll(".period-btn").forEach(b => b.classList.remove("active"));
-  const b = $("p-" + days + "d");
-  if (b) b.classList.add("active");
-
-  renderKPIs();
-  renderCharts();
+  renderAll();
 }
 
 function setSort(field) {
@@ -1957,6 +1978,35 @@ function handleSearch(val) {
 
 function getCurAppData() {
   return (DATA.apps && DATA.apps[curAppId]) ? DATA.apps[curAppId] : null;
+}
+
+function getCurPeriodSnapshot() {
+  const app = getCurAppData();
+  if (!app) return null;
+  if (app.periods) {
+    const snap = app.periods[String(curPeriodDays)];
+    if (snap && isUsablePeriodSnapshot(snap)) {
+      return snap;
+    }
+    const avail = Object.keys(app.periods)
+      .map(Number)
+      .filter(d => isUsablePeriodSnapshot(app.periods[String(d)]))
+      .sort((a,b) => a - b);
+    if (avail.length > 0) {
+      const fallbackDays = avail.includes(30) ? 30 : avail[0];
+      return app.periods[String(fallbackDays)];
+    }
+    if (snap) return snap;
+  }
+  return {
+    period: app.period || { days: curPeriodDays },
+    kpi: app.kpi || {},
+    daily_trend: app.daily_trend || [],
+    version_health: app.version_health || [],
+    distributions: app.distributions || {},
+    top_issues: app.top_issues || [],
+    ai_summary: app.ai_summary || {},
+  };
 }
 
 // ── Data Freshness and Source Health Resolution (Issue #23) ──
@@ -2079,27 +2129,45 @@ function renderHeader() {
   const app = getCurAppData();
   if (!app) return;
 
-  // Period buttons availability verification (prevent pretending 90d when data is only 30d)
+  // Period buttons availability verification
   const availableDays = (app.daily_trend || []).length || app.period?.days || 30;
   [7, 30, 90].forEach(d => {
     const btn = $("p-" + d + "d");
     if (btn) {
-      if (availableDays < d) {
+      const snap = app.periods ? app.periods[String(d)] : null;
+      const hasPeriod = (snap != null) || (!app.periods && d <= availableDays);
+      const isUsable = snap ? isUsablePeriodSnapshot(snap) : (!app.periods && d <= availableDays);
+      if (!hasPeriod) {
         btn.disabled = true;
-        btn.title = `目前資料僅提供 ${availableDays} 天，無法檢視 ${d} 天`;
+        btn.title = `目前資料無 ${d} 天之獨立數據`;
+        btn.classList.add("disabled");
+        btn.style.opacity = "0.45";
+        btn.style.cursor = "not-allowed";
+      } else if (!isUsable) {
+        btn.disabled = true;
+        btn.title = `${d} 天數據異常：${snap?.error_message || "權威彙總缺失"}`;
         btn.classList.add("disabled");
         btn.style.opacity = "0.45";
         btn.style.cursor = "not-allowed";
       } else {
         btn.disabled = false;
-        btn.title = `切換為 ${d} 天趨勢`;
+        btn.title = `切換為 ${d} 天數據`;
         btn.classList.remove("disabled");
         btn.style.opacity = "1";
         btn.style.cursor = "pointer";
       }
     }
   });
-  if (curPeriodDays > availableDays) {
+  if (app.periods) {
+    const curSnap = app.periods[String(curPeriodDays)];
+    if (!isUsablePeriodSnapshot(curSnap)) {
+      const avail = Object.keys(app.periods)
+        .map(Number)
+        .filter(d => isUsablePeriodSnapshot(app.periods[String(d)]))
+        .sort((a,b) => a - b);
+      curPeriodDays = avail.includes(30) ? 30 : (avail[0] || (Object.keys(app.periods).map(Number).sort((a,b) => a - b)[0] || 30));
+    }
+  } else if (curPeriodDays > availableDays) {
     curPeriodDays = availableDays >= 30 ? 30 : (availableDays >= 7 ? 7 : availableDays);
   }
   document.querySelectorAll(".period-btn").forEach(b => b.classList.remove("active"));
@@ -2180,12 +2248,15 @@ function renderDataSourcesHealth() {
 function renderKPIs() {
   const app = getCurAppData();
   if (!app) return;
+  const snap = getCurPeriodSnapshot();
+  if (!snap) return;
 
-  const kpi = app.kpi || {};
+  const kpi = snap.kpi || {};
   const meta = app.metadata || {};
-  const period = app.period || {};
+  const period = snap.period || {};
+  const srcs = app.sources || {};
 
-  const pDays = period.days || 30;
+  const pDays = period.days || curPeriodDays || 30;
   const startStr = (period.start_time || "").slice(0, 10);
   const endStr = (period.end_time || "").slice(0, 10);
   $("overviewPeriodSubtitle").textContent = `${meta.display_name || curAppId} · 總覽指標 (${pDays} 天：${startStr} ~ ${endStr})`;
@@ -2252,29 +2323,45 @@ function renderKPIs() {
 
   // 2. Crash Events
   const ev = kpi.crash_events || {};
-  $("kpiEvents").textContent = fmt(totalEvents);
-  const evDelta = $("kpiEventsDelta");
-  if (ev.change_pct != null) {
-    const isDown = ev.change_pct <= 0;
-    evDelta.className = `delta-pill ${isDown ? "good" : "bad"}`;
-    evDelta.innerHTML = `${ev.change_pct > 0 ? "▲ +" : "▼ "}${ev.change_pct.toFixed(1)}% vs 上期`;
+  if (ev.status === "error") {
+    $("kpiEvents").innerHTML = `<span style="font-size:16px;color:var(--danger-text)">查詢失敗</span>`;
+    $("kpiEventsDelta").className = "delta-pill neutral";
+    $("kpiEventsDelta").textContent = "BigQuery 錯誤";
   } else {
-    evDelta.className = "delta-pill neutral";
-    evDelta.textContent = "無基期";
+    $("kpiEvents").textContent = fmt(totalEvents);
+    const evDelta = $("kpiEventsDelta");
+    if (ev.change_pct != null) {
+      const isDown = ev.change_pct <= 0;
+      evDelta.className = `delta-pill ${isDown ? "good" : "bad"}`;
+      evDelta.innerHTML = `${ev.change_pct > 0 ? "▲ +" : "▼ "}${ev.change_pct.toFixed(1)}% vs 上期`;
+    } else {
+      evDelta.className = "delta-pill neutral";
+      evDelta.textContent = "無基期";
+    }
   }
   $("kpiErrorBreakdown").textContent = `Fatal: ${fmt(fatalEvents)} · ANR: ${fmt(anrEvents)} · Non-fatal: ${fmt(nonFatalEvents)}`;
 
   // 3. Affected Users
   const us = kpi.affected_users || {};
-  $("kpiUsers").textContent = fmt(totalUsers);
-  const usDelta = $("kpiUsersDelta");
-  if (us.change_pct != null) {
-    const isDown = us.change_pct <= 0;
-    usDelta.className = `delta-pill ${isDown ? "good" : "bad"}`;
-    usDelta.innerHTML = `${us.change_pct > 0 ? "▲ +" : "▼ "}${us.change_pct.toFixed(1)}% vs 上期`;
+  if (us.status === "error") {
+    $("kpiUsers").innerHTML = `<span style="font-size:16px;color:var(--danger-text)">查詢失敗</span>`;
+    $("kpiUsersDelta").className = "delta-pill neutral";
+    $("kpiUsersDelta").textContent = "Overview 錯誤";
+  } else if (us.status === "insufficient_data") {
+    $("kpiUsers").innerHTML = `<span style="font-size:16px;color:var(--warning-text)">資料不足</span>`;
+    $("kpiUsersDelta").className = "delta-pill neutral";
+    $("kpiUsersDelta").textContent = "無去重指標";
   } else {
-    usDelta.className = "delta-pill neutral";
-    usDelta.textContent = "無基期";
+    $("kpiUsers").textContent = fmt(totalUsers);
+    const usDelta = $("kpiUsersDelta");
+    if (us.change_pct != null) {
+      const isDown = us.change_pct <= 0;
+      usDelta.className = `delta-pill ${isDown ? "good" : "bad"}`;
+      usDelta.innerHTML = `${us.change_pct > 0 ? "▲ +" : "▼ "}${us.change_pct.toFixed(1)}% vs 上期`;
+    } else {
+      usDelta.className = "delta-pill neutral";
+      usDelta.textContent = "無基期";
+    }
   }
 
   // 4. New Issues
@@ -2295,7 +2382,8 @@ function renderKPIs() {
 function renderAISummaries() {
   const app = getCurAppData();
   if (!app) return;
-  const ai = app.ai_summary || {};
+  const snap = getCurPeriodSnapshot();
+  const ai = snap?.ai_summary || app.ai_summary || {};
 
   const modelText = ai.model || "Gemini Flash";
   $("aiModelTag").textContent = modelText;
@@ -2358,12 +2446,13 @@ function renderCharts() {
   if (typeof Chart === "undefined") return;
   const app = getCurAppData();
   if (!app) return;
+  const snap = getCurPeriodSnapshot();
   const colors = getChartColors();
-  const period = app.period || {};
+  const period = snap?.period || app.period || {};
 
   // 1. Daily Trend (sliced by curPeriodDays)
   destroyChart("chartDailyTrend");
-  const daily = app.daily_trend || [];
+  const daily = (snap && snap.daily_trend && snap.daily_trend.length) ? snap.daily_trend : (app.daily_trend || []);
   const activeDays = Math.min(curPeriodDays || period.days || 30, daily.length || 30);
   const activeDaily = daily.slice(-activeDays);
 
@@ -2421,7 +2510,7 @@ function renderCharts() {
   // 2. Error Types
   destroyChart("chartErrorTypes");
   const errCtx = $("chartErrorTypes");
-  const kpiErr = app.kpi?.events_by_error_type || {};
+  const kpiErr = snap?.kpi?.events_by_error_type || app.kpi?.events_by_error_type || {};
   if (errCtx) {
     chartInstances["chartErrorTypes"] = new Chart(errCtx, {
       type: "doughnut",
@@ -2447,7 +2536,7 @@ function renderCharts() {
   // 3. Platform Breakdown
   destroyChart("chartPlatforms");
   const platCtx = $("chartPlatforms");
-  const platData = app.distributions?.platform || [];
+  const platData = snap?.distributions?.platform || app.distributions?.platform || [];
   if (platCtx && platData.length) {
     chartInstances["chartPlatforms"] = new Chart(platCtx, {
       type: "bar",
@@ -2483,7 +2572,7 @@ function renderCharts() {
   // 4. App Versions
   destroyChart("chartAppVersions");
   const verCtx = $("chartAppVersions");
-  const verData = app.distributions?.app_versions || [];
+  const verData = snap?.distributions?.app_versions || app.distributions?.app_versions || [];
   if (verCtx && verData.length) {
     chartInstances["chartAppVersions"] = new Chart(verCtx, {
       type: "bar",
@@ -2512,7 +2601,7 @@ function renderCharts() {
   // 5. Device Models
   destroyChart("chartDeviceModels");
   const devCtx = $("chartDeviceModels");
-  const devData = app.distributions?.device_models || [];
+  const devData = snap?.distributions?.device_models || app.distributions?.device_models || [];
   if (devCtx && devData.length) {
     chartInstances["chartDeviceModels"] = new Chart(devCtx, {
       type: "bar",
@@ -2541,7 +2630,7 @@ function renderCharts() {
   // 6. OS Versions
   destroyChart("chartOSVersions");
   const osCtx = $("chartOSVersions");
-  const osData = app.distributions?.os_versions || [];
+  const osData = snap?.distributions?.os_versions || app.distributions?.os_versions || [];
   if (osCtx && osData.length) {
     chartInstances["chartOSVersions"] = new Chart(osCtx, {
       type: "bar",
@@ -2572,7 +2661,8 @@ function renderCharts() {
 function renderIssuesList() {
   const app = getCurAppData();
   if (!app) return;
-  const issues = app.top_issues || [];
+  const snap = getCurPeriodSnapshot();
+  const issues = snap?.top_issues || app.top_issues || [];
 
   const filterErr = $("filterErrorType") ? $("filterErrorType").value : "ALL";
   const filterPlat = $("filterPlatform") ? $("filterPlatform").value : "ALL";
@@ -2774,7 +2864,8 @@ function fallbackCopy(text) {
 function renderVersionHealth() {
   const app = getCurAppData();
   if (!app) return;
-  const list = app.version_health || [];
+  const snap = getCurPeriodSnapshot();
+  const list = snap?.version_health || app.version_health || [];
   const tbody = $("versionHealthTableBody");
   if (!tbody) return;
 
@@ -2810,7 +2901,8 @@ function renderVersionHealth() {
 function renderDevicesTable() {
   const app = getCurAppData();
   if (!app) return;
-  const models = app.distributions?.device_models || [];
+  const snap = getCurPeriodSnapshot();
+  const models = snap?.distributions?.device_models || app.distributions?.device_models || [];
   const tbody = $("deviceModelsTableBody");
   if (!tbody) return;
 
@@ -2829,7 +2921,8 @@ function renderDevicesTable() {
 function renderReleasesTable() {
   const app = getCurAppData();
   if (!app) return;
-  const list = app.version_health || [];
+  const snap = getCurPeriodSnapshot();
+  const list = snap?.version_health || app.version_health || [];
   const tbody = $("releasesTableBody");
   if (!tbody) return;
 

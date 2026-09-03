@@ -18,7 +18,8 @@ try:
 except ImportError:
     from typing_extensions import NotRequired  # type: ignore
 
-SCHEMA_VERSION = "2.0"
+SCHEMA_VERSION = "2.3.0"
+SUPPORTED_SCHEMA_VERSIONS = {"2.0", "2.3", "2.3.0"}
 
 # ---------------------------------------------------------------------------
 # TypedDict Definitions (Required by default)
@@ -46,8 +47,18 @@ class PeriodInfo(TypedDict):
     comparison_period: Optional[PeriodComparison]
 
 
+SnapshotStatus = Literal[
+    "available",
+    "unavailable",
+    "disabled",
+    "error",
+    "stale",
+    "insufficient_data",
+]
+
+
 class SourceStatus(TypedDict):
-    status: Literal["available", "unavailable", "disabled", "error", "stale", "insufficient_data"]
+    status: SnapshotStatus
     tables_queried: NotRequired[Optional[List[str]]]
     provider: NotRequired[Optional[str]]
     model: NotRequired[Optional[str]]
@@ -279,6 +290,18 @@ class AISummary(TypedDict):
     data_limitations: Optional[str]
 
 
+class AppPeriodSnapshot(TypedDict):
+    period: PeriodInfo
+    kpi: OverviewKPI
+    daily_trend: NotRequired[List[DailyTrendPoint]]
+    version_health: List[VersionHealthItem]
+    distributions: Distributions
+    top_issues: List[IssueSummary]
+    ai_summary: NotRequired[Optional[AISummary]]
+    status: NotRequired[SnapshotStatus]
+    error_message: NotRequired[Optional[str]]
+
+
 class AppDashboardV2Data(TypedDict):
     metadata: AppMetadata
     period: PeriodInfo
@@ -290,6 +313,7 @@ class AppDashboardV2Data(TypedDict):
     top_issues: List[IssueSummary]
     ai_summary: AISummary
     limitations: List[str]
+    periods: NotRequired[Dict[str, AppPeriodSnapshot]]
 
 
 class DashboardV2Bundle(TypedDict):
@@ -847,6 +871,37 @@ def validate_app_dashboard_v2(data: dict, prefix: str = "") -> List[str]:
             if not isinstance(l_item, str):
                 errors.append(f"{p}limitations item must be a string")
 
+    # 11. Periods (optional multi-period authoritative snapshots in V2.3)
+    if "periods" in data and data["periods"] is not None:
+        periods_dict = data["periods"]
+        if not isinstance(periods_dict, dict):
+            errors.append(f"{p}periods must be an object")
+        else:
+            for p_key, p_val in periods_dict.items():
+                if not isinstance(p_key, str) or not p_key.isdigit():
+                    errors.append(f"{p}periods key '{p_key}' must be a numeric string representing days (e.g. '7', '30', '90')")
+                if not isinstance(p_val, dict):
+                    errors.append(f"{p}periods['{p_key}'] must be an object")
+                    continue
+                # Validate period in snapshot
+                if "period" in p_val and isinstance(p_val["period"], dict):
+                    snap_days = p_val["period"].get("days")
+                    if str(snap_days) != p_key:
+                        errors.append(f"{p}periods['{p_key}'].period.days ({snap_days}) must match key '{p_key}'")
+                else:
+                    errors.append(f"{p}periods['{p_key}'].period is required")
+                if "kpi" not in p_val or not isinstance(p_val["kpi"], dict):
+                    errors.append(f"{p}periods['{p_key}'].kpi is required")
+                if "top_issues" not in p_val or not isinstance(p_val["top_issues"], list):
+                    errors.append(f"{p}periods['{p_key}'].top_issues is required")
+                if "version_health" not in p_val or not isinstance(p_val["version_health"], list):
+                    errors.append(f"{p}periods['{p_key}'].version_health is required")
+                if "distributions" not in p_val or not isinstance(p_val["distributions"], dict):
+                    errors.append(f"{p}periods['{p_key}'].distributions is required")
+                if "status" in p_val and p_val["status"] is not None:
+                    if p_val["status"] not in ("available", "unavailable", "error", "disabled", "insufficient_data", "stale"):
+                        errors.append(f"{p}periods['{p_key}'].status '{p_val['status']}' is invalid")
+
     return errors
 
 
@@ -860,8 +915,8 @@ def validate_dashboard_v2(data: dict) -> List[str]:
         if req_k not in data:
             errors.append(f"Root {req_k} is required")
 
-    if data.get("schema_version") != SCHEMA_VERSION:
-        errors.append(f"Root schema_version must be '{SCHEMA_VERSION}', got {data.get('schema_version')}")
+    if data.get("schema_version") not in SUPPORTED_SCHEMA_VERSIONS:
+        errors.append(f"Root schema_version must be one of {sorted(list(SUPPORTED_SCHEMA_VERSIONS))}, got {data.get('schema_version')}")
 
     if not is_valid_iso8601_utc(data.get("generated_at")):
         errors.append("Root generated_at must be a valid ISO 8601 UTC timestamp string (ending in Z)")

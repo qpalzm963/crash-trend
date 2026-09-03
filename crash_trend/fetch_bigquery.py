@@ -17,6 +17,7 @@ import datetime as dt
 import json
 import re
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -30,6 +31,7 @@ try:
     from crash_trend.schema_v2 import (
         AppDashboardV2Data,
         AppMetadata,
+        AppPeriodSnapshot,
         AppVersionDistItem,
         CustomKeyDistributionItem,
         DailyTrendPoint,
@@ -42,6 +44,7 @@ try:
         OverviewKPI,
         PeriodInfo,
         PlatformDistItem,
+        SnapshotStatus,
         SourcesAvailability,
         SourceStatus,
         VersionDistCount,
@@ -56,6 +59,7 @@ except ImportError:
     from schema_v2 import (
         AppDashboardV2Data,
         AppMetadata,
+        AppPeriodSnapshot,
         AppVersionDistItem,
         CustomKeyDistributionItem,
         DailyTrendPoint,
@@ -68,6 +72,7 @@ except ImportError:
         OverviewKPI,
         PeriodInfo,
         PlatformDistItem,
+        SnapshotStatus,
         SourcesAvailability,
         SourceStatus,
         VersionDistCount,
@@ -352,43 +357,18 @@ def run_query(client: bigquery.Client, sql: str) -> List[dict]:
 # BigQuery Raw Data -> Dashboard V2 Data Schema 轉換
 # ---------------------------------------------------------------------------
 
-def transform_bq_to_v2(
-    bq_result: dict,
-    app_config: dict,
-    days: int = 30,
-    end_time: Optional[dt.datetime] = None,
-) -> AppDashboardV2Data:
-    """把 BigQuery 查詢結果字典轉換為嚴格符合 Schema V2 的 AppDashboardV2Data。"""
-    end_dt = end_time.astimezone(dt.timezone.utc) if end_time else dt.datetime.now(dt.timezone.utc)
-    end_date = end_dt.date()
-    start_date = end_date - dt.timedelta(days=days - 1)
+def transform_bq_period_snapshot(
+    tables_data: Dict[str, dict],
+    detected_platforms: List[str],
+    days: int,
+    start_date: dt.date,
+    end_date: dt.date,
+    master_daily_trend: Optional[List[DailyTrendPoint]] = None,
+    period_errors: Optional[List[str]] = None,
+) -> AppPeriodSnapshot:
+    """Computes an authoritative period snapshot conforming to AppPeriodSnapshot."""
     start_time_iso = f"{start_date.isoformat()}T00:00:00Z"
     end_time_iso = f"{end_date.isoformat()}T23:59:59Z"
-    now_iso = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    app_id = str(app_config.get("app_id") or app_config.get("name") or "app")
-    display_name = str(app_config.get("display_name") or app_id)
-    firebase_project_id = str(app_config.get("firebase_project") or app_config.get("firebase_project_id") or "")
-    source_repo = app_config.get("source_repo")
-    custom_keys_monitored = list(app_config.get("custom_keys") or [])
-
-    tables_data: Dict[str, dict] = (bq_result or {}).get("tables") or {}
-    queried_tables = list(tables_data.keys())
-
-    detected_platforms = sorted(list({extract_platform_from_table(t) for t in queried_tables}))
-    if not detected_platforms:
-        detected_platforms = [p for p in app_config.get("platforms", ["android"]) if p in ("ios", "android")]
-    if not detected_platforms:
-        detected_platforms = ["android"]
-
-    metadata: AppMetadata = {
-        "app_id": app_id,
-        "display_name": display_name,
-        "firebase_project_id": firebase_project_id,
-        "platforms": detected_platforms,  # type: ignore
-        "source_repo": str(source_repo) if source_repo else None,
-        "custom_keys_monitored": custom_keys_monitored,
-    }
 
     period: PeriodInfo = {
         "days": days,
@@ -397,34 +377,8 @@ def transform_bq_to_v2(
         "comparison_period": None,
     }
 
-    bq_status = "available" if queried_tables else ("error" if bq_result.get("errors") else "unavailable")
-    sources: SourcesAvailability = {
-        "crashlytics_bq": {
-            "status": bq_status,  # type: ignore
-            "tables_queried": queried_tables,
-            "last_sync_timestamp": now_iso if bq_status == "available" else None,
-            "error_message": str(bq_result.get("errors"))[:500] if bq_result.get("errors") else None,
-        },
-        "firebase_sessions": {
-            "status": "unavailable",
-            "last_sync_timestamp": None,
-            "error_message": "Firebase Sessions export not configured",
-        },
-        "mcp_crashlytics": {
-            "status": "unavailable",
-            "last_sync_timestamp": None,
-            "error_message": None,
-        },
-        "gemini_ai": {
-            "status": "unavailable",
-            "model": None,
-            "last_sync_timestamp": None,
-            "error_message": None,
-        },
-    }
-
-    # 日期序列精確對齊日曆日（長度恰為 days）
     date_keys = [(start_date + dt.timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days)]
+    date_keys_set = set(date_keys)
 
     daily_buckets: Dict[str, dict] = {
         d: {
@@ -445,6 +399,8 @@ def transform_bq_to_v2(
     overview_non_fatal = 0
     calculated_new_issues = 0
     has_new_issues_data = False
+    has_any_overview = False
+    overview_failed_tables: List[str] = []
 
     platform_stats: Dict[str, Dict[str, int]] = {p: {"events": 0, "users": 0} for p in detected_platforms}
     raw_issues: List[dict] = []
@@ -468,13 +424,18 @@ def transform_bq_to_v2(
             t_fatal = int(ov.get("fatal_events") or 0)
             t_anr = int(ov.get("anr_events") or 0)
             t_nonfatal = int(ov.get("non_fatal_events") or 0)
+            has_any_overview = True
         else:
+            overview_failed_tables.append(table_name)
             for dr in t_data.get("daily_trend") or []:
-                t_events += int(dr.get("events") or 0)
-                t_users += int(dr.get("users") or 0)
-                t_fatal += int(dr.get("fatal_events") or 0)
-                t_anr += int(dr.get("anr_events") or 0)
-                t_nonfatal += int(dr.get("non_fatal_events") or 0)
+                dr_date = dr.get("date")
+                if dr_date and dr_date in date_keys_set:
+                    t_events += int(dr.get("events") or 0)
+                    t_fatal += int(dr.get("fatal_events") or 0)
+                    t_anr += int(dr.get("anr_events") or 0)
+                    t_nonfatal += int(dr.get("non_fatal_events") or 0)
+                    # NOTE: Distinct users CANNOT be derived by summing daily points.
+                    # t_users is intentionally left as 0 to prevent false overcounting.
 
         overview_total_events += t_events
         overview_total_users += t_users
@@ -536,27 +497,30 @@ def transform_bq_to_v2(
             raw_custom_keys.append({**ck, "_platform": platform})
 
     daily_trend: List[DailyTrendPoint] = []
-    for d_str in date_keys:
-        b = daily_buckets[d_str]
-        ev = b["crash_events"]
-        fat = b["fatal_events"]
-        anr = b["anr_events"]
-        nfat = b["non_fatal_events"]
-        if fat + anr + nfat != ev:
-            nfat = max(0, ev - fat - anr)
+    if master_daily_trend is not None:
+        daily_trend = [p for p in master_daily_trend if p.get("date") in date_keys_set]
+    else:
+        for d_str in date_keys:
+            b = daily_buckets[d_str]
+            ev = b["crash_events"]
+            fat = b["fatal_events"]
+            anr = b["anr_events"]
+            nfat = b["non_fatal_events"]
+            if fat + anr + nfat != ev:
+                nfat = max(0, ev - fat - anr)
 
-        daily_trend.append({
-            "date": d_str,
-            "crash_events": ev,
-            "affected_users": b["affected_users"],
-            "fatal_events": fat,
-            "anr_events": anr,
-            "non_fatal_events": nfat,
-            "sessions_total": None,
-            "crashed_sessions": None,
-            "crash_free_sessions_rate": None,
-            "by_platform": b["by_platform"],
-        })
+            daily_trend.append({
+                "date": d_str,
+                "crash_events": ev,
+                "affected_users": b["affected_users"],
+                "fatal_events": fat,
+                "anr_events": anr,
+                "non_fatal_events": nfat,
+                "sessions_total": None,
+                "crashed_sessions": None,
+                "crash_free_sessions_rate": None,
+                "by_platform": b["by_platform"],
+            })
 
     daily_sum_events = sum(d["crash_events"] for d in daily_trend)
     daily_sum_fatal = sum(d["fatal_events"] for d in daily_trend)
@@ -576,116 +540,73 @@ def transform_bq_to_v2(
     if overview_fatal + overview_anr + overview_non_fatal != overview_total_events:
         overview_non_fatal = max(0, overview_total_events - overview_fatal - overview_anr)
 
-    new_issues_metric: KPIMetric
-    if has_new_issues_data:
-        new_issues_metric = {
-            "value": calculated_new_issues,
-            "previous_value": None,
-            "change_pct": None,
-            "status": "available",
-        }
+    overview_failed = bool(overview_failed_tables) or (bool(tables_data) and not has_any_overview)
+    has_errors = bool(period_errors)
+
+    if has_errors:
+        crash_events_status: Literal["available", "insufficient_data", "error"] = "error"
+        affected_users_status: Literal["available", "insufficient_data", "error"] = "error"
+    elif overview_failed:
+        crash_events_status = "available" if overview_total_events > 0 or not tables_data else "insufficient_data"
+        affected_users_status = "insufficient_data"
     else:
-        new_issues_metric = {
-            "value": 0,
-            "previous_value": None,
-            "change_pct": None,
-            "status": "insufficient_data",
-        }
+        crash_events_status = "available"
+        affected_users_status = "available"
 
     kpi: OverviewKPI = {
-        "crash_events": {
-            "value": overview_total_events,
-            "previous_value": None,
-            "change_pct": None,
-            "status": "available",
-        },
-        "affected_users": {
-            "value": overview_total_users,
-            "previous_value": None,
-            "change_pct": None,
-            "status": "available",
-        },
-        "crash_free_users": {
-            "rate": None,
-            "total": None,
-            "crashed": None,
-            "previous_rate": None,
-            "change_pct_points": None,
-            "status": "unavailable",
-            "unavailable_reason": "Firebase Sessions export 未開啟",
-        },
-        "crash_free_sessions": {
-            "rate": None,
-            "total": None,
-            "crashed": None,
-            "previous_rate": None,
-            "change_pct_points": None,
-            "status": "unavailable",
-            "unavailable_reason": "Firebase Sessions export 未開啟",
-        },
-        "new_issues_count": new_issues_metric,
-        "events_by_error_type": {
-            "fatal": overview_fatal,
-            "anr": overview_anr,
-            "non_fatal": overview_non_fatal,
-        },
+        "crash_events": {"value": overview_total_events, "previous_value": None, "change_pct": None, "status": crash_events_status},
+        "affected_users": {"value": overview_total_users, "previous_value": None, "change_pct": None, "status": affected_users_status},
+        "crash_free_users": {"rate": None, "total": None, "crashed": None, "previous_rate": None, "change_pct_points": None, "status": "unavailable", "unavailable_reason": "Firebase Sessions export 未開啟"},
+        "crash_free_sessions": {"rate": None, "total": None, "crashed": None, "previous_rate": None, "change_pct_points": None, "status": "unavailable", "unavailable_reason": "Firebase Sessions export 未開啟"},
+        "new_issues_count": {"value": calculated_new_issues, "previous_value": None, "change_pct": None, "status": "available" if has_new_issues_data else "insufficient_data"},
+        "events_by_error_type": {"fatal": overview_fatal, "anr": overview_anr, "non_fatal": overview_non_fatal},
     }
 
     seen_issues: Dict[str, IssueSummary] = {}
-
     for it in raw_issues:
         iid = str(it.get("issue_id") or "")
         if not iid:
             continue
         platform = it.get("_platform", "android")
-        v_dist_raw = ver_by_issue.get(iid, [])
-        v_dist: List[VersionDistCount] = sorted(
-            v_dist_raw, key=lambda x: version_key(x["version"]), reverse=True
-        )
-        versions = [x["version"] for x in v_dist if x.get("version")]
+        err_type = norm_error_type(str(it.get("error_type") or "NON_FATAL"))
+        ev = int(it.get("events") or 0)
+        us = int(it.get("users") or 0)
+
+        iv_list = ver_by_issue.get(iid, [])
+        v_dist_dict: Dict[str, VersionDistCount] = {}
+        for iv in iv_list:
+            v_name = iv["version"]
+            if v_name in v_dist_dict:
+                v_dist_dict[v_name]["events"] += iv["events"]
+                v_dist_dict[v_name]["users"] += iv["users"]
+            else:
+                v_dist_dict[v_name] = {"version": v_name, "events": iv["events"], "users": iv["users"]}
+
+        version_dist: List[VersionDistCount] = list(v_dist_dict.values())
+        versions = [vd["version"] for vd in version_dist]
+
         first_ver = min_version(versions) or str(it.get("first_seen_version") or "1.0.0")
-        last_ver = max_version(versions) or str(it.get("last_seen_version") or "1.0.0")
-
-        first_seen = format_iso_utc(it.get("first_seen_timestamp"), fallback=start_time_iso)
-        last_seen = format_iso_utc(it.get("last_seen_timestamp"), fallback=end_time_iso)
-        err_type = norm_error_type(
-            it.get("error_type"),
-            fatal_hint=(str(it.get("error_type") or "").upper() == "FATAL"),
-        )
-
-        title = str(it.get("issue_title") or it.get("title") or "Unknown Issue")
-        subtitle = str(it.get("issue_subtitle") or it.get("subtitle") or "")
+        last_ver = max_version(versions) or str(it.get("last_seen_version") or first_ver)
 
         iss_entry: IssueSummary = {
             "issue_id": iid,
             "platform": "ios" if platform == "ios" else "android",
-            "title": title,
-            "subtitle": subtitle,
-            "error_type": err_type,  # type: ignore
-            "priority": {
-                "score": 0,
-                "level": "P2",
-                "trend": "stable",
-                "score_breakdown": None,
-            },
-            "events": int(it.get("events") or 0),
-            "affected_users": int(it.get("users") or 0),
-            "first_seen_timestamp": first_seen,
-            "last_seen_timestamp": last_seen,
+            "title": str(it.get("issue_title") or "Unknown Error"),
+            "subtitle": str(it.get("issue_subtitle") or ""),
+            "error_type": err_type,
+            "priority": {"score": 0, "level": "P2", "trend": "new", "score_breakdown": None},
+            "events": ev,
+            "affected_users": us,
+            "first_seen_timestamp": format_iso_utc(it.get("first_seen_timestamp")),
+            "last_seen_timestamp": format_iso_utc(it.get("last_seen_timestamp")),
             "first_seen_version": first_ver,
             "last_seen_version": last_ver,
-            "version_distribution": v_dist,
+            "version_distribution": version_dist,
             "blame_frame": None,
-            "ai_analysis": {
-                "status": "unavailable",
-                "root_cause": None,
-                "suggested_fix": None,
-                "effort": None,
-                "confidence": None,
-                "reasoning_sources": None,
-            },
+            "ai_analysis": {"status": "unavailable", "root_cause": "", "suggested_fix": "", "effort": "M", "confidence": "low", "reasoning_sources": []},
             "detail": None,
         }
+
         if iid in seen_issues:
             existing = seen_issues[iid]
             existing["events"] += iss_entry["events"]
@@ -699,52 +620,39 @@ def transform_bq_to_v2(
     platform_dist: List[PlatformDistItem] = []
     for p_name in detected_platforms:
         p_stat = platform_stats.get(p_name, {"events": 0, "users": 0})
-        p_ev = p_stat["events"]
-        p_share = round(p_ev / overview_total_events, 4) if overview_total_events > 0 else 0.0
-        platform_dist.append({
-            "name": "ios" if p_name == "ios" else "android",
-            "events": p_ev,
-            "users": p_stat["users"],
-            "share": min(1.0, max(0.0, p_share)),
-        })
+        platform_dist.append({"name": "ios" if p_name == "ios" else "android", "events": p_stat["events"], "users": p_stat["users"], "share": round(p_stat["events"] / overview_total_events, 4) if overview_total_events > 0 else 0.0})
 
     device_models: List[DeviceDistItem] = []
     for dev in sorted(raw_devices, key=lambda x: -int(x.get("events") or 0))[:30]:
-        dev_ev = int(dev.get("events") or 0)
-        dev_share = round(dev_ev / overview_total_events, 4) if overview_total_events > 0 else 0.0
         pf = dev.get("_platform", "all")
         device_models.append({
             "model": str(dev.get("device_model") or "Unknown"),
             "platform": pf if pf in ("ios", "android") else "all",  # type: ignore
-            "events": dev_ev,
+            "events": int(dev.get("events") or 0),
             "users": int(dev.get("users") or 0),
-            "share": min(1.0, max(0.0, dev_share)),
+            "share": round(int(dev.get("events") or 0) / overview_total_events, 4) if overview_total_events > 0 else 0.0,
         })
 
     os_versions: List[OSDistItem] = []
     for os_r in sorted(raw_os, key=lambda x: -int(x.get("events") or 0))[:30]:
-        os_ev = int(os_r.get("events") or 0)
-        os_share = round(os_ev / overview_total_events, 4) if overview_total_events > 0 else 0.0
         pf = os_r.get("_platform", "all")
         os_versions.append({
             "os_version": str(os_r.get("os_version") or "Unknown"),
             "platform": pf if pf in ("ios", "android") else "all",  # type: ignore
-            "events": os_ev,
+            "events": int(os_r.get("events") or 0),
             "users": int(os_r.get("users") or 0),
-            "share": min(1.0, max(0.0, os_share)),
+            "share": round(int(os_r.get("events") or 0) / overview_total_events, 4) if overview_total_events > 0 else 0.0,
         })
 
     app_versions: List[AppVersionDistItem] = []
     for app_r in sorted(raw_apps, key=lambda x: -int(x.get("events") or 0))[:30]:
-        app_ev = int(app_r.get("events") or 0)
-        app_share = round(app_ev / overview_total_events, 4) if overview_total_events > 0 else 0.0
         pf = app_r.get("_platform", "all")
         app_versions.append({
             "app_version": str(app_r.get("app_version") or "Unknown"),
             "platform": pf if pf in ("ios", "android") else "all",  # type: ignore
-            "events": app_ev,
+            "events": int(app_r.get("events") or 0),
             "users": int(app_r.get("users") or 0),
-            "share": min(1.0, max(0.0, app_share)),
+            "share": round(int(app_r.get("events") or 0) / overview_total_events, 4) if overview_total_events > 0 else 0.0,
         })
 
     custom_keys: List[CustomKeyDistributionItem] = []
@@ -765,12 +673,10 @@ def transform_bq_to_v2(
     }
 
     version_health: List[VersionHealthItem] = []
-    sorted_app_vers = sorted(raw_apps, key=lambda x: version_key(str(x.get("app_version") or "")), reverse=True)
-    for idx, v_item in enumerate(sorted_app_vers[:20]):
-        v_name = str(v_item.get("app_version") or "1.0.0")
+    for idx, v_item in enumerate(sorted(raw_apps, key=lambda x: version_key(str(x.get("app_version") or "")), reverse=True)[:20]):
         pf = v_item.get("_platform", "all")
         version_health.append({
-            "version": v_name,
+            "version": str(v_item.get("app_version") or "1.0.0"),
             "platform": pf if pf in ("ios", "android") else "all",  # type: ignore
             "release_date": None,
             "crash_events": int(v_item.get("events") or 0),
@@ -782,7 +688,142 @@ def transform_bq_to_v2(
             "trend": "stable",
         })
 
-    ai_summary = {
+    if period_errors:
+        snap_status: SnapshotStatus = "error"
+        if isinstance(period_errors, dict):
+            snap_error: Optional[str] = "; ".join(f"{k}: {v}" for k, v in period_errors.items())
+        elif isinstance(period_errors, list):
+            snap_error = "; ".join(str(e) for e in period_errors)
+        else:
+            snap_error = str(period_errors)
+    elif overview_failed:
+        snap_status = "insufficient_data"
+        missing_tables_desc = f" ({', '.join(overview_failed_tables)})" if overview_failed_tables else ""
+        snap_error = f"Overview 權威彙總缺失{missing_tables_desc}"
+    else:
+        snap_status = "available"
+        snap_error = None
+
+    return {
+        "period": period,
+        "kpi": kpi,
+        "daily_trend": daily_trend,
+        "version_health": version_health,
+        "distributions": distributions,
+        "top_issues": top_issues,
+        "ai_summary": {
+            "status": "unavailable",
+            "model": None,
+            "generated_at": None,
+            "overview": "",
+            "key_takeaways": [],
+            "distribution_insights": "",
+            "recommended_actions": [],
+            "data_limitations": None,
+        },
+        "status": snap_status,
+        "error_message": snap_error,
+    }
+
+
+def transform_bq_to_v2(
+    bq_result: dict,
+    app_config: dict,
+    days: int = 30,
+    end_time: Optional[dt.datetime] = None,
+) -> AppDashboardV2Data:
+    """把 BigQuery 查詢結果字典轉換為嚴格符合 Schema V2 的 AppDashboardV2Data。"""
+    end_dt = end_time.astimezone(dt.timezone.utc) if end_time else dt.datetime.now(dt.timezone.utc)
+    end_date = end_dt.date()
+    start_date = end_date - dt.timedelta(days=days - 1)
+    now_iso = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    app_id = str(app_config.get("app_id") or app_config.get("name") or "app")
+    display_name = str(app_config.get("display_name") or app_id)
+    firebase_project_id = str(app_config.get("firebase_project") or app_config.get("firebase_project_id") or "")
+    source_repo = app_config.get("source_repo")
+    custom_keys_monitored = list(app_config.get("custom_keys") or [])
+
+    tables_data: Dict[str, dict] = (bq_result or {}).get("tables") or {}
+    queried_tables = list(tables_data.keys())
+
+    detected_platforms = sorted(list({extract_platform_from_table(t) for t in queried_tables}))
+    if not detected_platforms:
+        detected_platforms = [p for p in app_config.get("platforms", ["android"]) if p in ("ios", "android")]
+    if not detected_platforms:
+        detected_platforms = ["android"]
+
+    metadata: AppMetadata = {
+        "app_id": app_id,
+        "display_name": display_name,
+        "firebase_project_id": firebase_project_id,
+        "platforms": detected_platforms,  # type: ignore
+        "source_repo": str(source_repo) if source_repo else None,
+        "custom_keys_monitored": custom_keys_monitored,
+    }
+
+    bq_status = "available" if queried_tables else ("error" if bq_result.get("errors") else "unavailable")
+    sources: SourcesAvailability = {
+        "crashlytics_bq": {
+            "status": bq_status,  # type: ignore
+            "tables_queried": queried_tables,
+            "last_sync_timestamp": now_iso if bq_status == "available" else None,
+            "error_message": str(bq_result.get("errors"))[:500] if bq_result.get("errors") else None,
+        },
+        "firebase_sessions": {
+            "status": "unavailable",
+            "last_sync_timestamp": None,
+            "error_message": "Firebase Sessions export not configured",
+        },
+        "mcp_crashlytics": {
+            "status": "unavailable",
+            "last_sync_timestamp": None,
+            "error_message": None,
+        },
+        "gemini_ai": {
+            "status": "unavailable",
+            "model": None,
+            "last_sync_timestamp": None,
+            "error_message": None,
+        },
+    }
+
+    periods_data = (bq_result or {}).get("periods")
+    periods_dict: Dict[str, AppPeriodSnapshot] = {}
+
+    if isinstance(periods_data, dict) and periods_data:
+        # 1. Identify longest period to derive master daily_trend
+        numeric_keys = [k for k in periods_data.keys() if k.isdigit()]
+        sorted_keys = sorted(numeric_keys, key=int, reverse=True)
+        longest_k = sorted_keys[0] if sorted_keys else str(days)
+        longest_p_days = int(longest_k)
+        longest_start = end_date - dt.timedelta(days=longest_p_days - 1)
+        longest_entry = periods_data[longest_k]
+        longest_tables = longest_entry.get("tables", {})
+        master_snap = transform_bq_period_snapshot(
+            longest_tables, detected_platforms, days=longest_p_days, start_date=longest_start, end_date=end_date, period_errors=longest_entry.get("errors") or []
+        )
+        master_daily = master_snap.get("daily_trend") or []
+
+        # 2. Build snapshots for each period
+        for p_k in sorted(numeric_keys, key=int):
+            p_d = int(p_k)
+            p_s = end_date - dt.timedelta(days=p_d - 1)
+            p_entry = periods_data[p_k]
+            p_t = p_entry.get("tables", {})
+            periods_dict[p_k] = transform_bq_period_snapshot(
+                p_t, detected_platforms, days=p_d, start_date=p_s, end_date=end_date, master_daily_trend=master_daily, period_errors=p_entry.get("errors") or []
+            )
+
+        active_snap = periods_dict.get(str(days)) or periods_dict.get("90") or periods_dict[longest_k]
+    else:
+        snap = transform_bq_period_snapshot(
+            tables_data, detected_platforms, days=days, start_date=start_date, end_date=end_date, period_errors=bq_result.get("errors") or []
+        )
+        periods_dict[str(days)] = snap
+        active_snap = snap
+
+    ai_summary = active_snap.get("ai_summary") or {
         "status": "unavailable",
         "model": None,
         "generated_at": None,
@@ -799,15 +840,16 @@ def transform_bq_to_v2(
 
     result_data: AppDashboardV2Data = {
         "metadata": metadata,
-        "period": period,
+        "period": active_snap["period"],
         "sources": sources,
-        "kpi": kpi,
-        "daily_trend": daily_trend,
-        "version_health": version_health,
-        "distributions": distributions,
-        "top_issues": top_issues,
+        "kpi": active_snap["kpi"],
+        "daily_trend": active_snap.get("daily_trend", []),
+        "version_health": active_snap["version_health"],
+        "distributions": active_snap["distributions"],
+        "top_issues": active_snap["top_issues"],
         "ai_summary": ai_summary,  # type: ignore
         "limitations": limitations,
+        "periods": periods_dict,
     }
 
     return result_data
@@ -857,33 +899,68 @@ def main() -> None:
     sqls = dict(SQLS)
     keys = [k for k in app.get("custom_keys", []) if re.fullmatch(r"[\w-]+", k)]
 
-    for table in tables:
+    # Supported authoritative periods in Dashboard V2.3
+    supported_periods = sorted(list({7, 30, 90, args.days}))
+    max_period = max(supported_periods)
+
+    periods_result: Dict[str, dict] = {
+        str(p): {"tables": {t: {} for t in tables}, "errors": {}} for p in supported_periods
+    }
+
+    def fetch_single_query(p_days: int, table: str, name: str, sql_tpl: str) -> Tuple[int, str, str, Any, Optional[str]]:
         fq = f"{project}.{dataset}.{table}"
-        result["tables"][table] = {}
+        formatted_sql = sql_tpl.format(table=fq, days=p_days) if "{table}" in sql_tpl else sql_tpl
+        try:
+            rows = run_query(client, formatted_sql)
+            return p_days, table, name, rows, None
+        except Exception as e:
+            if "Unrecognized name: error" in str(e) and "error[" in formatted_sql:
+                try:
+                    retry_sql = formatted_sql.replace("error[SAFE_OFFSET(0)]", "errors[SAFE_OFFSET(0)]")
+                    rows = run_query(client, retry_sql)
+                    return p_days, table, name, rows, None
+                except Exception:
+                    pass
+            return p_days, table, name, [], str(e)[:800]
 
-        table_sqls = dict(sqls)
-        if keys:
-            ck_sql = build_custom_keys_sql(fq, args.days, keys)
-            if ck_sql:
-                table_sqls["custom_keys"] = ck_sql
+    tasks = []
+    for p_days in supported_periods:
+        for table in tables:
+            fq = f"{project}.{dataset}.{table}"
+            table_sqls = dict(sqls)
+            if keys:
+                ck_sql = build_custom_keys_sql(fq, p_days, keys)
+                if ck_sql:
+                    table_sqls["custom_keys"] = ck_sql
+            for name, sql in table_sqls.items():
+                if name == "daily_trend" and p_days != max_period:
+                    # daily_trend only needed once for the longest period (it will be sliced for smaller periods)
+                    continue
+                tasks.append((p_days, table, name, sql))
 
-        for name, sql in table_sqls.items():
-            formatted_sql = sql.format(table=fq, days=args.days) if "{table}" in sql else sql
-            try:
-                result["tables"][table][name] = run_query(client, formatted_sql)
-                print(f"  ✓ {table}.{name}: {len(result['tables'][table][name])} 列")
-            except Exception as e:
-                # 防禦性重試：官方標準 schema 為 Apple error (單數)；若個別專案之資料表欄位名為複數 errors，作為 secondary fallback 重試相容
-                if "Unrecognized name: error" in str(e) and "error[" in formatted_sql:
-                    try:
-                        retry_sql = formatted_sql.replace("error[SAFE_OFFSET(0)]", "errors[SAFE_OFFSET(0)]")
-                        result["tables"][table][name] = run_query(client, retry_sql)
-                        print(f"  ✓ {table}.{name} (防禦性相容 errors 重試成功): {len(result['tables'][table][name])} 列")
-                        continue
-                    except Exception:
-                        pass
-                result["errors"][f"{table}.{name}"] = str(e)[:800]
-                print(f"  ⚠ {table}.{name} 失敗：{str(e)[:200]}", file=sys.stderr)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = [pool.submit(fetch_single_query, p, t, n, s) for (p, t, n, s) in tasks]
+        for f in futures:
+            p_days, table, name, rows, err = f.result()
+            if err:
+                periods_result[str(p_days)]["errors"][f"{table}.{name}"] = err
+                print(f"  ⚠ [{p_days}d] {table}.{name} 失敗：{err[:100]}", file=sys.stderr)
+            else:
+                periods_result[str(p_days)]["tables"][table][name] = rows
+                print(f"  ✓ [{p_days}d] {table}.{name}: {len(rows)} 列")
+
+    # Slice daily_trend from max_period for smaller periods
+    for p_days in supported_periods:
+        if p_days != max_period:
+            for table in tables:
+                if "daily_trend" in periods_result[str(max_period)]["tables"][table]:
+                    full_daily = periods_result[str(max_period)]["tables"][table]["daily_trend"]
+                    periods_result[str(p_days)]["tables"][table]["daily_trend"] = full_daily[-p_days:]
+
+    result["periods"] = periods_result
+    primary_key = str(args.days) if str(args.days) in periods_result else ("90" if "90" in periods_result else str(max_period))
+    result["tables"] = periods_result[primary_key]["tables"]
+    result["errors"] = periods_result[primary_key]["errors"]
 
     write_json(out_dir(args.app) / "crashlytics_bq.json", result)
 

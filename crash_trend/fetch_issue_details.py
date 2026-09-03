@@ -941,6 +941,7 @@ def enrich_top_issues(
     days: int = 30,
     bq_client: Any = None,
     source_repo: Optional[Union[str, Path]] = None,
+    details_cache: Optional[Dict[str, Any]] = None,
 ) -> List[dict]:
     """Enriches a list of IssueSummary dictionaries with blame_frame and detail."""
     if not issues:
@@ -948,16 +949,35 @@ def enrich_top_issues(
 
     app = safe_get_app(app_name)
     repo = source_repo or app.get("source_repo")
-    issue_ids = [i.get("issue_id") for i in issues if i.get("issue_id")]
-    details_map = fetch_issue_details(
-        app_name, issue_ids, days=days, bq_client=bq_client, source_repo=repo
-    )
+
+    # Determine which issue IDs actually need fetching (not already cached or complete)
+    needed_ids: List[str] = []
+    for i in issues:
+        iid = i.get("issue_id")
+        if not iid:
+            continue
+        if details_cache is not None and iid in details_cache:
+            continue
+        if i.get("detail") is not None and i.get("blame_frame") is not None:
+            continue
+        needed_ids.append(iid)
+
+    if needed_ids:
+        fetched_map = fetch_issue_details(
+            app_name, list(set(needed_ids)), days=days, bq_client=bq_client, source_repo=repo
+        )
+        if details_cache is not None:
+            details_cache.update(fetched_map)
+    else:
+        fetched_map = {}
+
+    effective_details = details_cache if details_cache is not None else fetched_map
 
     enriched = []
     for issue in issues:
         item = dict(issue)
         iid = item.get("issue_id")
-        fetched = details_map.get(iid) if iid else None
+        fetched = effective_details.get(iid) if iid else None
 
         blame = item.get("blame_frame")
         if blame is None and fetched:
@@ -1085,6 +1105,7 @@ def main() -> None:
     if v2_path.exists():
         try:
             app_data = json.loads(v2_path.read_text(encoding="utf-8"))
+            cache = dict(results)
             if "top_issues" in app_data and isinstance(app_data["top_issues"], list):
                 app_data["top_issues"] = enrich_top_issues(
                     app_data["top_issues"],
@@ -1092,7 +1113,23 @@ def main() -> None:
                     days=days,
                     bq_client=bq_client,
                     source_repo=app.get("source_repo"),
+                    details_cache=cache,
                 )
+            main_period_days = str(app_data.get("period", {}).get("days") or days)
+            if "periods" in app_data and isinstance(app_data["periods"], dict):
+                for p_key, snap in app_data["periods"].items():
+                    if "top_issues" in snap and isinstance(snap["top_issues"], list):
+                        if str(p_key) == main_period_days and app_data.get("top_issues"):
+                            snap["top_issues"] = app_data["top_issues"]
+                        else:
+                            snap["top_issues"] = enrich_top_issues(
+                                snap["top_issues"],
+                                app_name=args.app,
+                                days=snap.get("period", {}).get("days", days),
+                                bq_client=bq_client,
+                                source_repo=app.get("source_repo"),
+                                details_cache=cache,
+                            )
             if "sources" in app_data and isinstance(app_data["sources"], dict):
                 app_data["sources"]["mcp_crashlytics"] = get_mcp_source_status(args.app)
             write_json(v2_path, app_data)

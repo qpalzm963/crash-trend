@@ -11,6 +11,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 # Add project root to sys.path
@@ -130,7 +131,7 @@ class TestBuildDashboardV2(unittest.TestCase):
             with unittest.mock.patch("crash_trend.build_dashboard.ROOT", tmproot):
                 # When out/ and reports/ do not exist, collect_data() must return safe minimal fallback, NOT fixture data
                 data = collect_data()
-                self.assertEqual(data["schema_version"], "2.0")
+                self.assertEqual(data["schema_version"], "2.3.0")
                 self.assertIn("default_app", data["apps"])
                 self.assertNotIn("shop_app", data["apps"])
                 self.assertNotIn("rider_app", data["apps"])
