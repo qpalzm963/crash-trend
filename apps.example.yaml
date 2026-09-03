@@ -12,7 +12,9 @@ apps:
     data_sources:                         # 資料源設定 (選填，可細部控制)
       crashlytics_bigquery: true          # 預設 true
       sessions: true                      # 啟用 Firebase Sessions 計算 Crash-free 率
-      mcp: optional                       # optional / manual / off
+      mcp:                                # MCP 設定 (可寫物件或字串 off / manual / weekly)
+        mode: manual                      # manual（手動刷新，預設）/ weekly（排程自動補強）/ off（完全停用）
+        max_age_days: 7                   # 快取新鮮度上限天數（預設 7）
     bq_dataset: firebase_crashlytics      # Crashlytics BigQuery dataset（預設值通常免改）
     sessions_dataset: firebase_sessions   # Firebase Sessions BigQuery dataset (sessions: true 時使用)
     package_name: com.example.shop        # Android Package Name（多 App 共享 dataset 時精準過濾表）
@@ -36,7 +38,7 @@ apps:
     data_sources:
       crashlytics_bigquery: true          # 啟用 Crashlytics 匯出 (錯誤排行、堆疊、每日趨勢、受影響人數)
       sessions: false                     # 停用 Sessions 匯出 (不查詢 firebase_sessions，免額外儲存)
-      mcp: optional                       # optional 備援
+      mcp: off                            # 完全關閉 MCP，純靠 BigQuery ＋ 啟發式分析
     bq_dataset: firebase_crashlytics
     package_name: com.example.rider
     source_repo: ~/develop/rider_app

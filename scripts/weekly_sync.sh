@@ -33,6 +33,10 @@ for app in $apps; do
   # 2. Firebase Sessions：計算 Crash-free 指標（未開 Sessions export 時優雅降級）
   $PY "$CT/crash_trend/fetch_sessions.py" --app "$app" || echo "    （$app 無 Sessions 資料，優雅降級）"
 
+  echo "--- fetch_mcp (if weekly): $app"
+  # 2.5 MCP Refresh：依 app 設定 (off/manual/weekly) 決定是否刷新 cache，失敗絕不阻擋管線
+  $PY "$CT/crash_trend/fetch_stacktraces.py" --app "$app" --weekly-check || echo "    （$app MCP 略過或非 weekly 模式）"
+
   echo "--- fetch_issue_details: $app"
   # 3. Issue Details：從 BQ / MCP 抓取 Blame frame、Stack trace、Breadcrumbs 與 Logs
   $PY "$CT/crash_trend/fetch_issue_details.py" --app "$app" || echo "    （$app 本次無詳細 stack/blame 資料，優雅降級）"

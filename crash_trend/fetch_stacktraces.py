@@ -26,9 +26,30 @@ import time
 
 import yaml
 
-from analyze_gemini import score_issues
-from config import ROOT, app_argparser, get_app, out_dir, write_json
-from normalize import bq_issues_to_unified, load_if_exists, norm_error_type
+try:
+    from crash_trend.config import (
+        ROOT,
+        app_argparser,
+        get_app,
+        get_mcp_config,
+        is_mcp_cache_fresh,
+        out_dir,
+        write_json,
+    )
+    from crash_trend.analyze_gemini import score_issues
+    from crash_trend.normalize import bq_issues_to_unified, load_if_exists, norm_error_type
+except ImportError:
+    from config import (
+        ROOT,
+        app_argparser,
+        get_app,
+        get_mcp_config,
+        is_mcp_cache_fresh,
+        out_dir,
+        write_json,
+    )
+    from analyze_gemini import score_issues
+    from normalize import bq_issues_to_unified, load_if_exists, norm_error_type
 
 THROTTLE_SEC = 12  # v1alpha quota 很小，call 之間固定歇一下
 RETRY_WAITS = (30, 60)  # 429 退避秒數
@@ -310,10 +331,32 @@ def fetch_platform(client: McpClient, app_id: str, wanted_ids: list[str], days: 
 def main() -> None:
     p = app_argparser("拉取 Crashlytics 真實 stack trace／（BQ 未接時）issue 報表（headless MCP）")
     p.add_argument("--top", type=int, default=10, help="抓 score 排序前 N 個 issue 的 stack trace（預設 10）")
+    p.add_argument("--weekly-check", action="store_true", help="排程模式檢查：若非 weekly 模式或快取未過期則自動略過")
+    p.add_argument("--force", action="store_true", help="強制重新整理快取，忽略 max_age_days 檢查")
     args = p.parse_args()
     app = get_app(args.app)
+    mcp_cfg = get_mcp_config(app)
+    mode = mcp_cfg["mode"]
+    max_age_days = mcp_cfg["max_age_days"]
     days = min(args.days, 89)  # API 只接受最近 90 天內的區間
     odir = out_dir(args.app)
+    cache_path = odir / "stacktraces.json"
+
+    # 1. 檢查是否明確停用 (mode == "off")
+    if mode == "off" and not args.force:
+        print(f"  （App「{args.app}」MCP mode 為 off，已停用）")
+        return
+
+    # 2. 若為週排程檢查 (--weekly-check)：僅在 weekly 模式且快取過期/缺失時才執行
+    if args.weekly_check:
+        if mode != "weekly":
+            print(f"  （App「{args.app}」MCP mode 為 {mode}，非 weekly 自動刷新模式，略過）")
+            return
+        is_fresh, age_days, _ = is_mcp_cache_fresh(cache_path, max_age_days=max_age_days)
+        if is_fresh and not args.force:
+            print(f"  （App「{args.app}」MCP 快取仍有效（{age_days:.1f} 天 < {max_age_days} 天），略過重新抓取）")
+            return
+
     now = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     result: dict = {
         "app": args.app, "generated_at": now, "period_days": days,
@@ -321,10 +364,17 @@ def main() -> None:
     }
 
     def bail(key: str, msg: str) -> None:
-        """fail loud 但不擋 pipeline：記 errors、寫檔、以 0 退出。"""
+        """fail loud 但不擋 pipeline：記 errors、保留既有 last-known-good cache、寫入 stacktraces_last_error.json，以 0 退出。"""
         result["errors"][key] = msg
         print(f"[注意] {msg}")
-        write_json(odir / "stacktraces.json", result)
+        write_json(odir / "stacktraces_last_error.json", {
+            "app": args.app,
+            "failed_at": now,
+            "error_key": key,
+            "error_message": msg,
+            "errors": dict(result["errors"]),
+        })
+        # 注意：絕不在此覆蓋或清空已有的 stacktraces.json（保留 last-known-good 快取）
 
     bq = load_if_exists(odir / "crashlytics_bq.json")
     bq_mode = bool(bq and bq.get("tables"))
@@ -392,8 +442,26 @@ def main() -> None:
 
     if result["missing"]:
         print(f"[注意] {len(result['missing'])} 個 issue 不在 topIssues 前 {REPORT_PAGE_SIZE} 名內，無 sampleEvent：{result['missing']}")
-    write_json(odir / "stacktraces.json", result)
-    print(f"  ✓ stack trace {len(result['issues'])}/{len(scored)} 個 issue")
+
+    # 只有在成功抓到 issues 時才更新 Last-Known-Good 快取
+    if result["issues"]:
+        write_json(odir / "stacktraces.json", result)
+        last_err_path = odir / "stacktraces_last_error.json"
+        if last_err_path.exists():
+            try:
+                last_err_path.unlink()
+            except Exception:
+                pass
+        print(f"  ✓ stack trace {len(result['issues'])}/{len(scored)} 個 issue")
+    else:
+        write_json(odir / "stacktraces_last_error.json", {
+            "app": args.app,
+            "failed_at": now,
+            "error_key": "fetch_empty",
+            "error_message": "未能成功取得任何 issue 之 stack trace",
+            "errors": dict(result["errors"]),
+        })
+        print("  [注意] 本次未取得任何 stack trace，保留既有快取")
 
 
 if __name__ == "__main__":

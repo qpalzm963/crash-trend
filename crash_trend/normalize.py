@@ -12,8 +12,12 @@ import datetime as dt
 import json
 from pathlib import Path
 
-from config import ROOT, app_argparser, get_app, load_prev_month, out_dir, write_json
-from versions import max_version, min_version, version_key
+try:
+    from crash_trend.config import ROOT, app_argparser, get_app, load_prev_month, out_dir, write_json
+    from crash_trend.versions import max_version, min_version, version_key
+except ImportError:
+    from config import ROOT, app_argparser, get_app, load_prev_month, out_dir, write_json
+    from versions import max_version, min_version, version_key
 
 
 def load_if_exists(path: Path) -> dict | None:

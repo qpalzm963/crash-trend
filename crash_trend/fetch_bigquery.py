@@ -868,11 +868,20 @@ def main() -> None:
                 table_sqls["custom_keys"] = ck_sql
 
         for name, sql in table_sqls.items():
+            formatted_sql = sql.format(table=fq, days=args.days) if "{table}" in sql else sql
             try:
-                formatted_sql = sql.format(table=fq, days=args.days) if "{table}" in sql else sql
                 result["tables"][table][name] = run_query(client, formatted_sql)
                 print(f"  ✓ {table}.{name}: {len(result['tables'][table][name])} 列")
             except Exception as e:
+                # 防禦性重試：官方標準 schema 為 Apple error (單數)；若個別專案之資料表欄位名為複數 errors，作為 secondary fallback 重試相容
+                if "Unrecognized name: error" in str(e) and "error[" in formatted_sql:
+                    try:
+                        retry_sql = formatted_sql.replace("error[SAFE_OFFSET(0)]", "errors[SAFE_OFFSET(0)]")
+                        result["tables"][table][name] = run_query(client, retry_sql)
+                        print(f"  ✓ {table}.{name} (防禦性相容 errors 重試成功): {len(result['tables'][table][name])} 列")
+                        continue
+                    except Exception:
+                        pass
                 result["errors"][f"{table}.{name}"] = str(e)[:800]
                 print(f"  ⚠ {table}.{name} 失敗：{str(e)[:200]}", file=sys.stderr)
 

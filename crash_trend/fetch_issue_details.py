@@ -28,7 +28,16 @@ except ImportError:
     bigquery = None  # type: ignore
 
 try:
-    from crash_trend.config import ROOT, app_argparser, get_app, load_config, out_dir, write_json
+    from crash_trend.config import (
+        ROOT,
+        app_argparser,
+        get_app,
+        get_mcp_config,
+        is_mcp_cache_fresh,
+        load_config,
+        out_dir,
+        write_json,
+    )
     from crash_trend.schema_v2 import (
         BlameFrame,
         BreadcrumbItem,
@@ -39,7 +48,16 @@ try:
         is_valid_iso8601_utc,
     )
 except ImportError:
-    from config import ROOT, app_argparser, get_app, load_config, out_dir, write_json
+    from config import (
+        ROOT,
+        app_argparser,
+        get_app,
+        get_mcp_config,
+        is_mcp_cache_fresh,
+        load_config,
+        out_dir,
+        write_json,
+    )
     from schema_v2 import (
         BlameFrame,
         BreadcrumbItem,
@@ -692,8 +710,16 @@ def fetch_issue_details_from_bq(
         try:
             event_rows = [dict(r) for r in client.query(sql_events).result(max_results=200)]
         except Exception as e:
-            print(f"  ⚠ BigQuery sample events query failed for {table}: {e}")
-            event_rows = []
+            if "Unrecognized name: error" in str(e) and "error," in sql_events:
+                try:
+                    retry_sql = sql_events.replace("error,\n", "errors,\n")
+                    event_rows = [dict(r) for r in client.query(retry_sql).result(max_results=200)]
+                except Exception as retry_e:
+                    print(f"  ⚠ BigQuery sample events query retry failed for {table}: {retry_e}")
+                    event_rows = []
+            else:
+                print(f"  ⚠ BigQuery sample events query failed for {table}: {e}")
+                event_rows = []
 
         devices_by_issue: Dict[str, List[dict]] = {}
         try:
@@ -724,7 +750,7 @@ def fetch_issue_details_from_bq(
 
             exceptions = ev.get("exceptions") or []
             threads = ev.get("threads") or []
-            error = ev.get("error") or []
+            error = ev.get("error") or ev.get("errors") or []
             raw_top_blame = ev.get("blame_frame")
 
             trace_str = format_stack_trace(exceptions=exceptions, threads=threads, error=error)
@@ -874,8 +900,12 @@ def fetch_issue_details(
             print(f"  [fetch_issue_details] BigQuery lookup bypassed/failed: {e}")
 
     # 2. Supplemental merge from MCP cache (out/<app>/stacktraces.json)
-    st_path = ROOT / "out" / app_name / "stacktraces.json"
-    cached = load_issue_details_from_stacktraces_cache(st_path, source_repo=repo)
+    mcp_cfg = get_mcp_config(app)
+    if mcp_cfg["mode"] == "off":
+        cached = {}
+    else:
+        st_path = ROOT / "out" / app_name / "stacktraces.json"
+        cached = load_issue_details_from_stacktraces_cache(st_path, source_repo=repo)
 
     for iid in issue_ids:
         cached_data = cached.get(iid)
@@ -946,6 +976,62 @@ def enrich_top_issues(
     return enriched
 
 
+def get_mcp_source_status(app_name: str) -> dict:
+    """Returns SourceStatus dictionary for sources.mcp_crashlytics according to Schema V2."""
+    app = safe_get_app(app_name)
+    mcp_cfg = get_mcp_config(app)
+    mode = mcp_cfg["mode"]
+    max_age_days = mcp_cfg["max_age_days"]
+    st_path = ROOT / "out" / app_name / "stacktraces.json"
+    err_path = ROOT / "out" / app_name / "stacktraces_last_error.json"
+
+    if mode == "off":
+        return {
+            "status": "disabled",
+            "last_sync_timestamp": None,
+            "error_message": "MCP 模式已停用 (disabled in config)",
+        }
+
+    last_err_msg = None
+    if err_path.exists():
+        try:
+            err_data = json.loads(err_path.read_text(encoding="utf-8"))
+            last_err_msg = err_data.get("error_message") or str(err_data.get("errors") or "")
+        except Exception:
+            pass
+
+    if not st_path.exists():
+        if last_err_msg:
+            return {
+                "status": "error",
+                "last_sync_timestamp": None,
+                "error_message": f"MCP 執行失敗：{last_err_msg}",
+            }
+        return {
+            "status": "unavailable",
+            "last_sync_timestamp": None,
+            "error_message": "無 MCP 快取資料",
+        }
+
+    is_fresh, age_days, gen_at = is_mcp_cache_fresh(st_path, max_age_days=max_age_days)
+    if is_fresh:
+        return {
+            "status": "available",
+            "last_sync_timestamp": gen_at,
+            "error_message": None,
+        }
+    else:
+        age_disp = f"{age_days:.1f}" if age_days is not None else "未知"
+        msg = f"MCP 快取過期（已快取 {age_disp} 天 > 上限 {max_age_days} 天）"
+        if last_err_msg:
+            msg += f"；最近一次刷新失敗：{last_err_msg}"
+        return {
+            "status": "available",
+            "last_sync_timestamp": gen_at,
+            "error_message": msg,
+        }
+
+
 # ---------------------------------------------------------------------------
 # CLI Entrypoint
 # ---------------------------------------------------------------------------
@@ -995,7 +1081,7 @@ def main() -> None:
     write_json(odir / "issue_details.json", results)
     print(f"  ✓ Issue details fetched for {len(results)} issues")
 
-    # 若已有 dashboard_v2.json，自動更新 Top Issues 的 blame_frame 與 detail
+    # 若已有 dashboard_v2.json，自動更新 Top Issues 的 blame_frame 與 detail，以及 sources.mcp_crashlytics
     if v2_path.exists():
         try:
             app_data = json.loads(v2_path.read_text(encoding="utf-8"))
@@ -1007,8 +1093,10 @@ def main() -> None:
                     bq_client=bq_client,
                     source_repo=app.get("source_repo"),
                 )
-                write_json(v2_path, app_data)
-                print(f"  ✓ 已更新 {v2_path.relative_to(ROOT)} Top Issues 詳細資訊（Blame frame / Stack）")
+            if "sources" in app_data and isinstance(app_data["sources"], dict):
+                app_data["sources"]["mcp_crashlytics"] = get_mcp_source_status(args.app)
+            write_json(v2_path, app_data)
+            print(f"  ✓ 已更新 {v2_path.relative_to(ROOT)} Top Issues 與 MCP 資料源狀態")
         except Exception as e:
             print(f"  ⚠ 更新 dashboard_v2.json Top Issues 失敗：{e}", file=sys.stderr)
 
