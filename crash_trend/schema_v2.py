@@ -186,6 +186,7 @@ class PriorityBreakdown(TypedDict):
     worsening_boost: int
     latest_version_boost: int
     core_path_boost: int
+    regressed_boost: NotRequired[int]
 
 
 class PriorityInfo(TypedDict):
@@ -252,6 +253,27 @@ class VersionDistCount(TypedDict):
     users: int
 
 
+LifecycleStatus = Literal[
+    "new_in_latest",
+    "persistent",
+    "regressed",
+    "resolved",
+    "not_observed_latest",
+]
+
+
+class IssueLifecycle(TypedDict):
+    status: LifecycleStatus
+    latest_version: str
+    first_seen_version: str
+    last_seen_version: str
+    versions_seen: int
+    confidence: Literal["high", "medium", "low"]
+    previously_absent_since: Optional[str]
+    reappeared_version: Optional[str]
+    reason: Optional[str]
+
+
 class IssueSummary(TypedDict):
     issue_id: str
     platform: Literal["ios", "android"]
@@ -269,6 +291,7 @@ class IssueSummary(TypedDict):
     blame_frame: Optional[BlameFrame]
     ai_analysis: AIIssueAnalysis
     detail: Optional[IssueDetail]
+    lifecycle: NotRequired[IssueLifecycle]
 
 
 class RecommendedAction(TypedDict):
@@ -827,6 +850,27 @@ def validate_app_dashboard_v2(data: dict, prefix: str = "") -> List[str]:
                     for det_k in ("stack_trace", "breadcrumbs", "logs", "custom_keys", "top_devices", "top_os"):
                         if det_k not in det:
                             errors.append(f"{p}top_issues[{idx}].detail.{det_k} is required")
+
+            # Lifecycle
+            lc = issue.get("lifecycle")
+            if lc is not None:
+                if not isinstance(lc, dict):
+                    errors.append(f"{p}top_issues[{idx}].lifecycle must be an object")
+                else:
+                    for lck in ("status", "latest_version", "first_seen_version", "last_seen_version", "versions_seen", "confidence"):
+                        if lck not in lc:
+                            errors.append(f"{p}top_issues[{idx}].lifecycle.{lck} is required")
+                    if "status" in lc and lc["status"] not in {
+                        "new_in_latest", "persistent", "regressed", "resolved", "not_observed_latest"
+                    }:
+                        errors.append(
+                            f"{p}top_issues[{idx}].lifecycle.status must be one of: "
+                            "new_in_latest, persistent, regressed, resolved, not_observed_latest"
+                        )
+                    if "confidence" in lc and lc["confidence"] not in {"high", "medium", "low"}:
+                        errors.append(f"{p}top_issues[{idx}].lifecycle.confidence must be high, medium, or low")
+                    if "versions_seen" in lc and (not isinstance(lc["versions_seen"], int) or lc["versions_seen"] < 0):
+                        errors.append(f"{p}top_issues[{idx}].lifecycle.versions_seen must be a non-negative integer")
     elif issues is not None:
         errors.append(f"{p}top_issues must be a list")
 

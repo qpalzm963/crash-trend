@@ -194,6 +194,10 @@ def calculate_priority(
     core_matched = any(k.lower() in search_target for k in core_paths) if core_paths else False
     core_path_boost = 3 if core_matched else 0
 
+    # Lifecycle regression check
+    lc = issue.get("lifecycle") or {}
+    regressed_boost = 2 if lc.get("status") == "regressed" else 0
+
     # 4. Raw score sum (max 49 points)
     raw_points = (
         (u_norm * 3.0)
@@ -202,6 +206,7 @@ def calculate_priority(
         + worsening_boost
         + latest_version_boost
         + core_path_boost
+        + regressed_boost
     )
 
     # Scale to 0-100
@@ -215,6 +220,7 @@ def calculate_priority(
         "worsening_boost": worsening_boost,
         "latest_version_boost": latest_version_boost,
         "core_path_boost": core_path_boost,
+        "regressed_boost": regressed_boost,
     }
 
     return {

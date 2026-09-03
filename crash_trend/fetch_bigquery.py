@@ -852,6 +852,16 @@ def transform_bq_to_v2(
         "periods": periods_dict,
     }
 
+    try:
+        from crash_trend.lifecycle import enrich_app_data_with_lifecycle
+        enrich_app_data_with_lifecycle(result_data, app_name=app_id)
+    except ImportError:
+        try:
+            from lifecycle import enrich_app_data_with_lifecycle
+            enrich_app_data_with_lifecycle(result_data, app_name=app_id)
+        except ImportError:
+            pass
+
     return result_data
 
 

@@ -1029,6 +1029,12 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .badge-anr { background: var(--warning-light); color: var(--warning-text); }
   .badge-nonfatal { background: var(--bg-subtle); color: var(--text-muted); }
 
+  .badge-lifecycle-new { background: #fee2e2; color: #991b1b; }
+  .badge-lifecycle-persistent { background: #fef3c7; color: #92400e; }
+  .badge-lifecycle-regressed { background: #ede9fe; color: #5b21b6; }
+  .badge-lifecycle-resolved { background: #dcfce7; color: #166534; }
+  .badge-lifecycle-not-observed { background: var(--bg-muted); color: var(--text-muted); }
+
   .badge-status {
     padding: 2px 8px;
     border-radius: var(--radius-full);
@@ -1608,6 +1614,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
               <th>標題與位置</th>
               <th>平台</th>
               <th>層級</th>
+              <th>生命週期</th>
               <th>事件數</th>
               <th>受影響用戶</th>
               <th>最新版本</th>
@@ -1647,6 +1654,14 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
               <option value="P1">P1</option>
               <option value="P2">P2</option>
               <option value="P3">P3</option>
+            </select>
+            <select class="filter-select" id="filterLifecycle" onchange="renderIssuesList()">
+              <option value="ALL">全部生命週期</option>
+              <option value="new_in_latest">🔴 新版引入</option>
+              <option value="persistent">🟡 持續存在</option>
+              <option value="regressed">🟣 回歸</option>
+              <option value="resolved">🟢 已收斂</option>
+              <option value="not_observed_latest">⚪ 最新版未見</option>
             </select>
             <select class="filter-select" id="sortIssuesSelect" onchange="setSort(this.value)">
               <option value="priority">依優先級 (P0 ~ P3)</option>
@@ -2657,6 +2672,24 @@ function renderCharts() {
   }
 }
 
+function getLifecycleBadgeHtml(lc) {
+  if (!lc || !lc.status) return "";
+  const st = lc.status;
+  const reason = lc.reason || "";
+  if (st === "new_in_latest") {
+    return `<span class="badge badge-lifecycle-new" title="${esc(reason)}">🔴 新版引入</span>`;
+  } else if (st === "persistent") {
+    return `<span class="badge badge-lifecycle-persistent" title="${esc(reason)}">🟡 持續存在</span>`;
+  } else if (st === "regressed") {
+    return `<span class="badge badge-lifecycle-regressed" title="${esc(reason)}">🟣 回歸</span>`;
+  } else if (st === "resolved") {
+    return `<span class="badge badge-lifecycle-resolved" title="${esc(reason)}">🟢 已收斂</span>`;
+  } else if (st === "not_observed_latest") {
+    return `<span class="badge badge-lifecycle-not-observed" title="${esc(reason)}">⚪ 最新版未見</span>`;
+  }
+  return "";
+}
+
 // Render Issues Accordion & Table with Sorting
 function renderIssuesList() {
   const app = getCurAppData();
@@ -2667,11 +2700,13 @@ function renderIssuesList() {
   const filterErr = $("filterErrorType") ? $("filterErrorType").value : "ALL";
   const filterPlat = $("filterPlatform") ? $("filterPlatform").value : "ALL";
   const filterPrio = $("filterPriority") ? $("filterPriority").value : "ALL";
+  const filterLife = $("filterLifecycle") ? $("filterLifecycle").value : "ALL";
 
   const filtered = issues.filter(iss => {
     if (filterErr !== "ALL" && iss.error_type !== filterErr) return false;
     if (filterPlat !== "ALL" && iss.platform !== filterPlat) return false;
     if (filterPrio !== "ALL" && iss.priority?.level !== filterPrio) return false;
+    if (filterLife !== "ALL" && (iss.lifecycle?.status || "persistent") !== filterLife) return false;
     if (searchQuery) {
       const target = `${iss.title} ${iss.subtitle} ${iss.issue_id} ${iss.blame_frame?.file || ""}`.toLowerCase();
       if (!target.includes(searchQuery)) return false;
@@ -2720,12 +2755,13 @@ function renderIssuesList() {
           </td>
           <td><span class="badge" style="background:var(--bg-subtle)">${esc(iss.platform)}</span></td>
           <td><span class="badge ${errCls}">${esc(iss.error_type)}</span></td>
+          <td>${getLifecycleBadgeHtml(iss.lifecycle)}</td>
           <td class="mono-num">${fmt(iss.events)}</td>
           <td class="mono-num">${fmt(iss.affected_users)}</td>
           <td class="mono-num">${esc(iss.last_seen_version || "—")}</td>
         </tr>
       `;
-    }).join("") || `<tr><td colspan="7" class="empty-state">尚無問題資料</td></tr>`;
+    }).join("") || `<tr><td colspan="8" class="empty-state">尚無問題資料</td></tr>`;
   }
 
   // Full Issues Accordion List
@@ -2741,6 +2777,7 @@ function renderIssuesList() {
     const ai = iss.ai_analysis || {};
     const blame = iss.blame_frame || {};
     const detail = iss.detail || {};
+    const lc = iss.lifecycle;
 
     return `
       <div class="issue-accordion" id="issue-acc-${idx}">
@@ -2748,6 +2785,7 @@ function renderIssuesList() {
           <span class="issue-rank">${String(idx + 1).padStart(2, "0")}</span>
           <span class="badge badge-${pLevel.toLowerCase()}">${esc(pLevel)}</span>
           <span class="badge ${errCls}">${esc(iss.error_type)}</span>
+          ${getLifecycleBadgeHtml(lc)}
           <div class="issue-title-group">
             <div class="issue-main-title">${esc(iss.title)}</div>
             <div class="issue-sub-title">${esc(iss.subtitle || "")}</div>
@@ -2771,6 +2809,20 @@ function renderIssuesList() {
               <div class="detail-box-content">${esc(ai.suggested_fix || "待分析")}</div>
             </div>
           </div>
+
+          ${lc ? `
+            <div class="detail-box" style="margin-bottom:12px">
+              <div class="detail-box-title">生命週期與回歸狀態 (Issue Lifecycle)</div>
+              <div class="detail-box-content" style="display:flex;gap:16px;flex-wrap:wrap;align-items:center;font-size:13px">
+                <div>${getLifecycleBadgeHtml(lc)}</div>
+                <div><b>說明：</b>${esc(lc.reason || "—")}</div>
+                <div><b>版本範圍：</b><code>${esc(lc.first_seen_version)}</code> → <code>${esc(lc.last_seen_version)}</code> (見於 ${lc.versions_seen} 個版本)</div>
+                <div><b>可信度：</b><span class="badge" style="background:var(--bg-subtle)">${esc(lc.confidence)}</span></div>
+                ${lc.previously_absent_since ? `<div><b>曾消失自版本：</b><code>${esc(lc.previously_absent_since)}</code></div>` : ""}
+                ${lc.reappeared_version ? `<div><b>回歸版本：</b><code>${esc(lc.reappeared_version)}</code></div>` : ""}
+              </div>
+            </div>
+          ` : ""}
 
           ${blame.file ? `
             <div class="detail-box">
@@ -2807,12 +2859,15 @@ function toggleIssueDetail(idx) {
 function copyFixPrompt(idx) {
   const app = getCurAppData();
   if (!app) return;
-  const iss = (app.top_issues || [])[idx];
+  const snap = getCurPeriodSnapshot();
+  const issues = snap?.top_issues || app.top_issues || [];
+  const iss = issues[idx] || (app.top_issues || [])[idx];
   if (!iss) return;
 
   const ai = iss.ai_analysis || {};
   const blame = iss.blame_frame || {};
   const detail = iss.detail || {};
+  const lc = iss.lifecycle;
 
   const promptLines = [
     `# Crash 修復請求：${iss.title}`,
@@ -2824,6 +2879,9 @@ function copyFixPrompt(idx) {
     `- 版本範圍: ${iss.first_seen_version || "?"} → ${iss.last_seen_version || "?"}`,
   ];
 
+  if (lc) {
+    promptLines.push(`- 生命週期: ${lc.status} (${lc.reason || "無說明"})`);
+  }
   if (blame.file) promptLines.push(`- 元兇位置: ${blame.file}${blame.line ? ":" + blame.line : ""}`);
   if (iss.subtitle) promptLines.push(`- 錯誤特徵: ${iss.subtitle}`);
 
