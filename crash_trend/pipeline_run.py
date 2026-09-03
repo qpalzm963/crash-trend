@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional
 ROOT = Path(__file__).resolve().parent.parent
 
 try:
+    from crash_trend.ai_provider import get_ai_provider
     from crash_trend.analyze_gemini import resolve_api_key
     from crash_trend.config import get_app, get_mcp_config, is_sessions_enabled, load_config
     from crash_trend.pipeline_health import (
@@ -29,6 +30,7 @@ try:
     )
 except ImportError:
     try:
+        from ai_provider import get_ai_provider
         from analyze_gemini import resolve_api_key
         from config import get_app, get_mcp_config, is_sessions_enabled, load_config
         from pipeline_health import (
@@ -39,6 +41,7 @@ except ImportError:
             sanitize_error_message,
         )
     except ImportError:
+        from .ai_provider import get_ai_provider  # type: ignore
         from .analyze_gemini import resolve_api_key  # type: ignore
         from .config import get_app, get_mcp_config, is_sessions_enabled, load_config  # type: ignore
         from .pipeline_health import (  # type: ignore
@@ -306,25 +309,27 @@ def run_pipeline(
             tracker.record_stage(app, "normalize", "success", t0, t1)
 
         # -------------------------------------------------------------------
-        # 6. Analyze Gemini / Priority (Optional Stage)
+        # 6. Analyze AI / Priority (Optional Stage)
         # -------------------------------------------------------------------
         t0 = now_utc_iso()
-        # High Priority fix: Use resolve_api_key(False) which supports both GEMINI_API_KEY and GEMINI_KEY_URL
-        has_gemini_key = bool(resolve_api_key(False))
+        ai_provider = get_ai_provider(app_cfg)
+        has_ai_key = ai_provider.is_configured() or bool(resolve_api_key(False))
+        provider_name = ai_provider.provider_name
+        model_name = ai_provider.model_name
         if verbose:
-            print(f"--- 6. analyze_gemini: {app} (has_gemini_key: {has_gemini_key})")
+            print(f"--- 6. analyze_ai: {app} (provider: {provider_name}, model: {model_name}, configured: {has_ai_key})")
         rc, out, err = run_stage_process([py_exec, str(ROOT / "crash_trend" / "analyze_gemini.py"), "--app", app])
         if verbose and out:
             print(out, end="")
         t1 = now_utc_iso()
 
         # Crucial: Check canonical artifact status even when rc == 0
-        ai_status = "available" if has_gemini_key else "disabled"
+        ai_status = "available" if has_ai_key else "disabled"
         ai_err_msg = None
         if v2_path.is_file():
             try:
                 v2_data = json.loads(v2_path.read_text(encoding="utf-8"))
-                ai_src = v2_data.get("sources", {}).get("gemini_ai", {})
+                ai_src = v2_data.get("sources", {}).get("ai") or v2_data.get("sources", {}).get("gemini_ai", {})
                 ai_sum = v2_data.get("ai_summary", {})
                 ai_status = ai_src.get("status") or ai_sum.get("status") or ai_status
                 ai_err_msg = ai_src.get("error_message") or ai_sum.get("data_limitations")
@@ -333,20 +338,39 @@ def run_pipeline(
 
         if rc != 0 or ai_status == "error":
             err_text = ai_err_msg or err.strip() or out.strip() or "AI analysis failed"
-            tracker.record_stage(app, "ai", "failed", t0, t1, error_message=err_text)
+            tracker.record_stage(
+                app,
+                "ai",
+                "failed",
+                t0,
+                t1,
+                error_message=err_text,
+                details={"provider": provider_name, "model": model_name},
+            )
             if verbose:
                 print(f"  [Warning] AI 分析失敗（優雅降級）：{sanitize_error_message(err_text)}", file=sys.stderr)
-        elif ai_status == "disabled" or not has_gemini_key:
+        elif ai_status == "disabled" or not has_ai_key:
             tracker.record_stage(
                 app,
                 "ai",
                 "disabled",
                 t0,
                 t1,
-                details={"reason": "GEMINI_API_KEY / GEMINI_KEY_URL not configured"},
+                details={
+                    "provider": provider_name,
+                    "model": model_name,
+                    "reason": f"{provider_name.upper()} API key not configured",
+                },
             )
         else:
-            tracker.record_stage(app, "ai", "success", t0, t1)
+            tracker.record_stage(
+                app,
+                "ai",
+                "success",
+                t0,
+                t1,
+                details={"provider": provider_name, "model": model_name},
+            )
 
         # -------------------------------------------------------------------
         # 7. Check Surge (Optional Stage)

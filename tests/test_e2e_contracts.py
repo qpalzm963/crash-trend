@@ -528,7 +528,108 @@ class TestE2EContracts(unittest.TestCase):
             self.assertIn("Lifecycle App", html_content)
             self.assertIn("overviewDataSourcesCard", html_content)
 
+    def test_profile_7_openrouter_provider_e2e(self) -> None:
+        """Profile 7: OpenRouter provider end-to-end orchestration and schema compliance (Issue #26)."""
+        from crash_trend.pipeline_run import run_pipeline
+        from crash_trend.build_dashboard import assemble_bundle_from_apps, generate_dashboard
+
+        app_cfg = {
+            "display_name": "OpenRouter App",
+            "firebase_project": "proj-openrouter",
+            "data_sources": {
+                "crashlytics_bigquery": True,
+                "sessions": False,
+                "mcp": "off",
+            },
+            "ai": {
+                "provider": "openrouter",
+                "model": "google/gemini-2.0-flash-001",
+                "api_key": "sk-or-v1-fake-openrouter-key",
+            },
+        }
+        fake_cfg = {
+            "apps": {
+                "openrouter_app": app_cfg
+            }
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmproot = Path(tmpdir)
+            out_dir = tmproot / "out" / "openrouter_app"
+            out_dir.mkdir(parents=True, exist_ok=True)
+
+            fixture_path = ROOT / "tests" / "fixtures" / "dashboard_v2_no_sessions.json"
+            fixture_data = json.loads(fixture_path.read_text(encoding="utf-8"))
+            base_app_data = fixture_data["apps"]["legacy_app"]
+            base_app_data["metadata"]["app_id"] = "openrouter_app"
+            base_app_data["metadata"]["display_name"] = "OpenRouter App"
+
+            fake_ai_resp = {
+                "overview": "OpenRouter analyzed the latest stability metrics.",
+                "key_takeaways": ["P0 checkout issue identified", "Crash rate below threshold"],
+                "distribution_insights": "Android 14 accounts for 80% crashes.",
+                "recommended_actions": [
+                    {
+                        "priority": "P0",
+                        "issue_id": base_app_data["top_issues"][0]["issue_id"],
+                        "action": "Immediate hotfix required",
+                        "effort": "S",
+                    }
+                ],
+                "data_limitations": None,
+                "items": [
+                    {
+                        "issue_id": base_app_data["top_issues"][0]["issue_id"],
+                        "root_cause": "NPE in CheckoutActivity",
+                        "suggested_fix": "Add safe call",
+                        "effort": "S",
+                        "confidence": "high",
+                        "reasoning_sources": ["stack_trace"],
+                    }
+                ],
+            }
+
+            from crash_trend.ai_provider import OpenRouterProvider
+            mock_provider = MagicMock(spec=OpenRouterProvider)
+            mock_provider.provider_name = "openrouter"
+            mock_provider.model_name = "google/gemini-2.0-flash-001"
+            mock_provider.is_configured.return_value = True
+            mock_provider.analyze.return_value = fake_ai_resp
+
+            from crash_trend.analyze_gemini import enrich_app_data_with_priority_and_ai
+            enriched_app = enrich_app_data_with_priority_and_ai(
+                base_app_data,
+                provider=mock_provider,
+                app_cfg=app_cfg,
+            )
+            (out_dir / "dashboard_v2.json").write_text(
+                json.dumps(enriched_app, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+
+            from unittest.mock import patch
+            with patch("crash_trend.build_dashboard.ROOT", tmproot):
+                bundle = assemble_bundle_from_apps(fake_cfg)
+
+            # Assert Schema V2 / V2.3 compliance
+            errors = validate_dashboard_v2(bundle)
+            self.assertEqual(errors, [])
+
+            # Assert AI Provider details
+            app_result = bundle["apps"]["openrouter_app"]
+            self.assertEqual(app_result["ai_summary"]["provider"], "openrouter")
+            self.assertEqual(app_result["ai_summary"]["model"], "google/gemini-2.0-flash-001")
+            self.assertEqual(app_result["sources"]["ai"]["status"], "available")
+            self.assertEqual(app_result["sources"]["ai"]["provider"], "openrouter")
+            self.assertEqual(app_result["sources"]["gemini_ai"]["status"], "available")
+
+            # Generate HTML and verify UI text
+            html_path = tmproot / "dashboard.html"
+            generate_dashboard(bundle, output_path=html_path)
+            html_text = html_path.read_text(encoding="utf-8")
+            self.assertIn("OpenRouter AI", html_text)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

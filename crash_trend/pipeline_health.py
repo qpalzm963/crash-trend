@@ -63,6 +63,10 @@ class PipelineRunSummary(TypedDict):
 _PATTERNS_TO_SANITIZE = [
     # Google API Key (e.g. AIzaSy...)
     (re.compile(r"AIza[0-9A-Za-z-_]{25,45}"), "AIza[REDACTED]"),
+    # OpenRouter API Key (sk-or-...)
+    (re.compile(r"sk-or-[0-9A-Za-z-_]{20,}"), "sk-or-[REDACTED]"),
+    # Generic AI API Key (sk-...)
+    (re.compile(r"sk-[0-9A-Za-z-_]{20,}"), "sk-[REDACTED]"),
     # Bearer tokens
     (re.compile(r"(?i)bearer\s+[A-Za-z0-9_\-\.]+"), "Bearer [REDACTED]"),
     # Private keys (RSA / EC / OpenSSH)

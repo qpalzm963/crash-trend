@@ -5,6 +5,13 @@ credentials:
   # BigQuery 服務帳號 json 路徑（用 scripts/create_sa.sh 產生；筆電與伺服器共用同一把）
   bq_service_account: ~/.config/crash-trend/sa.json
 
+ai:
+  # AI Provider 設定 (選填；可填 gemini 或 openrouter)
+  # 若未指定，會依據環境變數 (GEMINI_API_KEY / GEMINI_KEY_URL vs OPENROUTER_API_KEY) 自動切換
+  provider: gemini                            # gemini（預設）或 openrouter
+  model: gemini-flash-latest                  # 模型名稱（例如 openrouter 時可填 google/gemini-2.0-flash-001）
+  # api_key: "..."                            # 選填；未填則自動讀取環境變數 OPENROUTER_API_KEY 或 GEMINI_API_KEY
+
 apps:
   shop_app:                               # 範例 1：完整模式 (Crashlytics + Sessions)
     display_name: 購物商城 App             # 儀表板與報表顯示名稱

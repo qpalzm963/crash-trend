@@ -189,3 +189,21 @@ def is_mcp_cache_fresh(
     return is_fresh, age_days, gen_at_str
 
 
+def get_ai_config(app_cfg: Optional[dict] = None, global_cfg: Optional[dict] = None) -> dict:
+    """Extracts and normalizes AI configuration.
+
+    Priority:
+      1. app_cfg["ai"]
+      2. global_cfg["ai"]
+      3. fallback to {}
+    """
+    g_cfg = global_cfg if global_cfg is not None else load_config()
+    global_ai = g_cfg.get("ai") or {}
+    app_ai = (app_cfg.get("ai") or {}) if app_cfg else {}
+
+    combined = dict(global_ai)
+    combined.update(app_ai)
+    return combined
+
+
+

@@ -194,6 +194,13 @@ def collect_data(data_path: Optional[Union[str, Path]] = None) -> dict:
                         "last_sync_timestamp": None,
                         "error_message": None,
                     },
+                    "ai": {
+                        "status": "disabled",
+                        "provider": "gemini",
+                        "model": None,
+                        "last_sync_timestamp": None,
+                        "error_message": None,
+                    },
                 },
                 "kpi": {
                     "crash_events": {"value": 0, "previous_value": None, "change_pct": None, "status": "available"},
@@ -2102,11 +2109,13 @@ function renderHeader() {
   const srcs = app.sources || {};
   const badgeWrap = $("headerSourceBadges");
   if (badgeWrap) {
+    const aiSrc = srcs.ai || srcs.gemini_ai;
+    const aiName = (aiSrc && aiSrc.provider === "openrouter") ? "OpenRouter AI" : "Gemini AI";
     const sKeys = [
       ["BigQuery", "crashlytics_bq", srcs.crashlytics_bq],
       ["Sessions", "firebase_sessions", srcs.firebase_sessions],
       ["MCP", "mcp_crashlytics", srcs.mcp_crashlytics],
-      ["Gemini AI", "gemini_ai", srcs.gemini_ai]
+      [aiName, (srcs.ai ? "ai" : "gemini_ai"), aiSrc]
     ];
     badgeWrap.innerHTML = sKeys.map(([name, key, obj]) => {
       const res = resolveSourceHealth(key, obj, DATA.generated_at);
@@ -2138,11 +2147,13 @@ function renderDataSourcesHealth() {
   }
 
   const srcs = app.sources || {};
+  const aiSrc = srcs.ai || srcs.gemini_ai;
+  const aiName = (aiSrc && aiSrc.provider === "openrouter") ? "OpenRouter AI" : "Gemini AI";
   const sourcesList = [
     { key: "crashlytics_bq", name: "Crashlytics BigQuery", obj: srcs.crashlytics_bq },
     { key: "firebase_sessions", name: "Firebase Sessions", obj: srcs.firebase_sessions },
     { key: "mcp_crashlytics", name: "Crashlytics MCP", obj: srcs.mcp_crashlytics },
-    { key: "gemini_ai", name: "Gemini AI", obj: srcs.gemini_ai },
+    { key: (srcs.ai ? "ai" : "gemini_ai"), name: aiName, obj: aiSrc },
   ];
 
   grid.innerHTML = sourcesList.map(s => {
@@ -2843,11 +2854,13 @@ function renderPipelines() {
   const grid = $("pipelineCardsGrid");
   if (!grid) return;
 
+  const aiSrc = srcs.ai || srcs.gemini_ai;
+  const aiName = (aiSrc && aiSrc.provider === "openrouter") ? "OpenRouter AI Analysis" : "Gemini AI Analysis";
   const pipelines = [
     { key: "crashlytics_bq", name: "Crashlytics BigQuery", obj: srcs.crashlytics_bq },
     { key: "firebase_sessions", name: "Firebase Sessions Export", obj: srcs.firebase_sessions },
     { key: "mcp_crashlytics", name: "Crashlytics MCP Server", obj: srcs.mcp_crashlytics },
-    { key: "gemini_ai", name: "Gemini AI Analysis", obj: srcs.gemini_ai },
+    { key: (srcs.ai ? "ai" : "gemini_ai"), name: aiName, obj: aiSrc },
   ];
 
   grid.innerHTML = pipelines.map(p => {
