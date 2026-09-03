@@ -312,13 +312,13 @@ def run_pipeline(
         # 6. Analyze AI / Priority (Optional Stage)
         # -------------------------------------------------------------------
         t0 = now_utc_iso()
-        ai_provider = get_ai_provider(app_cfg)
+        ai_provider = get_ai_provider(app_cfg, cfg)
         has_ai_key = ai_provider.is_configured() or bool(resolve_api_key(False))
         provider_name = ai_provider.provider_name
         model_name = ai_provider.model_name
         if verbose:
             print(f"--- 6. analyze_ai: {app} (provider: {provider_name}, model: {model_name}, configured: {has_ai_key})")
-        rc, out, err = run_stage_process([py_exec, str(ROOT / "crash_trend" / "analyze_gemini.py"), "--app", app])
+        rc, out, err = run_stage_process([py_exec, str(ROOT / "crash_trend" / "analyze_ai.py"), "--app", app])
         if verbose and out:
             print(out, end="")
         t1 = now_utc_iso()

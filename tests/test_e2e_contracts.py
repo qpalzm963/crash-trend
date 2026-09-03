@@ -529,7 +529,8 @@ class TestE2EContracts(unittest.TestCase):
             self.assertIn("overviewDataSourcesCard", html_content)
 
     def test_profile_7_openrouter_provider_e2e(self) -> None:
-        """Profile 7: OpenRouter provider end-to-end orchestration and schema compliance (Issue #26)."""
+        """Profile 7: True OpenRouter production orchestration via run_pipeline() (Issue #26 / Review 5099212339)."""
+        import json as json_mod
         from crash_trend.pipeline_run import run_pipeline
         from crash_trend.build_dashboard import assemble_bundle_from_apps, generate_dashboard
 
@@ -555,14 +556,17 @@ class TestE2EContracts(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             tmproot = Path(tmpdir)
-            out_dir = tmproot / "out" / "openrouter_app"
-            out_dir.mkdir(parents=True, exist_ok=True)
+            out_app = tmproot / "out" / "openrouter_app"
+            out_app.mkdir(parents=True, exist_ok=True)
 
             fixture_path = ROOT / "tests" / "fixtures" / "dashboard_v2_no_sessions.json"
             fixture_data = json.loads(fixture_path.read_text(encoding="utf-8"))
             base_app_data = fixture_data["apps"]["legacy_app"]
             base_app_data["metadata"]["app_id"] = "openrouter_app"
             base_app_data["metadata"]["display_name"] = "OpenRouter App"
+            (out_app / "dashboard_v2.json").write_text(
+                json.dumps(base_app_data, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
 
             fake_ai_resp = {
                 "overview": "OpenRouter analyzed the latest stability metrics.",
@@ -589,44 +593,93 @@ class TestE2EContracts(unittest.TestCase):
                 ],
             }
 
-            from crash_trend.ai_provider import OpenRouterProvider
-            mock_provider = MagicMock(spec=OpenRouterProvider)
-            mock_provider.provider_name = "openrouter"
-            mock_provider.model_name = "google/gemini-2.0-flash-001"
-            mock_provider.is_configured.return_value = True
-            mock_provider.analyze.return_value = fake_ai_resp
+            # Intercept HTTP boundary at OpenRouter requests.post
+            def fake_openrouter_post(url, headers=None, json=None, timeout=None):
+                self.assertIn("https://openrouter.ai", url)
+                self.assertEqual(headers.get("Authorization"), "Bearer sk-or-v1-fake-openrouter-key")
+                self.assertEqual(json.get("model"), "google/gemini-2.0-flash-001")
+                self.assertEqual(json.get("response_format", {}).get("type"), "json_schema")
+                mock_resp = MagicMock()
+                mock_resp.status_code = 200
+                mock_resp.json.return_value = {
+                    "choices": [{
+                        "message": {
+                            "content": json_mod.dumps(fake_ai_resp)
+                        }
+                    }]
+                }
+                return mock_resp
 
-            from crash_trend.analyze_gemini import enrich_app_data_with_priority_and_ai
-            enriched_app = enrich_app_data_with_priority_and_ai(
-                base_app_data,
-                provider=mock_provider,
-                app_cfg=app_cfg,
-            )
-            (out_dir / "dashboard_v2.json").write_text(
-                json.dumps(enriched_app, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
+            # Run production subprocess executor
+            def fake_stage_exec(cmd, cwd=None, env=None):
+                cmd_str = " ".join(cmd)
+                if "analyze_ai.py" in cmd_str:
+                    from crash_trend.analyze_ai import main as ai_main
+                    import sys
+                    old_argv = sys.argv
+                    try:
+                        sys.argv = ["analyze_ai.py", "--app", "openrouter_app"]
+                        with patch("crash_trend.analyze_ai.ROOT", tmproot):
+                            with patch("crash_trend.analyze_ai.load_config", return_value=fake_cfg):
+                                with patch("crash_trend.analyze_ai.get_app", return_value=app_cfg):
+                                    with patch("crash_trend.ai_provider.requests.post", side_effect=fake_openrouter_post):
+                                        ai_main()
+                    finally:
+                        sys.argv = old_argv
+                    return 0, "analyze_ai finished", ""
+                elif "build_dashboard.py" in cmd_str:
+                    from crash_trend.build_dashboard import assemble_bundle_from_apps, generate_dashboard
+                    with patch("crash_trend.build_dashboard.ROOT", tmproot):
+                        bundle = assemble_bundle_from_apps(fake_cfg)
+                        if bundle:
+                            out_html = tmproot / "dashboard.html"
+                            generate_dashboard(bundle, output_path=out_html)
+                    return 0, "Dashboard build success", ""
+                return 0, "stage exit 0", ""
 
-            from unittest.mock import patch
-            with patch("crash_trend.build_dashboard.ROOT", tmproot):
-                bundle = assemble_bundle_from_apps(fake_cfg)
+            summary_path = tmproot / "out" / "pipeline_run.json"
+            with patch("crash_trend.pipeline_run.ROOT", tmproot):
+                with patch("crash_trend.pipeline_run.load_config", return_value=fake_cfg):
+                    with patch("crash_trend.pipeline_run.get_app", return_value=app_cfg):
+                        with patch("crash_trend.pipeline_run.run_stage_process", side_effect=fake_stage_exec):
+                            summary = run_pipeline(
+                                app_names=["openrouter_app"],
+                                summary_path=summary_path,
+                                skip_dashboard=False,
+                                verbose=False,
+                            )
 
-            # Assert Schema V2 / V2.3 compliance
-            errors = validate_dashboard_v2(bundle)
-            self.assertEqual(errors, [])
+            # Assert 1: Pipeline Health recorded OpenRouter provider and model accurately
+            app_sum = summary["apps"]["openrouter_app"]
+            self.assertEqual(app_sum["stages"]["ai"]["status"], "success")
+            self.assertEqual(app_sum["stages"]["ai"]["details"]["provider"], "openrouter")
+            self.assertEqual(app_sum["stages"]["ai"]["details"]["model"], "google/gemini-2.0-flash-001")
 
-            # Assert AI Provider details
-            app_result = bundle["apps"]["openrouter_app"]
+            # Assert 2: Canonical dashboard_v2.json bundle matching pipeline health
+            current_bundle_path = tmproot / "out" / "dashboard_v2.json"
+            self.assertTrue(current_bundle_path.is_file())
+            bundle_data = json.loads(current_bundle_path.read_text(encoding="utf-8"))
+            app_result = bundle_data["apps"]["openrouter_app"]
+
+            self.assertEqual(app_result["sources"]["ai"]["provider"], "openrouter")
+            self.assertEqual(app_result["sources"]["ai"]["model"], "google/gemini-2.0-flash-001")
+            self.assertEqual(app_result["sources"]["ai"]["status"], "available")
             self.assertEqual(app_result["ai_summary"]["provider"], "openrouter")
             self.assertEqual(app_result["ai_summary"]["model"], "google/gemini-2.0-flash-001")
-            self.assertEqual(app_result["sources"]["ai"]["status"], "available")
-            self.assertEqual(app_result["sources"]["ai"]["provider"], "openrouter")
-            self.assertEqual(app_result["sources"]["gemini_ai"]["status"], "available")
 
-            # Generate HTML and verify UI text
-            html_path = tmproot / "dashboard.html"
-            generate_dashboard(bundle, output_path=html_path)
-            html_text = html_path.read_text(encoding="utf-8")
-            self.assertIn("OpenRouter AI", html_text)
+            # Provider and model consistency check between pipeline health and sources.ai (Review 5099212339)
+            self.assertEqual(app_result["sources"]["ai"]["provider"], app_sum["stages"]["ai"]["details"]["provider"])
+            self.assertEqual(app_result["sources"]["ai"]["model"], app_sum["stages"]["ai"]["details"]["model"])
+
+            # Assert 3: Schema V2 validation
+            val_errors = validate_dashboard_v2(bundle_data)
+            self.assertEqual(val_errors, [])
+
+            # Assert 4: HTML dashboard contains OpenRouter label
+            dashboard_html = tmproot / "dashboard.html"
+            self.assertTrue(dashboard_html.is_file())
+            html_content = dashboard_html.read_text(encoding="utf-8")
+            self.assertIn("OpenRouter AI", html_content)
 
 
 if __name__ == "__main__":
