@@ -2741,11 +2741,11 @@ function getAppAuthoritativeVersions(app, snap, platformFilter) {
     if (!ver) return;
     const pf = (vh.platform || "android").toLowerCase();
     if (!versionMap.has(ver)) {
-      versionMap.set(ver, { version: ver, platforms: new Set(), isLatest: false });
+      versionMap.set(ver, { version: ver, platforms: new Set(), latestPlatforms: new Set() });
     }
     const entry = versionMap.get(ver);
     entry.platforms.add(pf);
-    if (vh.status === "latest") entry.isLatest = true;
+    if (vh.status === "latest") entry.latestPlatforms.add(pf);
   });
 
   // 2. From distributions.app_versions
@@ -2755,7 +2755,7 @@ function getAppAuthoritativeVersions(app, snap, platformFilter) {
     if (!ver) return;
     const pf = (dist.platform || "").toLowerCase();
     if (!versionMap.has(ver)) {
-      versionMap.set(ver, { version: ver, platforms: new Set(), isLatest: false });
+      versionMap.set(ver, { version: ver, platforms: new Set(), latestPlatforms: new Set() });
     }
     if (pf) versionMap.get(ver).platforms.add(pf);
   });
@@ -2775,8 +2775,14 @@ function getAppAuthoritativeVersions(app, snap, platformFilter) {
 function resolveLatestVersion(app, snap, platformFilter) {
   const versions = getAppAuthoritativeVersions(app, snap, platformFilter);
   if (!versions.length) return null;
-  const marked = versions.find(v => v.isLatest);
-  if (marked) return marked.version;
+  if (platformFilter && platformFilter !== "ALL") {
+    const pfLow = platformFilter.toLowerCase();
+    const marked = versions.find(v => v.latestPlatforms && v.latestPlatforms.has(pfLow));
+    if (marked) return marked.version;
+  } else {
+    const marked = versions.find(v => v.latestPlatforms && v.latestPlatforms.size > 0);
+    if (marked) return marked.version;
+  }
   return versions[0].version;
 }
 
@@ -2786,6 +2792,36 @@ function resolveLatestVersionsByPlatform(app, snap) {
   result.android = resolveLatestVersion(app, snap, "android");
   result.ios = resolveLatestVersion(app, snap, "ios");
   return result;
+}
+
+// Render Overview Top Issues preview (always displays all-version period total metrics consistent with KPIs)
+function renderOverviewTopIssuesPreview() {
+  const prevBody = $("topIssuesPreviewBody");
+  if (!prevBody) return;
+  const app = getCurAppData();
+  if (!app) return;
+  const snap = getCurPeriodSnapshot();
+  const issues = snap?.top_issues || app.top_issues || [];
+
+  prevBody.innerHTML = issues.slice(0, 5).map(iss => {
+    const pLevel = iss.priority?.level || "P2";
+    const errCls = iss.error_type === "FATAL" ? "badge-fatal" : (iss.error_type === "ANR" ? "badge-anr" : "badge-nonfatal");
+    return `
+      <tr>
+        <td><span class="badge badge-${pLevel.toLowerCase()}">${esc(pLevel)}</span></td>
+        <td>
+          <div style="font-weight:600">${esc(iss.title)}</div>
+          <div style="font-size:11px;font-family:var(--font-mono);color:var(--text-muted)">${esc(iss.subtitle || "")}</div>
+        </td>
+        <td><span class="badge" style="background:var(--bg-subtle)">${esc(iss.platform)}</span></td>
+        <td><span class="badge ${errCls}">${esc(iss.error_type)}</span></td>
+        <td>${getLifecycleBadgeHtml(iss.lifecycle)}</td>
+        <td class="mono-num">${fmt(iss.events)}</td>
+        <td class="mono-num">${fmt(iss.affected_users)}</td>
+        <td class="mono-num">${esc(iss.last_seen_version || "—")}</td>
+      </tr>
+    `;
+  }).join("") || `<tr><td colspan="8" class="empty-state">尚無問題資料</td></tr>`;
 }
 
 function updateVersionFilterOptions(preserveSelected = true) {
@@ -2953,31 +2989,6 @@ function renderIssuesList() {
     verBadgeNote = ` [版本: ${filterVer}]`;
   }
   $("issuesCountBadge").textContent = `顯示 ${filtered.length} / ${issues.length} 個問題${verBadgeNote} (排序: ${curSortField} ${curSortAsc ? '▲' : '▼'})`;
-
-  // Overview quick preview
-  const prevBody = $("topIssuesPreviewBody");
-  if (prevBody) {
-    prevBody.innerHTML = filtered.slice(0, 5).map(item => {
-      const iss = item.raw;
-      const pLevel = iss.priority?.level || "P2";
-      const errCls = iss.error_type === "FATAL" ? "badge-fatal" : (iss.error_type === "ANR" ? "badge-anr" : "badge-nonfatal");
-      return `
-        <tr>
-          <td><span class="badge badge-${pLevel.toLowerCase()}">${esc(pLevel)}</span></td>
-          <td>
-            <div style="font-weight:600">${esc(iss.title)}</div>
-            <div style="font-size:11px;font-family:var(--font-mono);color:var(--text-muted)">${esc(iss.subtitle || "")}</div>
-          </td>
-          <td><span class="badge" style="background:var(--bg-subtle)">${esc(iss.platform)}</span></td>
-          <td><span class="badge ${errCls}">${esc(iss.error_type)}</span></td>
-          <td>${getLifecycleBadgeHtml(iss.lifecycle)}</td>
-          <td class="mono-num">${fmt(item.scopedEvents)}</td>
-          <td class="mono-num">${fmt(item.scopedUsers)}</td>
-          <td class="mono-num">${esc(iss.last_seen_version || "—")}</td>
-        </tr>
-      `;
-    }).join("") || `<tr><td colspan="8" class="empty-state">尚無問題資料</td></tr>`;
-  }
 
   // Full Issues Accordion List
   const container = $("issuesListContainer");
@@ -3340,6 +3351,7 @@ function renderAll() {
   renderKPIs();
   renderAISummaries();
   renderCharts();
+  renderOverviewTopIssuesPreview();
   updateVersionFilterOptions(true);
   renderIssuesList();
   renderVersionHealth();

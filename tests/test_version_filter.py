@@ -574,12 +574,20 @@ class TestVersionFilterAndScopedMetrics(unittest.TestCase):
         assert.ok(listHtml.includes('4</b> 次事件'), 'Android issue should display scoped 4 events');
         assert.ok(listHtml.includes('8</b> 次事件'), 'iOS issue should display scoped 8 events');
 
+        // Check Overview preview remains unscoped and all-version
+        const overviewPreviewHtml = $('topIssuesPreviewBody').innerHTML;
+        assert.ok(overviewPreviewHtml.includes('20'), 'Overview top issues preview must display all-version total events (20)');
+        assert.ok(overviewPreviewHtml.includes('10'), 'Overview top issues preview must display all-version total events (10)');
+
         // 3. Test Version=1.0.10
         selVer.value = '1.0.10';
         renderIssuesList();
         const listHtml10 = $('issuesListContainer').innerHTML;
         assert.ok(listHtml10.includes('Android Crash 10'), 'Android issue must be shown for 1.0.10');
         assert.ok(!listHtml10.includes('iOS Crash 210'), 'iOS issue must NOT be shown for 1.0.10');
+
+        // Overview preview MUST NOT be mutated or scoped by version filter (Must Fix - Overview unmixed scope)
+        assert.strictEqual($('topIssuesPreviewBody').innerHTML, overviewPreviewHtml, 'Overview preview must not be mutated or scoped by version filter');
 
         // 4. Test Platform=ios and Version=LATEST
         $('filterPlatform').value = 'ios';
@@ -612,6 +620,108 @@ class TestVersionFilterAndScopedMetrics(unittest.TestCase):
             )
             self.assertEqual(res.returncode, 0, f"Node.js script failed:\nSTDOUT:\n{res.stdout}\nSTDERR:\n{res.stderr}")
             self.assertIn("ALL_JS_DOM_TESTS_PASSED", res.stdout)
+        finally:
+            Path(client_js_path).unlink(missing_ok=True)
+            Path(runner_path).unlink(missing_ok=True)
+
+
+    def test_latest_platforms_isolation_when_same_version_across_platforms(self):
+        """Should Fix: When the same version string exists across platforms (e.g. 1.0.10 on both),
+        latest status is tracked per platform (latestPlatforms Set), so marking 1.0.10 latest on Android
+        does not mistakenly make it the latest on iOS when iOS latest is 2.1.0.
+        """
+        node_bin = shutil.which("node")
+        if not node_bin:
+            self.skipTest("Node.js runtime is not available in environment")
+
+        bundle = copy.deepcopy(self.base_bundle)
+        app = bundle["apps"]["shop_app"]
+        app["version_health"] = [
+            {"version": "1.0.10", "platform": "android", "status": "latest"},
+            {"version": "1.0.10", "platform": "ios", "status": "active"},
+            {"version": "2.1.0", "platform": "ios", "status": "latest"},
+        ]
+
+        html = build_html(bundle)
+        scripts = re.findall(r"<script>(.*?)</script>", html, re.DOTALL)
+        self.assertGreaterEqual(len(scripts), 2)
+        client_js = scripts[1]
+
+        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False, encoding="utf-8") as f_client:
+            f_client.write(client_js)
+            client_js_path = f_client.name
+
+        node_script = """
+        const fs = require('fs');
+        const assert = require('assert');
+
+        const elements = {};
+        function getOrCreateElement(id) {
+          if (!elements[id]) {
+            elements[id] = {
+              id,
+              value: 'ALL',
+              innerHTML: '',
+              textContent: '',
+              style: {},
+              classList: { classes: new Set(), add: () => {}, remove: () => {}, toggle: () => {}, contains: () => false },
+              addEventListener: () => {},
+            };
+          }
+          return elements[id];
+        }
+
+        global.document = {
+          documentElement: { dataset: { theme: 'light' } },
+          getElementById: (id) => getOrCreateElement(id),
+          querySelector: (sel) => getOrCreateElement(sel.replace('#', '')),
+          querySelectorAll: () => [],
+          createElement: () => getOrCreateElement('mock-' + Math.random()),
+          addEventListener: () => {},
+          readyState: 'complete',
+        };
+        global.$ = (id) => getOrCreateElement(id);
+        global.window = global;
+        global.navigator = { clipboard: { writeText: () => Promise.resolve() } };
+        global.Chart = function() { return { destroy: () => {}, update: () => {} }; };
+        global.Chart.register = () => {};
+        global.chartInstances = {};
+
+        eval(fs.readFileSync(process.argv[2], 'utf-8'));
+
+        const app = getCurAppData();
+        const snap = getCurPeriodSnapshot();
+
+        // 1. Android latest must be 1.0.10
+        const andLatest = resolveLatestVersion(app, snap, 'android');
+        assert.strictEqual(andLatest, '1.0.10', 'Android latest must be 1.0.10');
+
+        // 2. iOS latest must be 2.1.0 (NOT 1.0.10 even though 1.0.10 is latest on Android!)
+        const iosLatest = resolveLatestVersion(app, snap, 'ios');
+        assert.strictEqual(iosLatest, '2.1.0', 'iOS latest must be 2.1.0');
+
+        // 3. resolveLatestVersionsByPlatform must isolate platforms accurately
+        const latestMap = resolveLatestVersionsByPlatform(app, snap);
+        assert.strictEqual(latestMap.android, '1.0.10');
+        assert.strictEqual(latestMap.ios, '2.1.0');
+
+        console.log('LATEST_PLATFORMS_ISOLATION_PASSED');
+        """
+
+        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False, encoding="utf-8") as f_runner:
+            f_runner.write(node_script)
+            runner_path = f_runner.name
+
+        try:
+            res = subprocess.run(
+                [node_bin, runner_path, client_js_path],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=15,
+            )
+            self.assertEqual(res.returncode, 0, f"Node.js script failed:\nSTDOUT:\n{res.stdout}\nSTDERR:\n{res.stderr}")
+            self.assertIn("LATEST_PLATFORMS_ISOLATION_PASSED", res.stdout)
         finally:
             Path(client_js_path).unlink(missing_ok=True)
             Path(runner_path).unlink(missing_ok=True)
