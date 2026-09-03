@@ -206,10 +206,26 @@ class PipelineRunTracker:
             return "degraded"
         return "success"
 
-    def build_summary(self, finished_at: Optional[str] = None) -> PipelineRunSummary:
-        """Compiles tracked metrics into a validated PipelineRunSummary dictionary."""
-        fin = finished_at or self.finished_at or now_utc_iso()
-        self.finished_at = fin
+    def reset_finish(self) -> None:
+        """Resets finished_at so that a subsequent finalized summary can be recorded."""
+        self.finished_at = None
+
+    def build_summary(
+        self,
+        finished_at: Optional[str] = None,
+        finalize: bool = True,
+    ) -> PipelineRunSummary:
+        """Compiles tracked metrics into a validated PipelineRunSummary dictionary.
+
+        If finalize is False (e.g. provisional save before build_dashboard),
+        self.finished_at is not locked, allowing the final summary to capture
+        subsequent stages and full execution duration.
+        """
+        if finalize:
+            fin = finished_at or self.finished_at or now_utc_iso()
+            self.finished_at = fin
+        else:
+            fin = finished_at or now_utc_iso()
 
         try:
             t0 = parse_iso(self.started_at)
@@ -239,11 +255,16 @@ class PipelineRunTracker:
 
         return summary
 
-    def save_summary(self, target_path: Optional[Path] = None) -> Path:
+    def save_summary(
+        self,
+        target_path: Optional[Path] = None,
+        finished_at: Optional[str] = None,
+        finalize: bool = True,
+    ) -> Path:
         """Atomically writes pipeline_run.json to disk."""
         target = Path(target_path) if target_path else DEFAULT_RUN_SUMMARY_PATH
         target.parent.mkdir(parents=True, exist_ok=True)
-        summary = self.build_summary()
+        summary = self.build_summary(finished_at=finished_at, finalize=finalize)
 
         content = json.dumps(summary, indent=2, ensure_ascii=False)
         tmp_fd, tmp_path = tempfile.mkstemp(dir=str(target.parent), prefix="run_summary_", suffix=".tmp")

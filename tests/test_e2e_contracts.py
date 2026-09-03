@@ -510,6 +510,13 @@ class TestE2EContracts(unittest.TestCase):
             self.assertNotEqual(bundle_data["pipeline_run"]["started_at"][:4], "2020")
             self.assertEqual(bundle_data["pipeline_run"]["status"], "degraded")
 
+            # Timing check: final finished_at and duration must cover build_dashboard stage
+            self.assertIn("build_dashboard", summary)
+            self.assertEqual(summary["build_dashboard"]["status"], "success")
+            self.assertGreaterEqual(summary["finished_at"], summary["build_dashboard"]["finished_at"])
+            self.assertGreaterEqual(summary["duration_sec"], summary["build_dashboard"]["duration_sec"])
+            self.assertEqual(bundle_data["pipeline_run"]["duration_sec"], summary["duration_sec"])
+
             # Assert 3: Strict Schema V2 validation
             val_errors = validate_dashboard_v2(bundle_data)
             self.assertEqual(val_errors, [])

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -348,8 +350,96 @@ class TestPipelineHealth(unittest.TestCase):
             self.assertEqual(app_sum["stages"]["ai"]["status"], "success")
             self.assertEqual(app_sum["status"], "success")
 
+    def test_provisional_summary_does_not_freeze_finished_at(self) -> None:
+        """Regression test for Blocking 1: Provisional save must NOT prematurely freeze finished_at."""
+        tracker = PipelineRunTracker(started_at="2026-09-03T06:00:00Z")
+        tracker.record_stage("app1", "crashlytics_bigquery", "success", "2026-09-03T06:00:00Z", "2026-09-03T06:00:05Z")
+
+        # 1. Provisional save before build_dashboard
+        prov = tracker.build_summary("2026-09-03T06:00:05Z", finalize=False)
+        self.assertEqual(prov["finished_at"], "2026-09-03T06:00:05Z")
+        self.assertEqual(prov["duration_sec"], 5.0)
+        # tracker.finished_at must NOT be set permanently!
+        self.assertIsNone(tracker.finished_at)
+
+        # 2. build_dashboard stage executes from 06:00:05 to 06:00:15
+        tracker.record_stage(None, "build_dashboard", "success", "2026-09-03T06:00:05Z", "2026-09-03T06:00:15Z")
+
+        # 3. Finalized summary
+        final = tracker.build_summary("2026-09-03T06:00:15Z", finalize=True)
+        self.assertEqual(final["finished_at"], "2026-09-03T06:00:15Z")
+        self.assertEqual(final["duration_sec"], 15.0)
+        self.assertGreaterEqual(final["finished_at"], final["build_dashboard"]["finished_at"])
+
+    def test_mcp_fresh_cache_skip_not_failed_by_historical_error_file(self) -> None:
+        """Regression test for High Priority: Historical stacktraces_last_error.json must not fail fresh cache skip."""
+        from unittest.mock import patch
+        from crash_trend.pipeline_run import run_pipeline
+
+        fake_cfg = {
+            "apps": {
+                "mcp_skip_app": {
+                    "firebase_project": "p1",
+                    "data_sources": {"sessions": False},
+                    "mcp": {"mode": "weekly", "max_age_days": 7},
+                }
+            }
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmproot = Path(tmpdir)
+            out_app = tmproot / "out" / "mcp_skip_app"
+            out_app.mkdir(parents=True, exist_ok=True)
+
+            (out_app / "dashboard_v2.json").write_text(json.dumps({
+                "sources": {
+                    "crashlytics_bq": {"status": "available"},
+                    "firebase_sessions": {"status": "disabled"},
+                    "mcp_crashlytics": {"status": "available"},
+                    "gemini_ai": {"status": "disabled"},
+                },
+                "ai_summary": {"status": "disabled"},
+            }), encoding="utf-8")
+
+            # Historical error file from a past failed run
+            err_file = out_app / "stacktraces_last_error.json"
+            err_file.write_text(json.dumps({
+                "error_message": "Past Firebase login expired error",
+                "errors": [{"stage": "auth", "message": "Expired"}]
+            }), encoding="utf-8")
+            # Set mtime back in the past
+            past_mtime = time.time() - 3600
+            os.utime(err_file, (past_mtime, past_mtime))
+
+            sum_path = tmproot / "out" / "pipeline_run.json"
+
+            def fake_stage_exec(cmd, cwd=None, env=None):
+                cmd_str = " ".join(cmd)
+                if "fetch_stacktraces.py" in cmd_str:
+                    # Returns 0 with fresh cache message, does NOT touch stacktraces_last_error.json
+                    return 0, "（App「mcp_skip_app」MCP 快取仍有效（3.2 天 < 7 天），略過重新抓取）", ""
+                return 0, "stage ok", ""
+
+            with patch("crash_trend.pipeline_run.ROOT", tmproot):
+                with patch("crash_trend.pipeline_run.load_config", return_value=fake_cfg):
+                    with patch("crash_trend.pipeline_run.get_app", return_value=fake_cfg["apps"]["mcp_skip_app"]):
+                        with patch("crash_trend.pipeline_run.run_stage_process", side_effect=fake_stage_exec):
+                            summary = run_pipeline(
+                                app_names=["mcp_skip_app"],
+                                summary_path=sum_path,
+                                skip_dashboard=True,
+                                verbose=False,
+                            )
+
+            app_sum = summary["apps"]["mcp_skip_app"]
+            # MCP stage must be skipped, NOT failed!
+            self.assertEqual(app_sum["stages"]["mcp"]["status"], "skipped")
+            self.assertEqual(app_sum["status"], "success")
+            self.assertEqual(summary["status"], "success")
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
 

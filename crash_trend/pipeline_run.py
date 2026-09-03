@@ -236,7 +236,11 @@ def run_pipeline(
                 print(out, end="")
             t1 = now_utc_iso()
 
-            # Crucial: Check if MCP failed (wrote stacktraces_last_error.json) even when rc == 0!
+            # Check output: if stdout clearly indicates fresh cache skip, prioritize skipped!
+            # Even if an old stacktraces_last_error.json exists from a previous run, a fresh cache skip must not fail!
+            is_cache_fresh_skip = rc == 0 and ("快取仍有效" in out or "略過" in out)
+
+            # Check if an error artifact exists
             mcp_has_error = False
             mcp_err_msg = None
             if mcp_err_file.is_file():
@@ -248,12 +252,7 @@ def run_pipeline(
                 except Exception:
                     mcp_has_error = True
 
-            if rc != 0 or mcp_has_error:
-                err_text = mcp_err_msg or err.strip() or out.strip() or "MCP refresh failed"
-                tracker.record_stage(app, "mcp", "failed", t0, t1, error_message=err_text)
-                if verbose:
-                    print(f"  [Warning] MCP 刷新失敗（優雅降級）：{sanitize_error_message(err_text)}", file=sys.stderr)
-            elif "快取仍有效" in out or "略過" in out:
+            if is_cache_fresh_skip:
                 tracker.record_stage(
                     app,
                     "mcp",
@@ -262,6 +261,11 @@ def run_pipeline(
                     t1,
                     details={"reason": "Cache is fresh, skipped refresh"},
                 )
+            elif rc != 0 or mcp_has_error:
+                err_text = mcp_err_msg or err.strip() or out.strip() or "MCP refresh failed"
+                tracker.record_stage(app, "mcp", "failed", t0, t1, error_message=err_text)
+                if verbose:
+                    print(f"  [Warning] MCP 刷新失敗（優雅降級）：{sanitize_error_message(err_text)}", file=sys.stderr)
             else:
                 tracker.record_stage(app, "mcp", "success", t0, t1)
 
@@ -367,8 +371,9 @@ def run_pipeline(
     effective_summary_path = summary_path or DEFAULT_RUN_SUMMARY_PATH
     dashboard_rc = 0
     if not skip_dashboard:
-        # Blocking 2 fix: Save current summary BEFORE build_dashboard so dashboard embeds the current run!
-        tracker.save_summary(effective_summary_path)
+        # Save provisional summary BEFORE build_dashboard so builder has current run,
+        # but finalize=False ensures finished_at and duration_sec are not frozen early!
+        tracker.save_summary(effective_summary_path, finalize=False)
 
         t0 = now_utc_iso()
         if verbose:
@@ -389,10 +394,13 @@ def run_pipeline(
         else:
             tracker.record_stage(None, "build_dashboard", "success", t0, t1)
 
-    saved_file = tracker.save_summary(effective_summary_path)
-    summary = tracker.build_summary()
+    # Finalize summary after all stages have completed
+    tracker.reset_finish()
+    saved_file = tracker.save_summary(effective_summary_path, finalize=True)
+    summary = tracker.build_summary(finalize=True)
 
-    # Ensure the finalized summary (including build_dashboard stage) is updated in the saved bundle
+    # Ensure the finalized summary (including build_dashboard stage and full duration)
+    # is updated in the saved bundle AND in dashboard.html
     if not skip_dashboard and dashboard_rc == 0:
         for b_path in [ROOT / "out" / "dashboard_v2.json", ROOT / "reports" / "dashboard_v2.json"]:
             if b_path.is_file():
@@ -402,6 +410,16 @@ def run_pipeline(
                     b_path.write_text(json.dumps(b_data, ensure_ascii=False, indent=2), encoding="utf-8")
                 except Exception:
                     pass
+
+        # Re-render dashboard.html with finalized summary so UI displays final duration
+        v2_bundle_path = ROOT / "out" / "dashboard_v2.json"
+        if v2_bundle_path.is_file():
+            try:
+                from crash_trend.build_dashboard import generate_dashboard
+                final_bundle = json.loads(v2_bundle_path.read_text(encoding="utf-8"))
+                generate_dashboard(final_bundle, output_path=ROOT / "dashboard.html")
+            except Exception:
+                pass
 
     if verbose:
         print("\n==================== [Pipeline Run Summary] ====================")
