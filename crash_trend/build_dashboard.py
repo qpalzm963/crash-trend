@@ -1654,10 +1654,14 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
               <option value="ANR">ANR (無回應)</option>
               <option value="NON_FATAL">NON_FATAL (非致命)</option>
             </select>
-            <select class="filter-select" id="filterPlatform" onchange="renderIssuesList()">
+            <select class="filter-select" id="filterPlatform" onchange="handlePlatformFilterChange()">
               <option value="ALL">全部平台</option>
               <option value="android">Android</option>
               <option value="ios">iOS</option>
+            </select>
+            <select class="filter-select" id="filterVersion" onchange="renderIssuesList()">
+              <option value="ALL">全部版本</option>
+              <option value="LATEST">最新版本</option>
             </select>
             <select class="filter-select" id="filterPriority" onchange="renderIssuesList()">
               <option value="ALL">全部優先級</option>
@@ -2701,6 +2705,121 @@ function getLifecycleBadgeHtml(lc) {
   return "";
 }
 
+// SemVer comparison and authoritative version discovery
+function parseSemverParts(v) {
+  if (!v) return [0, 0, 0];
+  const cleaned = String(v).replace(/^v/i, "").trim();
+  const main = cleaned.split(/[-+]/)[0];
+  const parts = main.split(".").map(p => {
+    const num = parseInt(p, 10);
+    return isNaN(num) ? 0 : num;
+  });
+  while (parts.length < 3) parts.push(0);
+  return parts;
+}
+
+function compareSemver(v1, v2) {
+  const p1 = parseSemverParts(v1);
+  const p2 = parseSemverParts(v2);
+  for (let i = 0; i < Math.max(p1.length, p2.length); i++) {
+    const a = p1[i] || 0;
+    const b = p2[i] || 0;
+    if (a !== b) return a - b;
+  }
+  return String(v1).localeCompare(String(v2));
+}
+
+function getAppAuthoritativeVersions(app, snap, platformFilter) {
+  if (!app) return [];
+  const versionMap = new Map();
+
+  // 1. From version_health (top-level and snapshot)
+  const vhList = snap?.version_health || app.version_health || [];
+  vhList.forEach(vh => {
+    if (!vh || !vh.version) return;
+    const ver = String(vh.version).trim();
+    if (!ver) return;
+    const pf = (vh.platform || "android").toLowerCase();
+    if (!versionMap.has(ver)) {
+      versionMap.set(ver, { version: ver, platforms: new Set(), isLatest: false });
+    }
+    const entry = versionMap.get(ver);
+    entry.platforms.add(pf);
+    if (vh.status === "latest") entry.isLatest = true;
+  });
+
+  // 2. From distributions.app_versions
+  const distList = snap?.distributions?.app_versions || app.distributions?.app_versions || [];
+  distList.forEach(dist => {
+    const ver = String(dist.app_version || dist.version || "").trim();
+    if (!ver) return;
+    const pf = (dist.platform || "").toLowerCase();
+    if (!versionMap.has(ver)) {
+      versionMap.set(ver, { version: ver, platforms: new Set(), isLatest: false });
+    }
+    if (pf) versionMap.get(ver).platforms.add(pf);
+  });
+
+  // 3. Filter by platform if specified
+  let versions = Array.from(versionMap.values());
+  if (platformFilter && platformFilter !== "ALL") {
+    const pfLow = platformFilter.toLowerCase();
+    versions = versions.filter(entry => entry.platforms.size === 0 || entry.platforms.has(pfLow));
+  }
+
+  // Sort descending by semver
+  versions.sort((a, b) => compareSemver(b.version, a.version));
+  return versions;
+}
+
+function resolveLatestVersion(app, snap, platformFilter) {
+  const versions = getAppAuthoritativeVersions(app, snap, platformFilter);
+  if (!versions.length) return null;
+  const marked = versions.find(v => v.isLatest);
+  if (marked) return marked.version;
+  return versions[0].version;
+}
+
+function updateVersionFilterOptions(preserveSelected = true) {
+  const sel = $("filterVersion");
+  if (!sel) return;
+  const app = getCurAppData();
+  if (!app) return;
+  const snap = getCurPeriodSnapshot();
+  const platFilter = $("filterPlatform") ? $("filterPlatform").value : "ALL";
+
+  const prevVal = preserveSelected ? sel.value : "ALL";
+  const authVersions = getAppAuthoritativeVersions(app, snap, platFilter);
+  const latestVer = resolveLatestVersion(app, snap, platFilter);
+
+  let html = `<option value="ALL">全部版本</option>`;
+  if (latestVer) {
+    html += `<option value="LATEST">最新版本 (${esc(latestVer)})</option>`;
+  } else {
+    html += `<option value="LATEST">最新版本</option>`;
+  }
+
+  authVersions.forEach(v => {
+    html += `<option value="${esc(v.version)}">${esc(v.version)}${v.isLatest ? " (最新)" : ""}</option>`;
+  });
+
+  sel.innerHTML = html;
+
+  // Restore selection if valid; otherwise fallback to ALL
+  if (prevVal === "ALL" || prevVal === "LATEST") {
+    sel.value = prevVal;
+  } else if (authVersions.some(v => v.version === prevVal)) {
+    sel.value = prevVal;
+  } else {
+    sel.value = "ALL";
+  }
+}
+
+function handlePlatformFilterChange() {
+  updateVersionFilterOptions(true);
+  renderIssuesList();
+}
+
 // Render Issues Accordion & Table with Sorting
 function renderIssuesList() {
   const app = getCurAppData();
@@ -2712,8 +2831,43 @@ function renderIssuesList() {
   const filterPlat = $("filterPlatform") ? $("filterPlatform").value : "ALL";
   const filterPrio = $("filterPriority") ? $("filterPriority").value : "ALL";
   const filterLife = $("filterLifecycle") ? $("filterLifecycle").value : "ALL";
+  const filterVer = $("filterVersion") ? $("filterVersion").value : "ALL";
 
-  const filtered = issues.filter(iss => {
+  // Resolve target version if version filter is active
+  let targetVersion = null;
+  if (filterVer === "LATEST") {
+    targetVersion = resolveLatestVersion(app, snap, filterPlat);
+  } else if (filterVer !== "ALL") {
+    targetVersion = filterVer;
+  }
+
+  const filtered = issues.map(iss => {
+    let scopedEvents = iss.events ?? 0;
+    let scopedUsers = iss.affected_users ?? 0;
+    let matchesVersion = true;
+
+    if (targetVersion) {
+      const cleanTarget = String(targetVersion).replace(/^v/i, "").trim();
+      const vDist = (iss.version_distribution || []).find(
+        v => String(v.version).replace(/^v/i, "").trim() === cleanTarget
+      );
+      if (vDist && ((vDist.events || 0) > 0 || (vDist.users || 0) > 0)) {
+        scopedEvents = vDist.events || 0;
+        scopedUsers = vDist.users || 0;
+      } else {
+        matchesVersion = false;
+      }
+    }
+
+    return {
+      raw: iss,
+      scopedEvents,
+      scopedUsers,
+      matchesVersion,
+    };
+  }).filter(item => {
+    if (!item.matchesVersion) return false;
+    const iss = item.raw;
     if (filterErr !== "ALL" && iss.error_type !== filterErr) return false;
     if (filterPlat !== "ALL" && iss.platform !== filterPlat) return false;
     if (filterPrio !== "ALL" && iss.priority?.level !== filterPrio) return false;
@@ -2726,35 +2880,39 @@ function renderIssuesList() {
   });
 
   // Sort filtered list
-  filtered.sort((a, b) => {
+  filtered.sort((itemA, itemB) => {
+    const a = itemA.raw;
+    const b = itemB.raw;
     let valA, valB;
     if (curSortField === "priority") {
       valA = a.priority?.score ?? 0;
       valB = b.priority?.score ?? 0;
     } else if (curSortField === "events") {
-      valA = a.events ?? 0;
-      valB = b.events ?? 0;
+      valA = itemA.scopedEvents;
+      valB = itemB.scopedEvents;
     } else if (curSortField === "users") {
-      valA = a.affected_users ?? 0;
-      valB = b.affected_users ?? 0;
+      valA = itemA.scopedUsers;
+      valB = itemB.scopedUsers;
     } else if (curSortField === "last_seen") {
       valA = a.last_seen_timestamp || "";
       valB = b.last_seen_timestamp || "";
     } else {
-      valA = a.events ?? 0;
-      valB = b.events ?? 0;
+      valA = itemA.scopedEvents;
+      valB = itemB.scopedEvents;
     }
     if (valA < valB) return curSortAsc ? -1 : 1;
     if (valA > valB) return curSortAsc ? 1 : -1;
     return 0;
   });
 
-  $("issuesCountBadge").textContent = `顯示 ${filtered.length} / ${issues.length} 個問題 (排序: ${curSortField} ${curSortAsc ? '▲' : '▼'})`;
+  const verBadgeNote = targetVersion ? ` [版本: ${targetVersion}]` : "";
+  $("issuesCountBadge").textContent = `顯示 ${filtered.length} / ${issues.length} 個問題${verBadgeNote} (排序: ${curSortField} ${curSortAsc ? '▲' : '▼'})`;
 
   // Overview quick preview
   const prevBody = $("topIssuesPreviewBody");
   if (prevBody) {
-    prevBody.innerHTML = filtered.slice(0, 5).map(iss => {
+    prevBody.innerHTML = filtered.slice(0, 5).map(item => {
+      const iss = item.raw;
       const pLevel = iss.priority?.level || "P2";
       const errCls = iss.error_type === "FATAL" ? "badge-fatal" : (iss.error_type === "ANR" ? "badge-anr" : "badge-nonfatal");
       return `
@@ -2767,8 +2925,8 @@ function renderIssuesList() {
           <td><span class="badge" style="background:var(--bg-subtle)">${esc(iss.platform)}</span></td>
           <td><span class="badge ${errCls}">${esc(iss.error_type)}</span></td>
           <td>${getLifecycleBadgeHtml(iss.lifecycle)}</td>
-          <td class="mono-num">${fmt(iss.events)}</td>
-          <td class="mono-num">${fmt(iss.affected_users)}</td>
+          <td class="mono-num">${fmt(item.scopedEvents)}</td>
+          <td class="mono-num">${fmt(item.scopedUsers)}</td>
           <td class="mono-num">${esc(iss.last_seen_version || "—")}</td>
         </tr>
       `;
@@ -2782,13 +2940,15 @@ function renderIssuesList() {
     return;
   }
 
-  container.innerHTML = filtered.map((iss, idx) => {
+  container.innerHTML = filtered.map((item, idx) => {
+    const iss = item.raw;
     const pLevel = iss.priority?.level || "P2";
     const errCls = iss.error_type === "FATAL" ? "badge-fatal" : (iss.error_type === "ANR" ? "badge-anr" : "badge-nonfatal");
     const ai = iss.ai_analysis || {};
     const blame = iss.blame_frame || {};
     const detail = iss.detail || {};
     const lc = iss.lifecycle;
+    const verScopedTag = targetVersion ? ` <span class="badge" style="background:var(--bg-subtle);font-size:11px;font-weight:normal;color:var(--text-secondary)">v${esc(targetVersion)}</span>` : "";
 
     return `
       <div class="issue-accordion" id="issue-acc-${idx}">
@@ -2803,8 +2963,8 @@ function renderIssuesList() {
           </div>
           <div class="issue-stats-group">
             <span>${esc(iss.platform.toUpperCase())}</span>
-            <span><b>${fmt(iss.events)}</b> 次事件</span>
-            <span><b>${fmt(iss.affected_users)}</b> 位用戶</span>
+            <span><b>${fmt(item.scopedEvents)}</b> 次事件${verScopedTag}</span>
+            <span><b>${fmt(item.scopedUsers)}</b> 位用戶${verScopedTag}</span>
             <span style="font-size:11px">見於 ${esc(iss.last_seen_version || "?")}</span>
           </div>
         </div>
@@ -2831,6 +2991,32 @@ function renderIssuesList() {
                 <div><b>可信度：</b><span class="badge" style="background:var(--bg-subtle)">${esc(lc.confidence)}</span></div>
                 ${lc.previously_absent_since ? `<div><b>曾消失自版本：</b><code>${esc(lc.previously_absent_since)}</code></div>` : ""}
                 ${lc.reappeared_version ? `<div><b>回歸版本：</b><code>${esc(lc.reappeared_version)}</code></div>` : ""}
+              </div>
+            </div>
+          ` : ""}
+
+          ${(iss.version_distribution && iss.version_distribution.length > 0) ? `
+            <div class="detail-box" style="margin-bottom:12px">
+              <div class="detail-box-title">各版本影響分布 (Version Breakdown)</div>
+              <div class="detail-box-content">
+                <table style="width:100%;font-size:12px;border-collapse:collapse">
+                  <thead>
+                    <tr style="border-bottom:1px solid var(--border-color);color:var(--text-muted);text-align:left">
+                      <th style="padding:4px 8px">版本</th>
+                      <th style="padding:4px 8px;text-align:right">事件數</th>
+                      <th style="padding:4px 8px;text-align:right">受影響用戶</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${iss.version_distribution.map(vd => `
+                      <tr style="border-bottom:1px solid var(--border-color)">
+                        <td style="padding:4px 8px"><code>${esc(vd.version)}</code></td>
+                        <td style="padding:4px 8px;text-align:right" class="mono-num">${fmt(vd.events)}</td>
+                        <td style="padding:4px 8px;text-align:right" class="mono-num">${fmt(vd.users)}</td>
+                      </tr>
+                    `).join("")}
+                  </tbody>
+                </table>
               </div>
             </div>
           ` : ""}
@@ -2889,6 +3075,21 @@ function copyFixPrompt(issueId) {
     `- 影響: ${fmt(iss.affected_users)} 位用戶 / ${fmt(iss.events)} 次崩潰事件`,
     `- 版本範圍: ${iss.first_seen_version || "?"} → ${iss.last_seen_version || "?"}`,
   ];
+
+  const selVer = $("filterVersion") ? $("filterVersion").value : "ALL";
+  if (selVer !== "ALL") {
+    const platFilter = $("filterPlatform") ? $("filterPlatform").value : "ALL";
+    const targetVer = selVer === "LATEST" ? resolveLatestVersion(app, snap, platFilter) : selVer;
+    if (targetVer) {
+      const cleanTarget = String(targetVer).replace(/^v/i, "").trim();
+      const vDist = (iss.version_distribution || []).find(v => String(v.version).replace(/^v/i, "").trim() === cleanTarget);
+      if (vDist) {
+        promptLines.push(`- 篩選版本: ${targetVer} (此版本事件數: ${fmt(vDist.events)}, 受影響用戶: ${fmt(vDist.users)})`);
+      } else {
+        promptLines.push(`- 篩選版本: ${targetVer}`);
+      }
+    }
+  }
 
   if (lc) {
     promptLines.push(`- 生命週期: ${lc.status} (${lc.reason || "無說明"})`);
@@ -3082,6 +3283,7 @@ function renderAll() {
   renderKPIs();
   renderAISummaries();
   renderCharts();
+  updateVersionFilterOptions(true);
   renderIssuesList();
   renderVersionHealth();
   renderDevicesTable();
