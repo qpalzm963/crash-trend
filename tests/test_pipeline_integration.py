@@ -379,6 +379,62 @@ class TestPipelineIntegrationScenarios(unittest.TestCase):
         totals = weekly_totals_from_daily(app_v2["daily_trend"])
         self.assertEqual(sum(totals.values()), 0)
 
+    # -----------------------------------------------------------------------
+    # Scenario 7: End-to-End Pipeline Execution via Filesystem
+    # -----------------------------------------------------------------------
+    def test_scenario_7_e2e_disk_pipeline_execution(self) -> None:
+        """Scenario 7: Verifies end-to-end pipeline execution and file I/O chaining across all modules."""
+        data_v2 = json.loads(self.fixture_v2_path.read_text(encoding="utf-8"))
+        shop_app = data_v2["apps"]["shop_app"]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmproot = Path(tmpdir)
+            out_shop = tmproot / "out" / "shop_app"
+            out_shop.mkdir(parents=True, exist_ok=True)
+
+            # Step 1: Base V2 data written (simulating fetch_bigquery)
+            (out_shop / "dashboard_v2.json").write_text(json.dumps(shop_app, ensure_ascii=False), encoding="utf-8")
+
+            # Step 2: Enrich with Sessions (simulating fetch_sessions)
+            sess_mock = {
+                "sources": {"status": "available", "last_sync_timestamp": "2026-09-02T00:00:00Z", "error_message": None},
+                "kpi": {
+                    "crash_free_users": build_crash_free_metric(50000, 100, previous_rate=0.995, status="available"),
+                    "crash_free_sessions": build_crash_free_metric(100000, 200, previous_rate=0.995, status="available"),
+                },
+                "daily_trend": {},
+                "version_health": {},
+            }
+            app_data = json.loads((out_shop / "dashboard_v2.json").read_text(encoding="utf-8"))
+            app_data = enrich_app_dashboard_with_sessions(app_data, sess_mock)
+            (out_shop / "dashboard_v2.json").write_text(json.dumps(app_data, ensure_ascii=False), encoding="utf-8")
+
+            # Step 3: Enrich with Issue details (simulating fetch_issue_details)
+            app_data = json.loads((out_shop / "dashboard_v2.json").read_text(encoding="utf-8"))
+            app_data["top_issues"] = enrich_top_issues(app_data["top_issues"], app_name="shop_app", bq_client=None)
+            (out_shop / "dashboard_v2.json").write_text(json.dumps(app_data, ensure_ascii=False), encoding="utf-8")
+
+            # Step 4: Enrich with Priority & AI (simulating analyze_gemini)
+            app_data = json.loads((out_shop / "dashboard_v2.json").read_text(encoding="utf-8"))
+            app_data = enrich_app_data_with_priority_and_ai(app_data, api_key=None, core_paths=["checkout"])
+            (out_shop / "dashboard_v2.json").write_text(json.dumps(app_data, ensure_ascii=False), encoding="utf-8")
+
+            # Step 5: Bundle assembly & HTML generation (simulating build_dashboard)
+            fake_cfg = {"apps": {"shop_app": {"display_name": "E-Commerce Shop"}}}
+            with patch("crash_trend.build_dashboard.ROOT", tmproot):
+                bundle = assemble_bundle_from_apps(fake_cfg)
+                self.assertIsNotNone(bundle)
+                errors = validate_dashboard_v2(bundle)
+                self.assertEqual(errors, [])
+
+                out_html = tmproot / "dashboard.html"
+                generate_dashboard(bundle, output_path=out_html)
+                self.assertTrue(out_html.is_file())
+                html_text = out_html.read_text(encoding="utf-8")
+                self.assertIn("E-Commerce Shop", html_text)
+                self.assertIn("shop_app", html_text)
+                self.assertIn("Crash-free Users", html_text)
+
 
 if __name__ == "__main__":
     unittest.main()

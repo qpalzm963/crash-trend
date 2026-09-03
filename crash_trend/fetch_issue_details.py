@@ -954,13 +954,23 @@ def main() -> None:
     odir = out_dir(args.app)
     days = args.days
 
+    v2_path = odir / "dashboard_v2.json"
     unified_path = odir / "unified.json"
     target_ids = []
     if args.issue_id:
         target_ids = [args.issue_id]
-    elif unified_path.exists():
-        u = json.loads(unified_path.read_text(encoding="utf-8"))
-        target_ids = [i["issue_id"] for i in u.get("issues", [])[: args.top] if i.get("issue_id")]
+    elif v2_path.exists():
+        try:
+            v2_data = json.loads(v2_path.read_text(encoding="utf-8"))
+            target_ids = [i["issue_id"] for i in v2_data.get("top_issues", [])[: args.top] if i.get("issue_id")]
+        except Exception:
+            target_ids = []
+    if not target_ids and unified_path.exists():
+        try:
+            u = json.loads(unified_path.read_text(encoding="utf-8"))
+            target_ids = [i["issue_id"] for i in u.get("issues", [])[: args.top] if i.get("issue_id")]
+        except Exception:
+            target_ids = []
 
     bq_client = None
     if bigquery is not None:
@@ -975,6 +985,23 @@ def main() -> None:
     )
     write_json(odir / "issue_details.json", results)
     print(f"  ✓ Issue details fetched for {len(results)} issues")
+
+    # 若已有 dashboard_v2.json，自動更新 Top Issues 的 blame_frame 與 detail
+    if v2_path.exists():
+        try:
+            app_data = json.loads(v2_path.read_text(encoding="utf-8"))
+            if "top_issues" in app_data and isinstance(app_data["top_issues"], list):
+                app_data["top_issues"] = enrich_top_issues(
+                    app_data["top_issues"],
+                    app_name=args.app,
+                    days=days,
+                    bq_client=bq_client,
+                    source_repo=app.get("source_repo"),
+                )
+                write_json(v2_path, app_data)
+                print(f"  ✓ 已更新 {v2_path.relative_to(ROOT)} Top Issues 詳細資訊（Blame frame / Stack）")
+        except Exception as e:
+            print(f"  ⚠ 更新 dashboard_v2.json Top Issues 失敗：{e}", file=sys.stderr)
 
 
 if __name__ == "__main__":

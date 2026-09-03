@@ -37,13 +37,13 @@ for app in $apps; do
   # 3. Issue Details：從 BQ / MCP 抓取 Blame frame、Stack trace、Breadcrumbs 與 Logs
   $PY "$CT/crash_trend/fetch_issue_details.py" --app "$app" || echo "    （$app 本次無詳細 stack/blame 資料，優雅降級）"
 
-  echo "--- analyze_gemini: $app"
-  # 4. Priority / AI 分析：確定性評分（P0~P3）＋ Gemini AI 策略摘要（無 Key 時優雅降級）
-  $PY "$CT/crash_trend/analyze_gemini.py" --app "$app" || FAILED="$FAILED analyze:$app"
-
   echo "--- normalize: $app"
-  # 5. 正規化與月度快照產出（供歷史月報與下游相容）
+  # 4. 正規化與月度快照產出（供歷史月報與下游相容）
   $PY "$CT/crash_trend/normalize.py" --app "$app" || FAILED="$FAILED normalize:$app"
+
+  echo "--- analyze_gemini: $app"
+  # 5. Priority / AI 分析：確定性評分（P0~P3）＋ Gemini AI 策略摘要（無 Key 時優雅降級）
+  $PY "$CT/crash_trend/analyze_gemini.py" --app "$app" || FAILED="$FAILED analyze:$app"
 
   echo "--- check_surge: $app"
   # 6. 暴增偵測每週跑（不受發卡月頻 gate）；失敗只記不擋

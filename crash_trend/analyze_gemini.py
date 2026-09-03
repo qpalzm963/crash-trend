@@ -854,10 +854,34 @@ def main() -> None:
     args = p.parse_args()
     app = get_app(args.app)
     month = dt.date.today().strftime("%Y-%m")
+    resolved_key = resolve_api_key(raise_on_missing=False)
 
+    # 1. 若有 Dashboard V2 資料，執行確定性 Priority Score 計算與 Gemini AI 分析
+    v2_path = ROOT / "out" / args.app / "dashboard_v2.json"
+    if v2_path.exists():
+        try:
+            app_v2 = json.loads(v2_path.read_text(encoding="utf-8"))
+            enriched_v2 = enrich_app_data_with_priority_and_ai(
+                app_v2,
+                api_key=resolved_key,
+                core_paths=app.get("core_paths", []),
+            )
+            val_errors = validate_app_dashboard_v2(enriched_v2)
+            if val_errors:
+                print(f"  [警告] Schema V2 驗證警告：{val_errors[:3]}", file=sys.stderr)
+            write_json(v2_path, enriched_v2)
+            print(f"  ✓ 已更新 {v2_path.relative_to(ROOT)} Priority Score 與 AI 策略摘要")
+        except Exception as e:
+            print(f"  ⚠ 更新 dashboard_v2.json AI 優先級分析失敗：{e}", file=sys.stderr)
+
+    # 2. 傳統月報 Markdown 與 reports/data 產出（若 unified.json 存在）
     unified_path = ROOT / "out" / args.app / "unified.json"
     if not unified_path.exists():
-        sys.exit(f"[錯誤] 找不到 {unified_path}，先跑 normalize.py")
+        if v2_path.exists():
+            print(f"  （已完成 V2 分析，未找到 {unified_path.name}，略過傳統 Markdown 月報）")
+            return
+        sys.exit(f"[錯誤] 找不到 {unified_path}，先跑 fetch_bigquery.py 或 normalize.py")
+
     u = json.loads(unified_path.read_text(encoding="utf-8"))
 
     summary_path = ROOT / "reports" / "data" / args.app / f"{month}.json"
@@ -904,7 +928,6 @@ def main() -> None:
                     "top_os": None,
                 }
 
-    resolved_key = resolve_api_key(raise_on_missing=False)
     if resolved_key:
         snippets = []
         for i in scored[:args.top]:

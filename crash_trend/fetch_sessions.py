@@ -675,6 +675,17 @@ def main() -> None:
     target_path = out_dir(args.app) / "sessions.json"
     write_json(target_path, result)
 
+    # 若已有 dashboard_v2.json，自動注入 Sessions 指標
+    v2_path = out_dir(args.app) / "dashboard_v2.json"
+    if v2_path.exists():
+        try:
+            app_data = json.loads(v2_path.read_text(encoding="utf-8"))
+            enriched = enrich_app_dashboard_with_sessions(app_data, result)
+            write_json(v2_path, enriched)
+            print(f"  ✓ 已更新 {v2_path.relative_to(ROOT)} Sessions 指標")
+        except Exception as e:
+            print(f"  ⚠ 更新 dashboard_v2.json Sessions 指標失敗：{e}", file=sys.stderr)
+
     status = result["sources"]["status"]
     if status == "available":
         cf_users = result["kpi"]["crash_free_users"]
