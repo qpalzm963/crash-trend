@@ -32,14 +32,75 @@ def main() -> None:
     month = dt.date.today().strftime("%Y-%m")
     data_dir = ROOT / "reports" / "data" / args.app
     summary_path = data_dir / f"{month}.json"
-    if not summary_path.exists():
-        sys.exit(f"[錯誤] 找不到 {summary_path}，先跑 normalize.py")
-    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary = None
+    if summary_path.exists():
+        try:
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        except Exception:
+            summary = None
 
-    months = sorted(f.stem for f in data_dir.glob("*.json"))
+    # 若無月快照，嘗試從 Dashboard V2 app_v2.json / dashboard_v2.json 取得
+    v2_app = None
+    if not summary:
+        for v2_name in ["app_v2.json", "dashboard_v2.json"]:
+            v2_path = ROOT / "out" / args.app / v2_name
+            if v2_path.exists():
+                try:
+                    v2_data = json.loads(v2_path.read_text(encoding="utf-8"))
+                    v2_app = v2_data.get("apps", {}).get(args.app, v2_data)
+                    break
+                except Exception:
+                    pass
+
+    if not summary and not v2_app:
+        sys.exit(f"[錯誤] 找不到 {summary_path} 或 V2 聚合資料，先跑 weekly_sync.sh")
+
+    kpis = (summary or {}).get("kpis")
+    if not kpis and v2_app:
+        vkpi = v2_app.get("kpi", {})
+        kpis = {
+            "events": vkpi.get("crash_events", {}).get("value", 0),
+            "users": vkpi.get("affected_users", {}).get("value", 0),
+            "crash_free_users_rate": vkpi.get("crash_free_users", {}).get("rate"),
+            "crash_free_sessions_rate": vkpi.get("crash_free_sessions", {}).get("rate"),
+            "events_fatal": vkpi.get("events_by_error_type", {}).get("fatal", 0),
+            "events_anr": vkpi.get("events_by_error_type", {}).get("anr", 0),
+            "events_nonfatal": vkpi.get("events_by_error_type", {}).get("non_fatal", 0),
+        }
+
+    top_issues = (summary or {}).get("top_issues")
+    if not top_issues and v2_app:
+        top_issues = [
+            {
+                "issue_id": iss.get("issue_id", ""),
+                "title": iss.get("title", ""),
+                "subtitle": iss.get("subtitle", ""),
+                "events": iss.get("events", 0),
+                "users": iss.get("affected_users", 0),
+                "fatal": iss.get("error_type") == "FATAL",
+            }
+            for iss in (v2_app.get("top_issues") or [])[:10]
+        ]
+
+    priority_list = (summary or {}).get("priority_list", [])
+    if not priority_list and v2_app:
+        priority_list = [
+            {
+                "issue_id": iss.get("issue_id", ""),
+                "title": iss.get("title", ""),
+                "score": iss.get("priority", {}).get("score", 0),
+                "level": iss.get("priority", {}).get("level", "P2"),
+            }
+            for iss in (v2_app.get("top_issues") or [])[:5]
+        ]
+
+    months = sorted(f.stem for f in data_dir.glob("*.json")) if data_dir.is_dir() else []
     prev_kpis = None
     if len(months) > 1 and months[-1] == month:
-        prev_kpis = json.loads((data_dir / f"{months[-2]}.json").read_text(encoding="utf-8")).get("kpis")
+        try:
+            prev_kpis = json.loads((data_dir / f"{months[-2]}.json").read_text(encoding="utf-8")).get("kpis")
+        except Exception:
+            pass
 
     dashboard = os.environ.get("DASHBOARD_URL", "")
     payload = {
@@ -48,11 +109,11 @@ def main() -> None:
         "month": month,
         # 帶 #<app> 錨點：儀表板讀 hash 直接切到該 app 分頁
         "dashboard_url": f"{dashboard}#{args.app}" if dashboard else "",
-        "kpis": summary.get("kpis", {}),
+        "kpis": kpis or {},
         "prev_kpis": prev_kpis,
-        "top_issues": summary.get("top_issues", [])[:10],
-        "priority_list": summary.get("priority_list", []),
-        "fix_review": summary.get("fix_review"),
+        "top_issues": (top_issues or [])[:10],
+        "priority_list": priority_list,
+        "fix_review": (summary or {}).get("fix_review"),
     }
     r = requests.post(url, json=payload, headers={"x-internal-token": token}, timeout=30)
     if r.status_code == 404:

@@ -106,12 +106,47 @@ def main() -> None:
     app = get_app(args.app)
 
     summary_path = ROOT / "reports" / "data" / args.app / f"{args.month}.json"
-    if not summary_path.exists():
-        raise SystemExit(f"[錯誤] 找不到 {summary_path}，先跑 normalize.py")
-    summary = json.loads(summary_path.read_text(encoding="utf-8"))
-    prio = summary.get("priority_list") or []
+    summary = None
+    if summary_path.exists():
+        try:
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        except Exception:
+            summary = None
+
+    prio = (summary or {}).get("priority_list") or []
+
+    # 若無月快照，嘗試從 Dashboard V2 app_v2.json / dashboard_v2.json 讀取
     if not prio:
-        raise SystemExit(f"[錯誤] {args.month} 尚無 priority_list——先跑 analyze_gemini.py（或 /crash-report）")
+        for v2_name in ["app_v2.json", "dashboard_v2.json"]:
+            v2_path = ROOT / "out" / args.app / v2_name
+            if v2_path.exists():
+                try:
+                    v2_data = json.loads(v2_path.read_text(encoding="utf-8"))
+                    app_obj = v2_data.get("apps", {}).get(args.app, v2_data)
+                    top_issues = app_obj.get("top_issues") or []
+                    prio = [
+                        {
+                            "issue_id": iss.get("issue_id", ""),
+                            "title": iss.get("title", ""),
+                            "subtitle": iss.get("subtitle", ""),
+                            "events": iss.get("events", 0),
+                            "users": iss.get("affected_users", 0),
+                            "fatal": iss.get("error_type") == "FATAL",
+                            "error_type": iss.get("error_type", "FATAL"),
+                            "first_seen_version": iss.get("first_seen_version", ""),
+                            "last_seen_version": iss.get("last_seen_version", ""),
+                            "root_cause": iss.get("ai_analysis", {}).get("root_cause") or "",
+                            "suggested_fix": iss.get("ai_analysis", {}).get("suggested_fix") or "",
+                        }
+                        for iss in top_issues
+                    ]
+                    if prio:
+                        break
+                except Exception:
+                    pass
+
+    if not prio:
+        raise SystemExit(f"[錯誤] {args.month} 尚無優先清單——請先執行 weekly_sync.sh 或 analyze_gemini.py")
 
     if args.issue:
         if not 1 <= args.issue <= len(prio):
@@ -121,7 +156,8 @@ def main() -> None:
         selected = list(enumerate(prio[: args.top], 1))
 
     display_name = app.get("display_name", args.app)
-    ensure_pm_notes(summary, summary_path, display_name, [i for _, i in selected])
+    if summary and summary_path.exists():
+        ensure_pm_notes(summary, summary_path, display_name, [i for _, i in selected])
     for rank, item in selected:
         print(render_brief(display_name, args.month, item, rank))
 

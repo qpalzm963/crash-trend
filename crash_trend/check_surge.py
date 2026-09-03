@@ -26,6 +26,22 @@ import requests
 from config import app_argparser, get_app, out_dir
 
 
+def weekly_totals_from_daily(daily_trend: list[dict]) -> dict[str, int]:
+    """從 Dashboard V2 daily_trend (date, crash_events) → {週key: 總事件數}。"""
+    totals: dict[str, int] = {}
+    for r in daily_trend or []:
+        date_str = r.get("date")
+        if not date_str:
+            continue
+        try:
+            d = dt.date.fromisoformat(date_str[:10])
+            wk = (d - dt.timedelta(days=d.weekday())).strftime("%Y-%W")
+            totals[wk] = totals.get(wk, 0) + int(r.get("crash_events", 0))
+        except Exception:
+            continue
+    return totals
+
+
 def weekly_totals(unified: dict) -> dict[str, int]:
     """weekly_trend（各平台分列）→ {週key: 總事件數}。"""
     totals: dict[str, int] = {}
@@ -46,11 +62,31 @@ def main() -> None:
     ratio_min = float(os.environ.get("SURGE_RATIO", "2"))
     events_min = int(os.environ.get("SURGE_MIN_EVENTS", "500"))
 
-    unified_path = out_dir(args.app) / "unified.json"
-    if not unified_path.exists():
-        print(f"  （無 {unified_path.name}，跳過）")
+    odir = out_dir(args.app)
+    totals: dict[str, int] = {}
+
+    # 優先從 Dashboard V2 app_v2.json / dashboard_v2.json 讀取 daily_trend
+    for v2_name in ["app_v2.json", "dashboard_v2.json"]:
+        v2_path = odir / v2_name
+        if v2_path.exists():
+            try:
+                v2_data = json.loads(v2_path.read_text(encoding="utf-8"))
+                app_obj = v2_data.get("apps", {}).get(args.app, v2_data)
+                daily = app_obj.get("daily_trend") or []
+                if daily:
+                    totals = weekly_totals_from_daily(daily)
+                    break
+            except Exception:
+                pass
+
+    if not totals:
+        unified_path = odir / "unified.json"
+        if unified_path.exists():
+            totals = weekly_totals(json.loads(unified_path.read_text(encoding="utf-8")))
+
+    if not totals:
+        print(f"  （無足夠趨勢資料，跳過暴增偵測）")
         return
-    totals = weekly_totals(json.loads(unified_path.read_text(encoding="utf-8")))
 
     # 排除本週（進行中）；週 key 與 BQ/fetch_stacktraces 同用「週一起點 %Y-%W」
     now = dt.datetime.now(dt.timezone.utc)

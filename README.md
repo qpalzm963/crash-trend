@@ -1,89 +1,117 @@
 # crash-trend
 
-**Firebase Crashlytics 趨勢分析引擎** — 匯出 crash 資料 → AI 找 top pattern（機型/OS/版本分布）→ 產出優先修復清單、月報，與一個離線可開的儀表板。設定驅動、多 app 共用一套腳本，換公司／換專案 10 分鐘上線。
+**Firebase Crashlytics 趨勢分析與 SaaS 儀表板引擎 (Dashboard V2)** — 匯出 BigQuery 崩潰資料 ＋ Firebase Sessions 統計 ＋ MCP 堆疊追蹤 → AI 找 top pattern 與策略摘要 → 產出優先修復清單、月報，與自包含現代 SaaS 儀表板。設定驅動、多 App 共用一套腳本，換公司／換專案 10 分鐘上線。
 
 ![dashboard](docs/screenshot.png)
 
 ## 它解決什麼問題
 
-Crashlytics console 看得到 crash，但「這個月哪些 crash 最該先修？」「趨勢是好轉還是惡化？」「集中在哪些機型/版本？」需要人工整理。crash-trend 把這件事變成一條可排程的管道：
+Crashlytics console 看得到個別 crash，但「哪些 crash 最該先修？」「整體 Crash-free 率與各版本健康度如何？」「集中在哪些機型/版本/用戶族群？」需要人工整理。crash-trend 把這件事變成一條自動化的現代化管線：
 
 ```
-BigQuery export ─┐（彙總數字）                                  ┌→ 月報 md
-                 ├→ normalize → AI 分析（優先級評分）─┼→ Google Chat 卡片（可選）
-Crashlytics MCP ─┘（真實 stack trace）                          └→ dashboard.html（離線、多 app）
+BigQuery Crashlytics ──┐
+Firebase Sessions ─────┼→ fetch & enrich ─→ analyze_gemini (確定性評分 P0~P3 + AI 策略) ─→ dashboard.html
+Crashlytics MCP / BQ ──┘                     └→ weekly_sync / surge alert / chat 卡片
 ```
 
-- **優先修復清單**：`P = 影響用戶×3 ＋ fatal或ANR×2 ＋ 新增/惡化×2 ＋ 最新版仍現×2 ＋ 核心路徑×3 ＋ 事件×1`（評分是確定性程式；AI 只負責 root cause 推測、修法建議與工作量估計，並吃真實 stack trace 定位）
-- **真實 stack trace**：BQ 只有彙總數字，堆疊走 Firebase MCP（`fetch_stacktraces.py`，見下）餵 AI；BQ 未接的 app 還能用 MCP 報表當 issue 來源
-- **儀表板**：單一 HTML 檔、Chart.js 內嵌、零 CDN，雙擊即開；亮/暗雙主題；跨月／週趨勢、機型/OS/版本／層級分布、可排序 issue 表；URL 帶 `#<app>` 直達分頁。層級三態白話（**閃退**/**凍結** ANR/**非致命**），每個修復項有 **COPY** 按鈕，一鍵複製含 stack trace 的「修復請求」貼給 coding agent
-- **三層節奏**：資料同步每週（Docker supercronic 或 launchd）；**暴增告警**即時（`check_surge.py`：最近完整週事件 ≥2 倍前一週且 ≥500 件 → 發告警，`SURGE_RATIO`/`SURGE_MIN_EVENTS` 可調、同週去重）；聊天摘要卡每月一張（`out/.card_sent_month` gate，失敗下週補發）
+### Dashboard V2 核心特色
+
+- **現代 SaaS Analytics 風格**：淺色白底卡片設計、8 大功能分頁（總覽、問題列表、版本健康度、裝置分析、發佈版本、通知管線、AI 分析、系統設定）、響應式側邊欄與深淺色主題切換。
+- **Crash-free 率與去重指標**：接入 Firebase Sessions 計算 Crash-free Users 與 Crash-free Sessions；期間去重 Affected Users；Sessions 未開啟時具備明確的 `Unavailable` 狀態，**絕不顯示假 0%**。
+- **確定性 Priority Score ＋ Gemini AI 分析**：
+  - 程式確定性評分：`P0` / `P1` / `P2` / `P3`（依受影響用戶、Fatal/ANR、惡化趨勢、最新版本影響、核心路徑權重加總）。
+  - Gemini AI 策略摘要：首頁 AI Overview、Key Takeaways、推薦行動，以及各問題的 Root Cause 推測與具體修復建議。
+- **元兇定位 (Blame Frame)**：解析關鍵元兇程式碼位置（檔案、行號、方法符號）與完整 Stack Trace，一鍵複製修復 Prompt 貼給 Coding Agent。
+- **自包含與離線可用**：單一 HTML 檔、Chart.js 內嵌、零外部 CDN 依賴，`file://` 本地直接開啟。
+- **多 App 無縫切換**：頂部 Header 支援多 App 下拉切換，URL 帶 `#<app>` 直達指定分頁。
+
+---
 
 ## 快速開始
 
 ```bash
 git clone https://github.com/qpalzm963/crash-trend && cd crash-trend
-cp apps.example.yaml apps.yaml                 # 填你的 app（Firebase 專案 ID 等）
-gcloud auth login                              # 有該專案 IAM 權限的帳號
-scripts/create_sa.sh <firebase_project_id>     # 一鍵建唯讀 SA ＋金鑰
-# Firebase Console → 專案設定 → Integrations → BigQuery → Link 勾 Crashlytics（唯一手動步驟）
+cp apps.example.yaml apps.yaml                 # 填寫你的 App 設定（Firebase 專案 ID、package 等）
+gcloud auth login                              # 具備 GCP/Firebase 專案 IAM 權限的帳號
+scripts/create_sa.sh <firebase_project_id>     # 一鍵建立唯讀 SA ＋ 金鑰
+# Firebase Console → 專案設定 → Integrations → BigQuery → Link 勾 Crashlytics 與 Sessions
 printf 'GEMINI_API_KEY=...\n' > .env           # AI 分析用（Google AI Studio 取得）
 docker compose up -d --build                   # 每週三 10:00（Asia/Taipei）自動同步
-# （可選）真實 stack trace：容器已內建 firebase-tools，在機器上跑一次 `firebase login` 即可
-# 隔日首批資料落地後，手動跑一輪看結果：
+# 手動試跑整條管線驗證：
 docker compose run --rm crash-trend /bin/bash /app/scripts/weekly_sync.sh
 open dashboard.html
 ```
 
-不用 Docker 的話：`python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`，排程用 `scripts/com.crash-trend.weekly-sync.plist.example`（launchd）。
+不用 Docker 的話：
+```bash
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+./scripts/weekly_sync.sh
+open dashboard.html
+```
 
-## 資料來源與平台限制（查證過的事實）
+---
 
-| 事實 | 影響 |
-|---|---|
-| Crashlytics 沒有公開 REST API | 彙總數字＝BigQuery export；真實 stack trace＝Firebase MCP（`firebase-tools` 的 `experimental:mcp`，見下） |
-| **Spark 免費方案可用 BigQuery sandbox** | 不用綁帳單就能全自動（每日批次、無串流、表 60 天過期——本工具每月落地摘要到 repo，不受影響） |
-| 資料自「連結日」起累積，**不回填** | 啟用前的 console 歷史（保留 90 天）只能人工填 `manual/<app>/console_issues.csv`（一次性，格式見範本） |
-| 連結動作本身無 CLI | 每個 Firebase 專案要在 Console 點一次 Link |
+## 設定檔架構
 
-### 真實 stack trace：Crashlytics MCP（`fetch_stacktraces.py`）
-
-BQ export 沒有堆疊。本工具 spawn `firebase experimental:mcp`（`firebase-tools` ≥15.23）當子行程、走 stdio JSON-RPC 抓 score 前 N 個 issue 的堆疊＋元兇 frame（file:line）——純腳本、不需互動 agent、可進排程。認證用 `firebase login` 的 **user token**（service account 打 Crashlytics 一律 404，[firebase-tools#10004](https://github.com/firebase/firebase-tools/issues/10004)）。堆疊餵 AI 推 root cause、顯示在儀表板、可複製給 coding agent。**BQ 未接的 app**：改用 MCP 的 topIssues／分布報表當 issue 來源，並按週切窗自建週趨勢，不連 BQ 也能產完整月報。
-
-## 設定
-
-所有環境差異收斂在三處，程式碼零改動：
+所有環境差異收斂在三處，核心程式碼零改動：
 
 | 檔案 | 內容 | 版控 |
 |---|---|---|
-| `apps.yaml` | 各 app 的 Firebase 專案、core_paths（評分加權）、custom_keys | 建議放你的私有 instance repo |
-| `.env` | `GEMINI_API_KEY`、`GEMINI_MODEL`（預設 gemini-flash-latest） | ✗ 永不 |
-| `~/.config/crash-trend/sa.json` | BigQuery 唯讀 SA 金鑰（`create_sa.sh` 產生） | ✗ 永不（Docker 以 read-only 掛載，不進 image） |
+| `apps.yaml` | 各 App 的 Firebase 專案、BQ dataset、Sessions dataset、core_paths、custom_keys | 建議放私有 instance repo |
+| `.env` | `GEMINI_API_KEY`、`GEMINI_MODEL`（預設 gemini-flash-latest） | ✗ 永不進版控 |
+| `~/.config/crash-trend/sa.json` | BigQuery 唯讀 SA 金鑰（`create_sa.sh` 產生） | ✗ 永不進版控（Docker read-only 掛載） |
 
-**多公司使用模式**：本 repo 當 `upstream`（引擎），每家公司 fork/clone 成私有 instance repo 放自己的 `apps.yaml` 與月報；引擎更新 `git pull upstream main`。
+### 多 App 設定範例 (`apps.yaml`)
 
-## AI 分析
+```yaml
+credentials:
+  bq_service_account: ~/.config/crash-trend/sa.json
 
-- **自動**（排程）：`analyze_gemini.py` — 空資料月份不呼叫 API；預設分析 top 5（更多會讓結構化生成逾時）；key 走 `GEMINI_API_KEY` 或 `GEMINI_KEY_URL`（後台代管）任一；`custom_keys` 有埋的 app 會做族群交叉（例如「crash 是否集中在某種用戶角色」）
-- **互動**：搭配 Claude Code 等 agent 直接讀 `out/<app>/unified.json` 做深度分析與現場修復
-- **給 PM 的白話簡報**：`pm_brief.py --app <name> [--top 1|--issue N]` — 把優先清單 issue 轉成非工程師看得懂的白話說明。白話文字用到才呼叫 Gemini（省 token），生成後回寫快照快取
+apps:
+  shop_app:
+    display_name: 購物商城 App
+    firebase_project: shop-prod-12345
+    bq_dataset: firebase_crashlytics
+    sessions_dataset: firebase_sessions
+    package_name: com.example.shop
+    source_repo: ~/develop/shop_app
+    platforms: [android, ios]
+    core_paths: [checkout, payment, CartActivity]
+    custom_keys: [user_tier, network_type]
+```
+
+---
 
 ## 專案結構
 
 ```
 crash_trend/
-  fetch_bigquery.py     # BQ export 查詢（SA / ADC 雙模式）
-  fetch_stacktraces.py  # 真實 stack trace（headless 驅動 Firebase MCP）
-  normalize.py          # 多來源 → 統一 schema ＋ 月度摘要
-  analyze_gemini.py     # 評分（程式）＋ 註解（Gemini）→ 月報 md
-  check_surge.py        # 暴增偵測（週跑，觸發即發告警）
-  post_report.py        # 月度摘要卡發送（聊天整合，可選）
-  pm_brief.py           # 優先 issue → 給 PM 的白話簡報
-  build_dashboard.py    # 自包含儀表板產生器（含複製給 agent）
+  schema_v2.py           # Dashboard V2 資料契約 (TypedDicts) 與嚴格驗證器
+  fetch_bigquery.py      # BigQuery V2：Overview 聚合、日曆日每日趨勢、維度分布
+  fetch_sessions.py      # Firebase Sessions：Crash-free Users / Sessions 指標與版本健康度
+  fetch_issue_details.py # Issue Detail：Stack trace、Blame frame、Breadcrumbs、Logs (含 MCP fallback)
+  fetch_stacktraces.py   # Firebase MCP 驅動客戶端 (headless stdio JSON-RPC)
+  analyze_gemini.py      # 確定性 Priority Score ＋ Gemini AI 策略摘要
+  build_dashboard.py     # 多 App 聚合與自包含 SaaS Dashboard HTML 產生器
+  check_surge.py         # 每日趨勢週暴增偵測告警
+  pm_brief.py            # 優先 issue → 給 PM 的白話簡報
+  post_report.py         # 月度摘要卡發送（聊天整合，可選）
+  config.py              # apps.yaml 讀取與路徑工具
 scripts/
-  weekly_sync.sh        # 週同步（Docker/launchd 皆呼叫此腳本）
-  create_sa.sh          # 一鍵建 BigQuery 唯讀 SA
+  weekly_sync.sh         # 週同步主要進入點（Docker/launchd/手動皆呼叫此腳本）
+  create_sa.sh           # 一鍵建 BigQuery 唯讀 SA
 ```
+
+---
+
+## 容錯與優雅降級 (Graceful Degradation)
+
+- **無 Firebase Sessions**：自動將 Sessions 來源標記為 `unavailable`，Crash-free 卡片顯示明確的 "Unavailable" 字樣，**絕不顯示 0%**。
+- **無 GEMINI_API_KEY**：AI 分析標為 `disabled`，Priority Score 依然以確定性權重公式精確計算。
+- **MCP 未登入**：自動以 BigQuery sample events 或 subtitle 啟發式解析 Blame Frame，流程不中斷。
+- **空資料期間**：無 Crash 事件時安全輸出 0 與空列表，不發生除以零或 Null 錯誤。
+
+---
 
 ## License
 

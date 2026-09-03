@@ -26,25 +26,31 @@ EOF
 
 for app in $apps; do
   echo "--- fetch_bigquery: $app"
-  # BQ 未連結/無資料時腳本會以非零碼結束並說明原因（屬預期，不算失敗）
+  # 1. BigQuery V2：抓取 Crashlytics 匯總指標與每日趨勢
   $PY "$CT/crash_trend/fetch_bigquery.py" --app "$app" || echo "    （$app 本次無 BQ 資料，原因見上）"
-  echo "--- fetch_stacktraces: $app"
-  # 需 firebase CLI ≥15.23 ＋ firebase login user token；失敗只影響 root cause 品質，不擋流程
-  $PY "$CT/crash_trend/fetch_stacktraces.py" --app "$app" || echo "    （$app 本次無 stack trace，原因見上）"
+
+  echo "--- fetch_sessions: $app"
+  # 2. Firebase Sessions：計算 Crash-free 指標（未開 Sessions export 時優雅降級）
+  $PY "$CT/crash_trend/fetch_sessions.py" --app "$app" || echo "    （$app 無 Sessions 資料，優雅降級）"
+
+  echo "--- fetch_issue_details: $app"
+  # 3. Issue Details：從 BQ / MCP 抓取 Blame frame、Stack trace、Breadcrumbs 與 Logs
+  $PY "$CT/crash_trend/fetch_issue_details.py" --app "$app" || echo "    （$app 本次無詳細 stack/blame 資料，優雅降級）"
+
   echo "--- normalize: $app"
+  # 4. 正規化與月度快照產出（供歷史月報與下游相容）
   $PY "$CT/crash_trend/normalize.py" --app "$app" || FAILED="$FAILED normalize:$app"
+
+  echo "--- analyze_gemini: $app"
+  # 5. Priority / AI 分析：確定性評分（P0~P3）＋ Gemini AI 策略摘要（無 Key 時優雅降級）
+  $PY "$CT/crash_trend/analyze_gemini.py" --app "$app" || FAILED="$FAILED analyze:$app"
+
   echo "--- check_surge: $app"
-  # 暴增偵測每週跑（不受發卡月頻 gate）；失敗只記不擋
+  # 6. 暴增偵測每週跑（不受發卡月頻 gate）；失敗只記不擋
   $PY "$CT/crash_trend/check_surge.py" --app "$app" || FAILED="$FAILED surge:$app"
-  # 有 Gemini key 就跑 AI 分析——GEMINI_API_KEY（直接）或 GEMINI_KEY_URL（後台取 key）任一即可。
-  # 少了這個 analyze 不跑 → priority_list 空 → 聊天卡退化成「其他 N 個 issue」而非優先修復 TOP 3。
-  if [ -n "${GEMINI_API_KEY:-}${GEMINI_KEY_URL:-}" ]; then
-    echo "--- analyze_gemini: $app"
-    $PY "$CT/crash_trend/analyze_gemini.py" --app "$app" || FAILED="$FAILED analyze:$app"
-  fi
 done
 
-echo "--- build_dashboard"
+echo "--- build_dashboard (Dashboard V2 Bundle)"
 $PY "$CT/crash_trend/build_dashboard.py" || FAILED="$FAILED dashboard"
 
 # 發卡到聊天室（chat 整合，見 DEPLOY.md）：資料每週同步，但卡片「每月一次」——

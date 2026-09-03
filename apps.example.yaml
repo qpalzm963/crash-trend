@@ -1,18 +1,43 @@
 # crash-trend 設定範例 —— 複製為 apps.yaml 後填入實值
-# 新公司移植：只要改這份 + 跑 scripts/create_sa.sh，其他都不用動（見 README「移植到新環境」）
+# 支援 Dashboard V2 多 App 管理、Firebase Sessions Crash-free 指標與 AI 優先級分析
 
 credentials:
   # BigQuery 服務帳號 json 路徑（用 scripts/create_sa.sh 產生；筆電與伺服器共用同一把）
   bq_service_account: ~/.config/crash-trend/sa.json
 
 apps:
-  my_app:                              # app 代號（英文，當目錄名用）
-    display_name: 我的 App             # 儀表板分頁顯示名
-    firebase_project: my-app-12345     # Firebase 專案 ID（Console 專案設定可查）
-    bq_dataset: firebase_crashlytics   # 預設值，通常不用改
-    source_repo: ~/develop/my_app      # 原始碼位置（AI 對映堆疊用；沒有可留空）
-    core_paths:                        # 核心業務關鍵字（優先級評分 ×3；檔名/路徑/中文皆可）
+  shop_app:                               # app 代號（英文識別碼，作為目錄與 URL anchor）
+    display_name: 購物商城 App             # 儀表板與報表顯示名稱
+    firebase_project: shop-app-12345      # Firebase 專案 ID（BigQuery 專案同名或關聯專案）
+    bq_dataset: firebase_crashlytics      # Crashlytics BigQuery dataset（預設值通常免改）
+    sessions_dataset: firebase_sessions   # Firebase Sessions BigQuery dataset（計算 Crash-free 率）
+    package_name: com.example.shop        # Android Package Name（多 App 共享 dataset 時精準過濾表）
+    bundle_id: com.example.shop.ios       # iOS Bundle Identifier（選填）
+    source_repo: ~/develop/shop_app       # 原始碼本地路徑（AI 與 Blame Frame 原始碼對映；無則留空）
+    platforms:                            # 支援平台
+      - android
+      - ios
+    core_paths:                           # 核心業務關鍵字（優先級評分加權；可填檔名、路徑或模組）
       - checkout
+      - payment
+      - CartActivity
       - 付款
-    custom_keys:                       # app 有埋的 Crashlytics 自訂 keys（沒埋就整段省略）
-      - user_role
+    custom_keys:                          # App 埋設之 Crashlytics Custom Keys 監控清單
+      - user_tier
+      - network_type
+
+  rider_app:                              # 第二個 App 範例（多 App 切換）
+    display_name: 外送司機端
+    firebase_project: rider-app-67890
+    bq_dataset: firebase_crashlytics
+    sessions_dataset: firebase_sessions
+    package_name: com.example.rider
+    source_repo: ~/develop/rider_app
+    platforms:
+      - android
+    core_paths:
+      - navigation
+      - dispatch
+      - order_accept
+    custom_keys:
+      - vehicle_type

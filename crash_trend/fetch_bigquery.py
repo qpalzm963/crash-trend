@@ -832,6 +832,13 @@ def main() -> None:
         tables = list_crash_tables(client, project, dataset, app_config={**app, "app_id": args.app})
     except Exception as e:
         write_json(out_dir(args.app) / "crashlytics_bq.json", {**result, "errors": {"dataset": str(e)[:800]}})
+        app_v2_data = transform_bq_to_v2(result, {**app, "app_id": args.app}, days=args.days)
+        app_v2_data["sources"]["crashlytics_bq"] = {
+            "status": "error",
+            "last_sync_timestamp": None,
+            "error_message": str(e)[:400],
+        }
+        write_json(out_dir(args.app) / "dashboard_v2.json", app_v2_data)
         sys.exit(
             f"[注意] 無法列出 {project}:{dataset} —— 尚未連結 BigQuery export、無資料，或憑證問題。\n"
             f"  憑證設定：apps.yaml 填 credentials.bq_service_account（SA json 路徑），"
@@ -841,6 +848,13 @@ def main() -> None:
 
     if not tables:
         write_json(out_dir(args.app) / "crashlytics_bq.json", result)
+        app_v2_data = transform_bq_to_v2(result, {**app, "app_id": args.app}, days=args.days)
+        app_v2_data["sources"]["crashlytics_bq"] = {
+            "status": "unavailable",
+            "last_sync_timestamp": None,
+            "error_message": f"未找到符合 App {args.app} 的 Crashlytics 批次表",
+        }
+        write_json(out_dir(args.app) / "dashboard_v2.json", app_v2_data)
         sys.exit(f"[注意] 沒有找到符合 App {args.app} 的 Crashlytics 批次表")
 
     sqls = dict(SQLS)
@@ -875,6 +889,8 @@ def main() -> None:
             print(f"    - {ve}", file=sys.stderr)
     else:
         print(f"  ✓ AppDashboardV2Data 轉換完成並通過 Schema V2 驗證")
+
+    write_json(out_dir(args.app) / "dashboard_v2.json", app_v2_data)
 
     if result["errors"]:
         sys.exit("[注意] 部分查詢失敗（詳見輸出 errors 欄位）")

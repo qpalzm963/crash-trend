@@ -247,10 +247,10 @@ def main() -> None:
     month = dt.date.today().strftime("%Y-%m")
     summary_dir = ROOT / "reports" / "data" / args.app
     summary_dir.mkdir(parents=True, exist_ok=True)
-    fatal_events = sum(i["events"] for i in issues if i["fatal"])
-    total_events = sum(i["events"] for i in issues)
+    fatal_events = sum(i.get("events", 0) for i in issues if i.get("fatal"))
+    total_events = sum(i.get("events", 0) for i in issues)
     # 層級全量彙總（供儀表板層級分布圖精確取數；top_issues 只有前 15 筆）
-    by_level = {lv: sum(i["events"] for i in issues if i.get("error_type") == lv) for lv in ("FATAL", "ANR", "NON_FATAL")}
+    by_level = {lv: sum(i.get("events", 0) for i in issues if i.get("error_type") == lv) for lv in ("FATAL", "ANR", "NON_FATAL")}
     summary = {
         "month": month,
         "app": args.app,
@@ -258,7 +258,7 @@ def main() -> None:
         "generated_at": unified["generated_at"],
         "kpis": {
             "events": total_events,
-            "users": sum(i["users"] for i in issues),
+            "users": sum(i.get("users", 0) for i in issues),
             "fatal_share": round(fatal_events / total_events, 3) if total_events else None,
             "issue_count": len(issues),
             "events_fatal": by_level["FATAL"],

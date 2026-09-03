@@ -19,6 +19,7 @@ sys.path.insert(0, str(ROOT))
 
 from crash_trend.build_dashboard import (
     DEFAULT_OUT_HTML,
+    assemble_bundle_from_apps,
     build_html,
     collect_data,
     generate_dashboard,
@@ -115,16 +116,43 @@ class TestBuildDashboardV2(unittest.TestCase):
             self.assertIn("Crashlytics", content)
             self.assertIn("shop_app", content)
 
-    def test_collect_data_fallback(self) -> None:
-        """Verifies collect_data loads from fixture or creates valid fallback."""
+    def test_collect_data_specified_path(self) -> None:
+        """Verifies collect_data loads from specified path correctly."""
         data = collect_data(str(self.fixture_v2_path))
         self.assertEqual(data["schema_version"], "2.0")
         self.assertIn("apps", data)
+        self.assertIn("shop_app", data["apps"])
 
-        # Test default without path finds fixture
-        default_data = collect_data()
-        self.assertEqual(default_data["schema_version"], "2.0")
-        self.assertIn("apps", default_data)
+    def test_collect_data_negative_never_silently_loads_fixtures(self) -> None:
+        """Negative test: In an environment with empty out/ and no reports, collect_data must NEVER silently load test fixtures."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmproot = Path(tmpdir)
+            with unittest.mock.patch("crash_trend.build_dashboard.ROOT", tmproot):
+                # When out/ and reports/ do not exist, collect_data() must return safe minimal fallback, NOT fixture data
+                data = collect_data()
+                self.assertEqual(data["schema_version"], "2.0")
+                self.assertIn("default_app", data["apps"])
+                self.assertNotIn("shop_app", data["apps"])
+                self.assertNotIn("rider_app", data["apps"])
+
+    def test_assemble_bundle_from_apps_rejects_invalid_bundle(self) -> None:
+        """Verifies assemble_bundle_from_apps validates schema and refuses to write invalid bundle."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmproot = Path(tmpdir)
+            out_dir = tmproot / "out" / "broken_app"
+            out_dir.mkdir(parents=True, exist_ok=True)
+
+            # Write invalid app data (missing required kpi/metadata fields)
+            broken_app_data = {"invalid_field": 123}
+            (out_dir / "dashboard_v2.json").write_text(json.dumps(broken_app_data), encoding="utf-8")
+
+            fake_cfg = {"apps": {"broken_app": {"display_name": "Broken"}}}
+            with unittest.mock.patch("crash_trend.build_dashboard.ROOT", tmproot):
+                bundle = assemble_bundle_from_apps(fake_cfg)
+                self.assertIsNone(bundle)
+                # Confirm bundle was NOT written to out/ or reports/
+                self.assertFalse((tmproot / "out" / "dashboard_v2.json").is_file())
+                self.assertFalse((tmproot / "reports" / "dashboard_v2.json").is_file())
 
 
 if __name__ == "__main__":
