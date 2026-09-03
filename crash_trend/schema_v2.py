@@ -73,6 +73,7 @@ class SourcesAvailability(TypedDict):
     gemini_ai: NotRequired[Optional[SourceStatus]]
     ai: NotRequired[Optional[SourceStatus]]
     manual_console: NotRequired[Optional[SourceStatus]]
+    historical_catalog: NotRequired[Optional[SourceStatus]]
 
 
 class KPIMetric(TypedDict):
@@ -274,6 +275,39 @@ class IssueLifecycle(TypedDict):
     reason: Optional[str]
 
 
+class CatalogIssueHistory(TypedDict):
+    issue_id: str
+    platform: Literal["ios", "android"]
+    title: str
+    subtitle: str
+    error_type: Literal["FATAL", "ANR", "NON_FATAL"]
+    first_seen_version: str
+    last_seen_version: str
+    first_seen_timestamp: Optional[str]
+    last_seen_timestamp: Optional[str]
+    versions_seen: List[str]
+    last_updated: str
+
+
+class CatalogVersionHistory(TypedDict):
+    version: str
+    platform: Literal["ios", "android"]
+    status: Literal["latest", "active", "maintenance", "deprecated"]
+    adoption_rate: Optional[float]
+    sessions_total: Optional[int]
+    crash_events: int
+    sample_sufficient: bool
+    last_updated: str
+
+
+class HistoricalCatalogData(TypedDict):
+    schema_version: str
+    updated_at: str
+    app_id: NotRequired[Optional[str]]
+    issues: Dict[str, CatalogIssueHistory]
+    app_versions: Dict[str, Dict[str, CatalogVersionHistory]]
+
+
 class IssueSummary(TypedDict):
     issue_id: str
     platform: Literal["ios", "android"]
@@ -465,7 +499,57 @@ def validate_issue_lifecycle(lc: Any, errors: List[str], p: str = "") -> None:
                 errors.append(f"{p}lifecycle.versions_seen must be a non-negative integer")
 
 
-def validate_issue_summary(issue: Any, idx: int, errors: List[str], p: str = "") -> None:
+def validate_historical_catalog(data: dict) -> List[str]:
+    """Validates a HistoricalCatalogData dictionary strictly against Schema V2.3 rules."""
+    errors: List[str] = []
+    if not isinstance(data, dict):
+        return ["HistoricalCatalogData must be an object"]
+
+    for req_k in ("schema_version", "updated_at", "issues", "app_versions"):
+        if req_k not in data:
+            errors.append(f"{req_k} is required in historical catalog")
+
+    if "schema_version" in data and str(data["schema_version"]) not in SUPPORTED_SCHEMA_VERSIONS and str(data["schema_version"]) != "1.0":
+        errors.append(f"historical catalog schema_version '{data['schema_version']}' is not supported")
+
+    if "issues" in data and isinstance(data["issues"], dict):
+        for key, iss in data["issues"].items():
+            p = f"issues['{key}']."
+            if not isinstance(iss, dict):
+                errors.append(f"{p}must be an object")
+                continue
+            for field in ("issue_id", "platform", "first_seen_version", "last_seen_version", "versions_seen"):
+                if field not in iss:
+                    errors.append(f"{p}{field} is required")
+            if "platform" in iss and iss["platform"] not in ("ios", "android"):
+                errors.append(f"{p}platform must be 'ios' or 'android'")
+            if "versions_seen" in iss and not isinstance(iss["versions_seen"], list):
+                errors.append(f"{p}versions_seen must be a list")
+
+    if "app_versions" in data and isinstance(data["app_versions"], dict):
+        for pf_or_ver, val in data["app_versions"].items():
+            if isinstance(val, dict):
+                if pf_or_ver in ("android", "ios"):
+                    for ver_k, v_obj in val.items():
+                        vp = f"app_versions.{pf_or_ver}['{ver_k}']."
+                        if not isinstance(v_obj, dict):
+                            errors.append(f"{vp}must be an object")
+                        elif "version" not in v_obj:
+                            errors.append(f"{vp}version is required")
+                else:
+                    if "version" not in val:
+                        errors.append(f"app_versions['{pf_or_ver}'].version is required")
+
+    return errors
+
+
+def validate_issue_summary(
+    issue: Any,
+    idx: int,
+    errors: List[str],
+    p: str = "",
+    require_lifecycle: bool = False,
+) -> None:
     """Validates an IssueSummary object against Schema V2.3 rules."""
     if not isinstance(issue, dict):
         errors.append(f"{p.rstrip('.')} must be an object")
@@ -569,10 +653,12 @@ def validate_issue_summary(issue: Any, idx: int, errors: List[str], p: str = "")
 
     # Lifecycle (V2.3)
     lc = issue.get("lifecycle")
+    if require_lifecycle and lc is None:
+        errors.append(f"{p}lifecycle is required in Schema V2.3")
     validate_issue_lifecycle(lc, errors, p)
 
 
-def validate_app_dashboard_v2(data: dict, prefix: str = "") -> List[str]:
+def validate_app_dashboard_v2(data: dict, prefix: str = "", require_lifecycle: bool = False) -> List[str]:
     """Validates an AppDashboardV2Data dictionary strictly against Schema V2 rules."""
     errors: List[str] = []
     if not isinstance(data, dict):
@@ -655,6 +741,8 @@ def validate_app_dashboard_v2(data: dict, prefix: str = "") -> List[str]:
     if isinstance(sources, dict):
         valid_src_statuses = {"available", "unavailable", "disabled", "error", "stale", "insufficient_data"}
         check_sources = ["crashlytics_bq", "firebase_sessions", "mcp_crashlytics"]
+        if "historical_catalog" in sources:
+            check_sources.append("historical_catalog")
         if "ai" in sources:
             check_sources.append("ai")
             if "gemini_ai" in sources:
@@ -881,7 +969,7 @@ def validate_app_dashboard_v2(data: dict, prefix: str = "") -> List[str]:
     issues = data.get("top_issues")
     if isinstance(issues, list):
         for idx, issue in enumerate(issues):
-            validate_issue_summary(issue, idx, errors, f"{p}top_issues[{idx}].")
+            validate_issue_summary(issue, idx, errors, f"{p}top_issues[{idx}].", require_lifecycle=require_lifecycle)
     elif issues is not None:
         errors.append(f"{p}top_issues must be a list")
 
@@ -951,7 +1039,7 @@ def validate_app_dashboard_v2(data: dict, prefix: str = "") -> List[str]:
                     errors.append(f"{p}periods['{p_key}'].top_issues is required")
                 else:
                     for idx, issue in enumerate(p_val["top_issues"]):
-                        validate_issue_summary(issue, idx, errors, f"{p}periods['{p_key}'].top_issues[{idx}].")
+                        validate_issue_summary(issue, idx, errors, f"{p}periods['{p_key}'].top_issues[{idx}].", require_lifecycle=require_lifecycle)
                 if "version_health" not in p_val or not isinstance(p_val["version_health"], list):
                     errors.append(f"{p}periods['{p_key}'].version_health is required")
                 if "distributions" not in p_val or not isinstance(p_val["distributions"], dict):
@@ -989,7 +1077,8 @@ def validate_dashboard_v2(data: dict) -> List[str]:
     else:
         if default_app and default_app not in apps:
             errors.append(f"Root default_app '{default_app}' is not present in apps dict")
+        is_v2_3 = str(data.get("schema_version", "")).startswith("2.3")
         for app_name, app_data in apps.items():
-            errors.extend(validate_app_dashboard_v2(app_data, prefix=f"apps['{app_name}']"))
+            errors.extend(validate_app_dashboard_v2(app_data, prefix=f"apps['{app_name}']", require_lifecycle=is_v2_3))
 
     return errors

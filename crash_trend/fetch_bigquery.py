@@ -178,11 +178,11 @@ SQLS: Dict[str, str] = {
             COUNT(*) AS events,
             COUNT(DISTINCT installation_uuid) AS users
         FROM `{table}`
-        WHERE event_timestamp >= TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL {days} - 1 DAY))
+        WHERE event_timestamp >= TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL {catalog_days} DAY))
           AND event_timestamp < TIMESTAMP_ADD(TIMESTAMP(CURRENT_DATE()), INTERVAL 1 DAY)
         GROUP BY 1, 2
         ORDER BY events DESC
-        LIMIT 2000""",
+        LIMIT 3000""",
     # 6. 維度分布：機型
     "by_device": """
         SELECT
@@ -869,11 +869,13 @@ def transform_bq_to_v2(
 
     raw_catalog_rows: List[dict] = []
     tables_map = (bq_result or {}).get("tables") or {}
-    for t_data in tables_map.values():
+    for table_name, t_data in tables_map.items():
         if isinstance(t_data, dict):
+            pf = extract_platform_from_table(table_name)
             lc_rows = t_data.get("lifecycle_catalog")
             if lc_rows:
-                raw_catalog_rows.extend(lc_rows)
+                for r in lc_rows:
+                    raw_catalog_rows.append({**r, "platform": pf})
             else:
                 for iv in t_data.get("issue_versions") or []:
                     raw_catalog_rows.append({
@@ -881,6 +883,7 @@ def transform_bq_to_v2(
                         "app_version": iv.get("app_version"),
                         "events": iv.get("events", 0),
                         "users": iv.get("users", 0),
+                        "platform": pf,
                     })
 
     try:
@@ -950,7 +953,8 @@ def main() -> None:
 
     def fetch_single_query(p_days: int, table: str, name: str, sql_tpl: str) -> Tuple[int, str, str, Any, Optional[str]]:
         fq = f"{project}.{dataset}.{table}"
-        formatted_sql = sql_tpl.format(table=fq, days=p_days) if "{table}" in sql_tpl else sql_tpl
+        catalog_days = max(90, p_days)
+        formatted_sql = sql_tpl.format(table=fq, days=p_days, catalog_days=catalog_days) if "{table}" in sql_tpl else sql_tpl
         try:
             rows = run_query(client, formatted_sql)
             return p_days, table, name, rows, None
@@ -976,6 +980,9 @@ def main() -> None:
             for name, sql in table_sqls.items():
                 if name == "daily_trend" and p_days != max_period:
                     # daily_trend only needed once for the longest period (it will be sliced for smaller periods)
+                    continue
+                if name == "lifecycle_catalog" and p_days != max_period:
+                    # lifecycle_catalog queries full 90-day retention and only needs to be queried once per table
                     continue
                 tasks.append((p_days, table, name, sql))
 

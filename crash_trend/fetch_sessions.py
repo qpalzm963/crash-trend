@@ -711,11 +711,15 @@ def enrich_app_dashboard_with_sessions(app_data: Dict[str, Any], sessions_result
 
         # Materialize versions from Sessions that had 0 crashes (Must Fix 2)
         if is_available and version_sessions:
+            app_pfs = app_data.get("metadata", {}).get("platforms") or ["android"]
+            default_pf = app_pfs[0] if len(app_pfs) == 1 else "android"
             existing_vers = {str(item.get("version")).strip() for item in app_data["version_health"] if isinstance(item, dict) and item.get("version")}
             for ver_key, v_info in version_sessions.items():
                 if ver_key and ver_key not in existing_vers:
+                    v_pf = v_info.get("platform") or default_pf
                     app_data["version_health"].append({
                         "version": ver_key,
+                        "platform": v_pf,
                         "status": "active",
                         "crash_events": 0,
                         "affected_users": 0,
@@ -725,16 +729,24 @@ def enrich_app_dashboard_with_sessions(app_data: Dict[str, Any], sessions_result
                     })
                     existing_vers.add(ver_key)
 
-            # Update latest version marker
+            # Update latest version marker per platform
             if existing_vers:
                 try:
                     from crash_trend.versions import max_version
                 except ImportError:
                     from versions import max_version  # type: ignore
-                max_v = max_version(list(existing_vers))
+
+                vers_by_pf: Dict[str, list] = {}
                 for item in app_data["version_health"]:
                     if isinstance(item, dict) and item.get("version"):
-                        if str(item.get("version")).strip() == max_v:
+                        pf = item.get("platform", "android")
+                        vers_by_pf.setdefault(pf, []).append(str(item["version"]).strip())
+
+                max_v_by_pf = {pf: max_version(vs) for pf, vs in vers_by_pf.items() if vs}
+                for item in app_data["version_health"]:
+                    if isinstance(item, dict) and item.get("version"):
+                        pf = item.get("platform", "android")
+                        if str(item.get("version")).strip() == max_v_by_pf.get(pf):
                             item["status"] = "latest"
                         elif item.get("status") == "latest":
                             item["status"] = "active"
@@ -810,11 +822,15 @@ def enrich_app_dashboard_with_sessions(app_data: Dict[str, Any], sessions_result
 
                 # Materialize 0-crash versions in snap["version_health"]
                 if snap_avail and snap_ver_sess:
+                    app_pfs = app_data.get("metadata", {}).get("platforms") or ["android"]
+                    default_pf = app_pfs[0] if len(app_pfs) == 1 else "android"
                     snap_existing_vers = {str(item.get("version")).strip() for item in snap["version_health"] if isinstance(item, dict) and item.get("version")}
                     for ver_key, v_info in snap_ver_sess.items():
                         if ver_key and ver_key not in snap_existing_vers:
+                            v_pf = v_info.get("platform") or default_pf
                             snap["version_health"].append({
                                 "version": ver_key,
+                                "platform": v_pf,
                                 "status": "active",
                                 "crash_events": 0,
                                 "affected_users": 0,
@@ -829,10 +845,18 @@ def enrich_app_dashboard_with_sessions(app_data: Dict[str, Any], sessions_result
                             from crash_trend.versions import max_version
                         except ImportError:
                             from versions import max_version  # type: ignore
-                        snap_max_v = max_version(list(snap_existing_vers))
+
+                        snap_vers_by_pf: Dict[str, list] = {}
                         for item in snap["version_health"]:
                             if isinstance(item, dict) and item.get("version"):
-                                if str(item.get("version")).strip() == snap_max_v:
+                                pf = item.get("platform", "android")
+                                snap_vers_by_pf.setdefault(pf, []).append(str(item["version"]).strip())
+
+                        snap_max_v_by_pf = {pf: max_version(vs) for pf, vs in snap_vers_by_pf.items() if vs}
+                        for item in snap["version_health"]:
+                            if isinstance(item, dict) and item.get("version"):
+                                pf = item.get("platform", "android")
+                                if str(item.get("version")).strip() == snap_max_v_by_pf.get(pf):
                                     item["status"] = "latest"
                                 elif item.get("status") == "latest":
                                     item["status"] = "active"

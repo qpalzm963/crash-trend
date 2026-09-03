@@ -33,6 +33,7 @@ from crash_trend.build_dashboard import build_html
 from crash_trend.fetch_sessions import enrich_app_dashboard_with_sessions
 from crash_trend.lifecycle import (
     IssueHistoricalCatalog,
+    bootstrap_catalog_from_disk,
     detect_issue_lifecycle,
     enrich_app_data_with_lifecycle,
     get_latest_app_version,
@@ -665,6 +666,157 @@ class TestSchemaValidationLifecycle(unittest.TestCase):
         }
         errors = validate_app_dashboard_v2(app)
         self.assertTrue(any("periods['30'].top_issues[0].lifecycle.status must be one of" in e for e in errors))
+
+
+class TestPlatformIsolation(unittest.TestCase):
+    """Verifies strict isolation between Android and iOS version streams and issue lifecycles."""
+
+    def test_platform_isolated_versions_and_lifecycle(self):
+        # App with both Android (1.0.8, 1.0.9, 1.0.10) and iOS (2.0.0, 2.1.0)
+        app_data: AppDashboardV2Data = {
+            "metadata": {"app_id": "shop_app", "display_name": "Shop", "firebase_project_id": "p", "platforms": ["android", "ios"]},
+            "period": {"days": 30, "start_time": "2026-08-05T00:00:00Z", "end_time": "2026-09-03T23:59:59Z"},
+            "sources": {"crashlytics_bq": {"status": "available"}},
+            "kpi": {"crash_events": {"value": 100}, "affected_users": {"value": 50}},
+            "daily_trend": [],
+            "version_health": [
+                {"version": "1.0.8", "platform": "android", "status": "active", "crash_events": 10},
+                {"version": "1.0.9", "platform": "android", "status": "active", "crash_events": 20},
+                {"version": "1.0.10", "platform": "android", "status": "latest", "crash_events": 15, "adoption_rate": 0.4, "sessions_total": 5000},
+                {"version": "2.0.0", "platform": "ios", "status": "active", "crash_events": 10},
+                {"version": "2.1.0", "platform": "ios", "status": "latest", "crash_events": 0, "adoption_rate": 0.6, "sessions_total": 8000},
+            ],
+            "distributions": {
+                "platform": [],
+                "device_models": [],
+                "os_versions": [],
+                "app_versions": [
+                    {"app_version": "1.0.8", "platform": "android"},
+                    {"app_version": "1.0.9", "platform": "android"},
+                    {"app_version": "1.0.10", "platform": "android"},
+                    {"app_version": "2.0.0", "platform": "ios"},
+                    {"app_version": "2.1.0", "platform": "ios"},
+                ],
+                "custom_keys": [],
+            },
+            "top_issues": [
+                {
+                    "issue_id": "android_crash_active",
+                    "platform": "android",
+                    "title": "NPE in Android Checkout",
+                    "first_seen_version": "1.0.8",
+                    "last_seen_version": "1.0.10",
+                    "version_distribution": [
+                        {"version": "1.0.8", "events": 5, "users": 3},
+                        {"version": "1.0.9", "events": 5, "users": 3},
+                        {"version": "1.0.10", "events": 5, "users": 3},
+                    ],
+                },
+                {
+                    "issue_id": "ios_crash_resolved",
+                    "platform": "ios",
+                    "title": "SIGSEGV in iOS Render",
+                    "first_seen_version": "2.0.0",
+                    "last_seen_version": "2.0.0",
+                    "version_distribution": [
+                        {"version": "2.0.0", "events": 10, "users": 5},
+                        # 0 events in iOS 2.1.0!
+                    ],
+                },
+            ],
+            "periods": {},
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            enriched = enrich_app_data_with_lifecycle(app_data, app_name="shop_app", out_dir=Path(tmpdir))
+            iss_and = enriched["top_issues"][0]
+            iss_ios = enriched["top_issues"][1]
+
+            # Android issue must ONLY be compared against Android latest_version (1.0.10), NOT iOS (2.1.0)!
+            self.assertEqual(iss_and["lifecycle"]["latest_version"], "1.0.10")
+            self.assertEqual(iss_and["lifecycle"]["status"], "persistent")
+
+            # iOS issue must ONLY be compared against iOS latest_version (2.1.0), NOT Android (1.0.10)!
+            self.assertEqual(iss_ios["lifecycle"]["latest_version"], "2.1.0")
+            self.assertEqual(iss_ios["lifecycle"]["status"], "resolved")
+
+    def test_platform_same_issue_id_collision_prevention(self):
+        """Identical issue IDs across Android and iOS must be maintained distinctly in catalog."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cat_path = Path(tmpdir) / "historical_catalog.json"
+            catalog = IssueHistoricalCatalog(cat_path, app_id="multi_platform")
+
+            # Both platforms share the same issue_id string (e.g. from common error hash)
+            catalog.update_from_issues([
+                {"issue_id": "common_hash_123", "platform": "android", "first_seen_version": "1.0.0", "last_seen_version": "1.2.0"},
+                {"issue_id": "common_hash_123", "platform": "ios", "first_seen_version": "2.0.0", "last_seen_version": "2.5.0"},
+            ])
+            catalog.save()
+
+            # Reload and verify no overwrite
+            cat_reloaded = IssueHistoricalCatalog(cat_path, app_id="multi_platform")
+            cat_reloaded.load()
+
+            hist_and = cat_reloaded.get_issue_history("common_hash_123", platform="android")
+            hist_ios = cat_reloaded.get_issue_history("common_hash_123", platform="ios")
+
+            self.assertIsNotNone(hist_and)
+            self.assertIsNotNone(hist_ios)
+            self.assertEqual(hist_and["first_seen_version"], "1.0.0")
+            self.assertEqual(hist_ios["first_seen_version"], "2.0.0")
+
+
+class TestHistoricalBootstrap(unittest.TestCase):
+    """Verifies true historical bootstrap from disk archives and retention queries."""
+
+    def test_bootstrap_from_disk_archives(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            app_name = "shop_app"
+
+            # 1. Create simulated monthly report: reports/data/shop_app/2026-07.json
+            r_dir = root / "reports" / "data" / app_name
+            r_dir.mkdir(parents=True)
+            report_data = {
+                "issues": [
+                    {
+                        "issue_id": "iss_old_from_july",
+                        "platform": "android",
+                        "first_seen_version": "0.9.0",
+                        "last_seen_version": "0.9.5",
+                        "version_distribution": [{"version": "0.9.0", "events": 5, "users": 2}],
+                    }
+                ]
+            }
+            (r_dir / "2026-07.json").write_text(json.dumps(report_data), encoding="utf-8")
+
+            # 2. Create simulated unified.json: out/shop_app/unified.json
+            out_d = root / "out" / app_name
+            out_d.mkdir(parents=True)
+            unified_data = {
+                "issues": [
+                    {
+                        "issue_id": "iss_from_unified",
+                        "platform": "ios",
+                        "first_seen_version": "1.5.0",
+                        "last_seen_version": "1.6.0",
+                        "version_distribution": [{"version": "1.5.0", "events": 10, "users": 4}],
+                    }
+                ]
+            }
+            (out_d / "unified.json").write_text(json.dumps(unified_data), encoding="utf-8")
+
+            # Run bootstrap
+            cat = bootstrap_catalog_from_disk(app_name, root_dir=root)
+
+            # Both historical issues must be indexed
+            july_iss = cat.get_issue_history("iss_old_from_july", platform="android")
+            self.assertIsNotNone(july_iss)
+            self.assertEqual(july_iss["first_seen_version"], "0.9.0")
+
+            uni_iss = cat.get_issue_history("iss_from_unified", platform="ios")
+            self.assertIsNotNone(uni_iss)
+            self.assertEqual(uni_iss["first_seen_version"], "1.5.0")
 
 
 if __name__ == "__main__":

@@ -105,6 +105,17 @@ def assemble_bundle_from_apps(cfg: Optional[dict] = None) -> Optional[dict]:
         except Exception:
             pass
 
+    # Ensure all collected apps have lifecycle enriched before strict Schema V2.3 validation
+    for app_id, a_data in collected_apps.items():
+        if isinstance(a_data, dict) and isinstance(a_data.get("top_issues"), list):
+            has_missing_lc = any(isinstance(i, dict) and "lifecycle" not in i for i in a_data["top_issues"])
+            if has_missing_lc:
+                try:
+                    from crash_trend.lifecycle import enrich_app_data_with_lifecycle
+                    enrich_app_data_with_lifecycle(a_data, app_name=app_id, out_dir=ROOT / "out")
+                except Exception:
+                    pass
+
     # 驗證組裝之 bundle 是否符合 Schema V2，失敗時不寫入正式檔案
     val_errors = validate_dashboard_v2(bundle)
     if val_errors:
