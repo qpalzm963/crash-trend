@@ -423,7 +423,7 @@ def transform_bq_period_snapshot(
     raw_os: List[dict] = []
     raw_apps: List[dict] = []
     raw_custom_keys: List[dict] = []
-    ver_by_issue: Dict[str, List[dict]] = {}
+    ver_by_issue: Dict[Tuple[str, str], List[dict]] = {}
 
     for table_name, t_data in tables_data.items():
         platform = extract_platform_from_table(table_name)
@@ -490,7 +490,7 @@ def transform_bq_period_snapshot(
         for iv in t_data.get("issue_versions") or []:
             iid = str(iv.get("issue_id") or "")
             if iid:
-                ver_by_issue.setdefault(iid, []).append({
+                ver_by_issue.setdefault((platform, iid), []).append({
                     "version": str(iv.get("app_version") or "1.0.0"),
                     "events": int(iv.get("events") or 0),
                     "users": int(iv.get("users") or 0),
@@ -577,17 +577,18 @@ def transform_bq_period_snapshot(
         "events_by_error_type": {"fatal": overview_fatal, "anr": overview_anr, "non_fatal": overview_non_fatal},
     }
 
-    seen_issues: Dict[str, IssueSummary] = {}
+    seen_issues: Dict[Tuple[str, str], IssueSummary] = {}
     for it in raw_issues:
         iid = str(it.get("issue_id") or "")
         if not iid:
             continue
         platform = it.get("_platform", "android")
+        key = (platform, iid)
         err_type = norm_error_type(str(it.get("error_type") or "NON_FATAL"))
         ev = int(it.get("events") or 0)
         us = int(it.get("users") or 0)
 
-        iv_list = ver_by_issue.get(iid, [])
+        iv_list = ver_by_issue.get(key, [])
         v_dist_dict: Dict[str, VersionDistCount] = {}
         for iv in iv_list:
             v_name = iv["version"]
@@ -622,13 +623,21 @@ def transform_bq_period_snapshot(
             "detail": None,
         }
 
-        if iid in seen_issues:
-            existing = seen_issues[iid]
+        if key in seen_issues:
+            existing = seen_issues[key]
             existing["events"] += iss_entry["events"]
             existing["affected_users"] += iss_entry["affected_users"]
-            existing["version_distribution"].extend(iss_entry["version_distribution"])
+            existing_v_map = {vd["version"]: vd for vd in existing["version_distribution"]}
+            for nvd in iss_entry["version_distribution"]:
+                nv_ver = nvd["version"]
+                if nv_ver in existing_v_map:
+                    existing_v_map[nv_ver]["events"] += nvd["events"]
+                    existing_v_map[nv_ver]["users"] += nvd["users"]
+                else:
+                    existing["version_distribution"].append(nvd)
+                    existing_v_map[nv_ver] = nvd
         else:
-            seen_issues[iid] = iss_entry
+            seen_issues[key] = iss_entry
 
     top_issues = sorted(seen_issues.values(), key=lambda x: (-x["events"], -x["affected_users"]))[:50]
 
