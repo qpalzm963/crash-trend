@@ -650,7 +650,7 @@ def fetch_issue_details_from_bq(
                 operating_system.display_version AS os_version,
                 exceptions,
                 threads,
-                errors,
+                error,
                 blame_frame,
                 breadcrumbs,
                 custom_keys,
@@ -724,7 +724,7 @@ def fetch_issue_details_from_bq(
 
             exceptions = ev.get("exceptions") or []
             threads = ev.get("threads") or []
-            error = ev.get("errors") or ev.get("error") or []
+            error = ev.get("error") or []
             raw_top_blame = ev.get("blame_frame")
 
             trace_str = format_stack_trace(exceptions=exceptions, threads=threads, error=error)

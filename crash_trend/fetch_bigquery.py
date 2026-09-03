@@ -109,24 +109,19 @@ SQLS: Dict[str, str] = {
           AND event_timestamp < TIMESTAMP_ADD(TIMESTAMP(CURRENT_DATE()), INTERVAL 1 DAY)
         GROUP BY 1
         ORDER BY date ASC""",
-    # 3. Top Issues 聚合（跨平台 COALESCE exceptions / errors / threads 提取 title/subtitle）
+    # 3. Top Issues 聚合（跨平台 COALESCE exceptions / error / threads 提取 title/subtitle）
     "top_issues": """
         SELECT
             issue_id,
             COALESCE(
-                issue_title,
-                exceptions[SAFE_OFFSET(0)].title,
                 exceptions[SAFE_OFFSET(0)].type,
-                errors[SAFE_OFFSET(0)].title,
+                error[SAFE_OFFSET(0)].title,
                 threads[SAFE_OFFSET(0)].title,
                 'Unknown Error'
             ) AS issue_title,
             COALESCE(
-                issue_subtitle,
-                exceptions[SAFE_OFFSET(0)].subtitle,
-                exceptions[SAFE_OFFSET(0)].exception_message,
                 exceptions[SAFE_OFFSET(0)].frames[SAFE_OFFSET(0)].symbol,
-                errors[SAFE_OFFSET(0)].subtitle,
+                error[SAFE_OFFSET(0)].subtitle,
                 threads[SAFE_OFFSET(0)].subtitle,
                 ''
             ) AS issue_subtitle,

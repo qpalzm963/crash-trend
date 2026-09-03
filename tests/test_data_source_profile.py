@@ -76,83 +76,38 @@ class TestDataSourceProfile(unittest.TestCase):
         self.assertIsNone(res["kpi"]["crash_free_sessions"]["rate"])
 
     def test_mixed_multi_app_bundle_passes_validation(self) -> None:
-        # App 1: Full Sessions available
-        app1_data = {
-            "app_name": "app1",
-            "display_name": "App One",
-            "schema_version": "2.0.0",
-            "generated_at": "2026-09-03T00:00:00Z",
-            "period": {
-                "start_date": "2026-08-04",
-                "end_date": "2026-09-02",
-                "days": 30,
-                "comparison_start_date": "2026-07-05",
-                "comparison_end_date": "2026-08-03",
-            },
-            "sources": {
-                "crashlytics_bq": {"status": "available", "last_sync_timestamp": "2026-09-03T00:00:00Z", "error_message": None},
-                "firebase_sessions": {"status": "available", "last_sync_timestamp": "2026-09-03T00:00:00Z", "error_message": None},
-                "mcp_crashlytics": {"status": "available", "last_sync_timestamp": "2026-09-03T00:00:00Z", "error_message": None},
-                "gemini_ai": {"status": "available", "last_sync_timestamp": "2026-09-03T00:00:00Z", "error_message": None},
-            },
-            "kpi": {
-                "crash_events": {"value": 10, "previous_value": 10, "change_pct": 0.0},
-                "affected_users": {"value": 5, "previous_value": 5, "change_pct": 0.0},
-                "crash_free_users": {"status": "available", "rate": 0.99, "previous_rate": 0.99, "change_pct_points": 0.0, "total": 500, "crashed": 5, "unavailable_reason": None},
-                "crash_free_sessions": {"status": "available", "rate": 0.995, "previous_rate": 0.995, "change_pct_points": 0.0, "total": 1000, "crashed": 5, "unavailable_reason": None},
-                "new_issues": {"value": 0, "previous_value": 0, "change_pct": 0.0},
-            },
-            "daily_trend": [{"date": "2026-08-04", "fatal": 1, "non_fatal": 0, "anr": 0, "total": 1, "users": 1, "sessions_total": 100, "crashed_sessions": 1, "crash_free_sessions_rate": 0.99}],
-            "version_health": [{"version": "1.0.0", "crash_events": 10, "affected_users": 5, "fatal_events": 10, "anr_events": 0, "non_fatal_events": 0, "crash_free_users_rate": 0.99, "crash_free_sessions_rate": 0.995, "adoption_rate": 1.0}],
-            "distributions": {"platform": [{"key": "ios", "events": 10, "share": 1.0}], "device_models": [], "os_versions": [], "app_versions": [], "custom_keys": {}},
-            "top_issues": [],
-            "ai_summary": {"status": "available", "overview": "Good", "key_takeaways": [], "distribution_insights": [], "action_items": []},
-        }
+        import json
+        from pathlib import Path
+        from crash_trend.config import ROOT
 
-        # App 2: Crashlytics-only (Sessions disabled)
-        app2_data = {
-            "app_name": "app2",
-            "display_name": "App Two (Crashlytics-only)",
-            "schema_version": "2.0.0",
-            "generated_at": "2026-09-03T00:00:00Z",
-            "period": {
-                "start_date": "2026-08-04",
-                "end_date": "2026-09-02",
-                "days": 30,
-                "comparison_start_date": "2026-07-05",
-                "comparison_end_date": "2026-08-03",
-            },
-            "sources": {
-                "crashlytics_bq": {"status": "available", "last_sync_timestamp": "2026-09-03T00:00:00Z", "error_message": None},
-                "firebase_sessions": {"status": "unavailable", "last_sync_timestamp": None, "error_message": "Sessions 匯出已停用 (disabled in config)"},
-                "mcp_crashlytics": {"status": "unavailable", "last_sync_timestamp": None, "error_message": None},
-                "gemini_ai": {"status": "disabled", "last_sync_timestamp": None, "error_message": "Disabled"},
-            },
-            "kpi": {
-                "crash_events": {"value": 8, "previous_value": 8, "change_pct": 0.0},
-                "affected_users": {"value": 4, "previous_value": 4, "change_pct": 0.0},
-                "crash_free_users": {"status": "unavailable", "rate": None, "previous_rate": None, "change_pct_points": None, "total": None, "crashed": None, "unavailable_reason": "Sessions 匯出已停用"},
-                "crash_free_sessions": {"status": "unavailable", "rate": None, "previous_rate": None, "change_pct_points": None, "total": None, "crashed": None, "unavailable_reason": "Sessions 匯出已停用"},
-                "new_issues": {"value": 0, "previous_value": 0, "change_pct": 0.0},
-            },
-            "daily_trend": [{"date": "2026-08-04", "fatal": 0, "non_fatal": 1, "anr": 0, "total": 1, "users": 1, "sessions_total": None, "crashed_sessions": None, "crash_free_sessions_rate": None}],
-            "version_health": [{"version": "2.0.0", "crash_events": 8, "affected_users": 4, "fatal_events": 0, "anr_events": 0, "non_fatal_events": 8, "crash_free_users_rate": None, "crash_free_sessions_rate": None, "adoption_rate": None}],
-            "distributions": {"platform": [{"key": "android", "events": 8, "share": 1.0}], "device_models": [], "os_versions": [], "app_versions": [], "custom_keys": {}},
-            "top_issues": [],
-            "ai_summary": {"status": "disabled", "overview": "Deterministic score only", "key_takeaways": [], "distribution_insights": [], "action_items": []},
-        }
+        fixture_dir = ROOT / "tests" / "fixtures"
+        f1 = json.loads((fixture_dir / "dashboard_v2.json").read_text(encoding="utf-8"))
+        f2 = json.loads((fixture_dir / "dashboard_v2_no_sessions.json").read_text(encoding="utf-8"))
+
+        # App 1: Full Sessions available (shop_app)
+        app1_data = f1["apps"]["shop_app"]
+        # App 2: Sessions unavailable/disabled (legacy_app)
+        app2_data = f2["apps"]["legacy_app"]
 
         bundle = {
-            "schema_version": "2.0.0",
-            "generated_at": "2026-09-03T00:00:00Z",
+            "schema_version": "2.0",
+            "generated_at": "2026-09-02T14:00:00Z",
+            "default_app": "shop_app",
             "apps": {
-                "app1": app1_data,
-                "app2": app2_data,
+                "shop_app": app1_data,
+                "legacy_app": app2_data,
             },
         }
 
-        # Must validate cleanly against Schema V2
-        validate_dashboard_v2(bundle)
+        # Must validate cleanly against Schema V2 with 0 errors
+        errors = validate_dashboard_v2(bundle)
+        self.assertEqual(errors, [], f"Validation errors found: {errors}")
+
+        # Negative test: Ensure validator actually rejects invalid bundle
+        invalid_bundle = dict(bundle)
+        invalid_bundle["apps"] = {}
+        errs = validate_dashboard_v2(invalid_bundle)
+        self.assertTrue(len(errs) > 0, "Validator must reject empty apps bundle")
 
 
 if __name__ == "__main__":
