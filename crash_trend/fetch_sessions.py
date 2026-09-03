@@ -656,6 +656,56 @@ def enrich_app_dashboard_with_sessions(app_data: Dict[str, Any], sessions_result
                 item["crash_free_sessions_rate"] = None
                 item["adoption_rate"] = None
 
+    if "periods" in app_data and isinstance(app_data["periods"], dict):
+        sess_periods = sessions_result.get("periods") or {}
+        for p_key, snap in app_data["periods"].items():
+            if not isinstance(snap, dict):
+                continue
+            snap_sess = sess_periods.get(p_key) or {}
+            snap_kpi_sess = snap_sess.get("kpi") if snap_sess else (kpi_sessions if str(p_key) == str(app_data.get("period", {}).get("days")) else {})
+            snap_daily_sess = snap_sess.get("daily_trend") if snap_sess else daily_sessions
+            snap_ver_sess = snap_sess.get("version_health") if snap_sess else version_sessions
+
+            if "kpi" in snap and isinstance(snap["kpi"], dict):
+                snap["kpi"]["crash_free_users"] = snap_kpi_sess.get(
+                    "crash_free_users",
+                    build_crash_free_metric(None, None, status="unavailable", unavailable_reason=src_sessions.get("error_message")),
+                )
+                snap["kpi"]["crash_free_sessions"] = snap_kpi_sess.get(
+                    "crash_free_sessions",
+                    build_crash_free_metric(None, None, status="unavailable", unavailable_reason=src_sessions.get("error_message")),
+                )
+
+            if "daily_trend" in snap and isinstance(snap["daily_trend"], list):
+                for point in snap["daily_trend"]:
+                    if not isinstance(point, dict):
+                        continue
+                    date_key = point.get("date")
+                    if is_available and date_key in snap_daily_sess:
+                        sess_info = snap_daily_sess[date_key]
+                        point["sessions_total"] = sess_info.get("sessions_total")
+                        point["crashed_sessions"] = sess_info.get("crashed_sessions")
+                        point["crash_free_sessions_rate"] = sess_info.get("crash_free_sessions_rate")
+                    else:
+                        point["sessions_total"] = None
+                        point["crashed_sessions"] = None
+                        point["crash_free_sessions_rate"] = None
+
+            if "version_health" in snap and isinstance(snap["version_health"], list):
+                for item in snap["version_health"]:
+                    if not isinstance(item, dict):
+                        continue
+                    ver_key = item.get("version")
+                    if is_available and ver_key in snap_ver_sess:
+                        v_info = snap_ver_sess[ver_key]
+                        item["crash_free_users_rate"] = v_info.get("crash_free_users_rate")
+                        item["crash_free_sessions_rate"] = v_info.get("crash_free_sessions_rate")
+                        item["adoption_rate"] = v_info.get("adoption_rate")
+                    else:
+                        item["crash_free_users_rate"] = None
+                        item["crash_free_sessions_rate"] = None
+                        item["adoption_rate"] = None
+
     return app_data
 
 

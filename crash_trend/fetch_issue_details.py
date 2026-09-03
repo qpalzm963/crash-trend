@@ -1093,6 +1093,16 @@ def main() -> None:
                     bq_client=bq_client,
                     source_repo=app.get("source_repo"),
                 )
+            if "periods" in app_data and isinstance(app_data["periods"], dict):
+                for snap in app_data["periods"].values():
+                    if "top_issues" in snap and isinstance(snap["top_issues"], list):
+                        snap["top_issues"] = enrich_top_issues(
+                            snap["top_issues"],
+                            app_name=args.app,
+                            days=snap.get("period", {}).get("days", days),
+                            bq_client=bq_client,
+                            source_repo=app.get("source_repo"),
+                        )
             if "sources" in app_data and isinstance(app_data["sources"], dict):
                 app_data["sources"]["mcp_crashlytics"] = get_mcp_source_status(args.app)
             write_json(v2_path, app_data)

@@ -279,6 +279,16 @@ class AISummary(TypedDict):
     data_limitations: Optional[str]
 
 
+class AppPeriodSnapshot(TypedDict):
+    period: PeriodInfo
+    kpi: OverviewKPI
+    daily_trend: NotRequired[List[DailyTrendPoint]]
+    version_health: List[VersionHealthItem]
+    distributions: Distributions
+    top_issues: List[IssueSummary]
+    ai_summary: NotRequired[Optional[AISummary]]
+
+
 class AppDashboardV2Data(TypedDict):
     metadata: AppMetadata
     period: PeriodInfo
@@ -290,6 +300,7 @@ class AppDashboardV2Data(TypedDict):
     top_issues: List[IssueSummary]
     ai_summary: AISummary
     limitations: List[str]
+    periods: NotRequired[Dict[str, AppPeriodSnapshot]]
 
 
 class DashboardV2Bundle(TypedDict):
@@ -846,6 +857,34 @@ def validate_app_dashboard_v2(data: dict, prefix: str = "") -> List[str]:
         for l_item in data["limitations"]:
             if not isinstance(l_item, str):
                 errors.append(f"{p}limitations item must be a string")
+
+    # 11. Periods (optional multi-period authoritative snapshots in V2.3)
+    if "periods" in data and data["periods"] is not None:
+        periods_dict = data["periods"]
+        if not isinstance(periods_dict, dict):
+            errors.append(f"{p}periods must be an object")
+        else:
+            for p_key, p_val in periods_dict.items():
+                if not isinstance(p_key, str) or not p_key.isdigit():
+                    errors.append(f"{p}periods key '{p_key}' must be a numeric string representing days (e.g. '7', '30', '90')")
+                if not isinstance(p_val, dict):
+                    errors.append(f"{p}periods['{p_key}'] must be an object")
+                    continue
+                # Validate period in snapshot
+                if "period" in p_val and isinstance(p_val["period"], dict):
+                    snap_days = p_val["period"].get("days")
+                    if str(snap_days) != p_key:
+                        errors.append(f"{p}periods['{p_key}'].period.days ({snap_days}) must match key '{p_key}'")
+                else:
+                    errors.append(f"{p}periods['{p_key}'].period is required")
+                if "kpi" not in p_val or not isinstance(p_val["kpi"], dict):
+                    errors.append(f"{p}periods['{p_key}'].kpi is required")
+                if "top_issues" not in p_val or not isinstance(p_val["top_issues"], list):
+                    errors.append(f"{p}periods['{p_key}'].top_issues is required")
+                if "version_health" not in p_val or not isinstance(p_val["version_health"], list):
+                    errors.append(f"{p}periods['{p_key}'].version_health is required")
+                if "distributions" not in p_val or not isinstance(p_val["distributions"], dict):
+                    errors.append(f"{p}periods['{p_key}'].distributions is required")
 
     return errors
 
