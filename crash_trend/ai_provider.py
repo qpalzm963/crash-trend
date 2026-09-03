@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional
 import requests
 
 DEFAULT_GEMINI_MODEL = "gemini-flash-latest"
-DEFAULT_OPENROUTER_MODEL = "google/gemini-2.0-flash-001"
+DEFAULT_OPENROUTER_MODEL = "google/gemini-2.5-flash"
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 GEMINI_API_URL_TEMPLATE = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
@@ -346,6 +346,7 @@ class OpenRouterProvider(AIProvider):
 
         body: Dict[str, Any] = {
             "model": self._model,
+            "max_tokens": 4096,
             "messages": [
                 {
                     "role": "system",
