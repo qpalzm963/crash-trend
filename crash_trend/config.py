@@ -26,9 +26,10 @@ def load_config() -> dict:
         return yaml.safe_load(f) or {}
 
 
-def get_app(name: str) -> dict:
-    """回傳 app 設定。app 不存在時直接退出。"""
-    cfg = load_config()
+def get_app(name: str, cfg: Optional[dict] = None) -> dict:
+    """回傳 app 設定。app 不存在時直接退出。若未傳入 cfg 則自動呼叫 load_config()。"""
+    if cfg is None:
+        cfg = load_config()
     apps = cfg.get("apps") or {}
     if name not in apps:
         sys.exit(f"[錯誤] apps.yaml 沒有 app「{name}」；現有：{', '.join(apps)}")

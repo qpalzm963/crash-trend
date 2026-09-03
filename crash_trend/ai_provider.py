@@ -245,23 +245,6 @@ class GeminiProvider(AIProvider):
         prompt: str,
         schema: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        # Check if call_gemini has been monkeypatched in tests
-        is_mock = False
-        try:
-            import crash_trend.analyze_gemini as ag
-            is_mock = hasattr(ag, "call_gemini") and hasattr(ag.call_gemini, "assert_called")
-        except Exception:
-            is_mock = False
-
-        if is_mock:
-            import crash_trend.analyze_gemini as ag
-            return ag.call_gemini(
-                prompt,
-                schema=schema or CANONICAL_AI_RESPONSE_SCHEMA,
-                api_key=self.get_api_key(),
-                model=self._model,
-            )
-
         key = self.get_api_key()
         url = GEMINI_API_URL_TEMPLATE.format(model=self._model)
 

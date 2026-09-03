@@ -19,7 +19,6 @@ ROOT = Path(__file__).resolve().parent.parent
 
 try:
     from crash_trend.ai_provider import get_ai_provider
-    from crash_trend.analyze_gemini import resolve_api_key
     from crash_trend.config import get_app, get_mcp_config, is_sessions_enabled, load_config
     from crash_trend.pipeline_health import (
         DEFAULT_RUN_SUMMARY_PATH,
@@ -31,7 +30,6 @@ try:
 except ImportError:
     try:
         from ai_provider import get_ai_provider
-        from analyze_gemini import resolve_api_key
         from config import get_app, get_mcp_config, is_sessions_enabled, load_config
         from pipeline_health import (
             DEFAULT_RUN_SUMMARY_PATH,
@@ -42,7 +40,6 @@ except ImportError:
         )
     except ImportError:
         from .ai_provider import get_ai_provider  # type: ignore
-        from .analyze_gemini import resolve_api_key  # type: ignore
         from .config import get_app, get_mcp_config, is_sessions_enabled, load_config  # type: ignore
         from .pipeline_health import (  # type: ignore
             DEFAULT_RUN_SUMMARY_PATH,
@@ -313,12 +310,12 @@ def run_pipeline(
         # -------------------------------------------------------------------
         t0 = now_utc_iso()
         ai_provider = get_ai_provider(app_cfg, cfg)
-        has_ai_key = ai_provider.is_configured() or bool(resolve_api_key(False))
+        has_ai_key = ai_provider.is_configured()
         provider_name = ai_provider.provider_name
         model_name = ai_provider.model_name
         if verbose:
             print(f"--- 6. analyze_ai: {app} (provider: {provider_name}, model: {model_name}, configured: {has_ai_key})")
-        rc, out, err = run_stage_process([py_exec, str(ROOT / "crash_trend" / "analyze_ai.py"), "--app", app])
+        rc, out, err = run_stage_process([py_exec, "-m", "crash_trend.analyze_ai", "--app", app])
         if verbose and out:
             print(out, end="")
         t1 = now_utc_iso()

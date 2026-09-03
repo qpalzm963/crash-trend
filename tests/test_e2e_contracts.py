@@ -144,7 +144,7 @@ class TestE2EContracts(unittest.TestCase):
                 "recommended_actions": [{"issue_id": "ios_crash_1", "priority": "P0", "action": "修復 MetalRenderer 緩衝區", "effort": "M"}],
                 "items": [{"issue_id": "ios_crash_1", "root_cause": "Buffer overflow", "suggested_fix": "Add boundary check", "effort": "M", "confidence": "high"}],
             }
-            with patch("crash_trend.analyze_gemini.call_gemini", return_value=mock_ai):
+            with patch("crash_trend.ai_provider.GeminiProvider.analyze", return_value=mock_ai):
                 app_v2 = enrich_app_data_with_priority_and_ai(app_v2, api_key="fake-key", core_paths=["Metal"])
 
             (out_app / "dashboard_v2.json").write_text(json.dumps(app_v2, ensure_ascii=False), encoding="utf-8")
@@ -484,7 +484,7 @@ class TestE2EContracts(unittest.TestCase):
                 with patch("crash_trend.pipeline_run.load_config", return_value=fake_cfg):
                     with patch("crash_trend.pipeline_run.get_app", return_value=app_cfg):
                         with patch("crash_trend.pipeline_run.run_stage_process", side_effect=fake_stage_exec):
-                            with patch("crash_trend.pipeline_run.resolve_api_key", return_value="fake-key"):
+                            with patch.dict("os.environ", {"GEMINI_API_KEY": "fake-key"}):
                                 summary = run_pipeline(
                                     app_names=["lifecycle_app"],
                                     summary_path=summary_path,
@@ -613,7 +613,7 @@ class TestE2EContracts(unittest.TestCase):
             # Run production subprocess executor
             def fake_stage_exec(cmd, cwd=None, env=None):
                 cmd_str = " ".join(cmd)
-                if "analyze_ai.py" in cmd_str:
+                if "analyze_ai" in cmd_str:
                     from crash_trend.analyze_ai import main as ai_main
                     import sys
                     old_argv = sys.argv
@@ -621,9 +621,8 @@ class TestE2EContracts(unittest.TestCase):
                         sys.argv = ["analyze_ai.py", "--app", "openrouter_app"]
                         with patch("crash_trend.analyze_ai.ROOT", tmproot):
                             with patch("crash_trend.analyze_ai.load_config", return_value=fake_cfg):
-                                with patch("crash_trend.analyze_ai.get_app", return_value=app_cfg):
-                                    with patch("crash_trend.ai_provider.requests.post", side_effect=fake_openrouter_post):
-                                        ai_main()
+                                with patch("crash_trend.ai_provider.requests.post", side_effect=fake_openrouter_post):
+                                    ai_main()
                     finally:
                         sys.argv = old_argv
                     return 0, "analyze_ai finished", ""

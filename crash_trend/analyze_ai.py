@@ -13,40 +13,81 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from crash_trend.ai_provider import (
-    AIProvider,
-    CANONICAL_AI_RESPONSE_SCHEMA,
-    GeminiProvider,
-    OpenRouterProvider,
-    get_ai_provider,
-)
-from crash_trend.analyze_gemini import (
-    AIIssueAnalysis,
-    AISummary,
-    IssueSummary,
-    PriorityBreakdown,
-    PriorityInfo,
-    RecommendedAction,
-    build_ai_prompt,
-    calculate_priority,
-    call_gemini,
-    enrich_app_data_with_priority_and_ai,
-    generate_disabled_ai_summary,
-    generate_disabled_issue_analysis,
-    generate_error_ai_summary,
-    get_latest_app_version,
-    iso_utc_now,
-    map_score_to_level,
-    parse_ai_response,
-    parse_gemini_response,
-    render_md,
-    resolve_api_key,
-    score_issues,
-    source_snippet,
-)
-from crash_trend.config import ROOT, app_argparser, get_app, load_config, write_json
-from crash_trend.pipeline_health import sanitize_error_message
-from crash_trend.schema_v2 import is_valid_iso8601_utc, validate_app_dashboard_v2
+# Ensure package root is importable when executed directly as a script
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+try:
+    from .ai_provider import (
+        AIProvider,
+        CANONICAL_AI_RESPONSE_SCHEMA,
+        GeminiProvider,
+        OpenRouterProvider,
+        get_ai_provider,
+    )
+    from .analyze_gemini import (
+        AIIssueAnalysis,
+        AISummary,
+        IssueSummary,
+        PriorityBreakdown,
+        PriorityInfo,
+        RecommendedAction,
+        build_ai_prompt,
+        calculate_priority,
+        call_gemini,
+        enrich_app_data_with_priority_and_ai,
+        generate_disabled_ai_summary,
+        generate_disabled_issue_analysis,
+        generate_error_ai_summary,
+        get_latest_app_version,
+        iso_utc_now,
+        map_score_to_level,
+        parse_ai_response,
+        parse_gemini_response,
+        render_md,
+        resolve_api_key,
+        score_issues,
+        source_snippet,
+    )
+    from .config import ROOT, app_argparser, get_app, load_config, write_json
+    from .pipeline_health import sanitize_error_message
+    from .schema_v2 import is_valid_iso8601_utc, validate_app_dashboard_v2
+except ImportError:
+    from crash_trend.ai_provider import (
+        AIProvider,
+        CANONICAL_AI_RESPONSE_SCHEMA,
+        GeminiProvider,
+        OpenRouterProvider,
+        get_ai_provider,
+    )
+    from crash_trend.analyze_gemini import (
+        AIIssueAnalysis,
+        AISummary,
+        IssueSummary,
+        PriorityBreakdown,
+        PriorityInfo,
+        RecommendedAction,
+        build_ai_prompt,
+        calculate_priority,
+        call_gemini,
+        enrich_app_data_with_priority_and_ai,
+        generate_disabled_ai_summary,
+        generate_disabled_issue_analysis,
+        generate_error_ai_summary,
+        get_latest_app_version,
+        iso_utc_now,
+        map_score_to_level,
+        parse_ai_response,
+        parse_gemini_response,
+        render_md,
+        resolve_api_key,
+        score_issues,
+        source_snippet,
+    )
+    from crash_trend.config import ROOT, app_argparser, get_app, load_config, write_json
+    from crash_trend.pipeline_health import sanitize_error_message
+    from crash_trend.schema_v2 import is_valid_iso8601_utc, validate_app_dashboard_v2
 
 
 def main() -> None:

@@ -414,6 +414,36 @@ class TestAIProviders(unittest.TestCase):
             self.assertEqual(p.provider_name, "openrouter")
             self.assertEqual(p.get_api_key(), "sk-or-env-key")
 
+    def test_get_app_supports_optional_cfg(self) -> None:
+        """Verifies get_app signature supports both 1-arg and 2-arg calls (Review 5099441434)."""
+        from crash_trend.config import get_app
+        fake_cfg = {"apps": {"test_app": {"display_name": "Test App"}}}
+        # 2-arg call with pre-loaded cfg
+        app = get_app("test_app", fake_cfg)
+        self.assertEqual(app["display_name"], "Test App")
+
+    def test_analyze_ai_subprocess_execution(self) -> None:
+        """Smoke test verifying python -m crash_trend.analyze_ai runs without ModuleNotFoundError (Review 5099441434)."""
+        import subprocess
+        import sys
+        result = subprocess.run(
+            [sys.executable, "-m", "crash_trend.analyze_ai", "--help"],
+            cwd=str(ROOT),
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, f"Subprocess failed with stderr: {result.stderr}")
+        self.assertIn("AI 智慧分析與策略建議", result.stdout)
+
+        # Also test direct script execution
+        result_direct = subprocess.run(
+            [sys.executable, str(ROOT / "crash_trend" / "analyze_ai.py"), "--help"],
+            cwd=str(ROOT),
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result_direct.returncode, 0, f"Direct script execution failed: {result_direct.stderr}")
+
 
 if __name__ == "__main__":
     unittest.main()

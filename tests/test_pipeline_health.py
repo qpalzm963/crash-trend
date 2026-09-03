@@ -276,7 +276,7 @@ class TestPipelineHealth(unittest.TestCase):
                 with patch("crash_trend.pipeline_run.load_config", return_value=fake_cfg):
                     with patch("crash_trend.pipeline_run.get_app", return_value=fake_cfg["apps"]["graceful_app"]):
                         with patch("crash_trend.pipeline_run.run_stage_process", return_value=(0, "ok", "")):
-                            with patch("crash_trend.pipeline_run.resolve_api_key", return_value="fake-key"):
+                            with patch.dict("os.environ", {"GEMINI_API_KEY": "fake-key"}):
                                 summary = run_pipeline(
                                     app_names=["graceful_app"],
                                     summary_path=sum_path,
@@ -337,7 +337,7 @@ class TestPipelineHealth(unittest.TestCase):
                     with patch("crash_trend.pipeline_run.load_config", return_value=fake_cfg):
                         with patch("crash_trend.pipeline_run.get_app", return_value=fake_cfg["apps"]["ai_url_app"]):
                             with patch("crash_trend.pipeline_run.run_stage_process", return_value=(0, "ok", "")):
-                                with patch("crash_trend.pipeline_run.resolve_api_key", return_value="key-from-url"):
+                                with patch("crash_trend.ai_provider.resolve_gemini_key", return_value="key-from-url"):
                                     summary = run_pipeline(
                                         app_names=["ai_url_app"],
                                         summary_path=sum_path,
