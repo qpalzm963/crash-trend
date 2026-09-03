@@ -443,6 +443,135 @@ def validate_crash_free_metric(metric: Any, name: str, errors: List[str]) -> Non
             errors.append(f"{name}.change_pct_points must be a number or null")
 
 
+def validate_issue_lifecycle(lc: Any, errors: List[str], p: str = "") -> None:
+    """Validates an IssueLifecycle object against Schema V2.3 rules."""
+    if lc is not None:
+        if not isinstance(lc, dict):
+            errors.append(f"{p}lifecycle must be an object")
+        else:
+            for lck in ("status", "latest_version", "first_seen_version", "last_seen_version", "versions_seen", "confidence"):
+                if lck not in lc:
+                    errors.append(f"{p}lifecycle.{lck} is required")
+            if "status" in lc and lc["status"] not in {
+                "new_in_latest", "persistent", "regressed", "resolved", "not_observed_latest"
+            }:
+                errors.append(
+                    f"{p}lifecycle.status must be one of: "
+                    "new_in_latest, persistent, regressed, resolved, not_observed_latest"
+                )
+            if "confidence" in lc and lc["confidence"] not in {"high", "medium", "low"}:
+                errors.append(f"{p}lifecycle.confidence must be high, medium, or low")
+            if "versions_seen" in lc and (not isinstance(lc["versions_seen"], int) or lc["versions_seen"] < 0):
+                errors.append(f"{p}lifecycle.versions_seen must be a non-negative integer")
+
+
+def validate_issue_summary(issue: Any, idx: int, errors: List[str], p: str = "") -> None:
+    """Validates an IssueSummary object against Schema V2.3 rules."""
+    if not isinstance(issue, dict):
+        errors.append(f"{p.rstrip('.')} must be an object")
+        return
+
+    for req_k in (
+        "issue_id", "platform", "title", "subtitle", "error_type", "priority",
+        "events", "affected_users", "first_seen_timestamp", "last_seen_timestamp",
+        "first_seen_version", "last_seen_version", "version_distribution",
+        "blame_frame", "ai_analysis", "detail"
+    ):
+        if req_k not in issue:
+            errors.append(f"{p}{req_k} is required")
+    if "platform" in issue and issue["platform"] not in {"ios", "android"}:
+        errors.append(f"{p}platform must be 'ios' or 'android'")
+    if "error_type" in issue and issue["error_type"] not in {"FATAL", "ANR", "NON_FATAL"}:
+        errors.append(f"{p}error_type must be FATAL, ANR, or NON_FATAL")
+    if "events" in issue and (not isinstance(issue["events"], int) or issue["events"] < 0):
+        errors.append(f"{p}events must be a non-negative integer")
+    if "affected_users" in issue and (not isinstance(issue["affected_users"], int) or issue["affected_users"] < 0):
+        errors.append(f"{p}affected_users must be a non-negative integer")
+    if "first_seen_timestamp" in issue and not is_valid_iso8601_utc(issue["first_seen_timestamp"]):
+        errors.append(f"{p}first_seen_timestamp must be ISO 8601 UTC timestamp (ending in Z)")
+    if "last_seen_timestamp" in issue and not is_valid_iso8601_utc(issue["last_seen_timestamp"]):
+        errors.append(f"{p}last_seen_timestamp must be ISO 8601 UTC timestamp (ending in Z)")
+
+    # Priority
+    prio = issue.get("priority")
+    if isinstance(prio, dict):
+        for pk in ("score", "level", "trend", "score_breakdown"):
+            if pk not in prio:
+                errors.append(f"{p}priority.{pk} is required")
+        if "score" in prio and (not isinstance(prio["score"], int) or prio["score"] < 0):
+            errors.append(f"{p}priority.score must be a non-negative integer")
+        if "level" in prio and prio["level"] not in {"P0", "P1", "P2", "P3"}:
+            errors.append(f"{p}priority.level must be P0, P1, P2, or P3")
+        if "trend" in prio and prio["trend"] not in {"new", "worsening", "stable", "improving"}:
+            errors.append(f"{p}priority.trend must be new, worsening, stable, or improving")
+    elif prio is not None:
+        errors.append(f"{p}priority must be an object")
+
+    # Version distribution
+    vdist = issue.get("version_distribution")
+    if isinstance(vdist, list):
+        for vidx, vitem in enumerate(vdist):
+            if not isinstance(vitem, dict):
+                errors.append(f"{p}version_distribution[{vidx}] must be an object")
+                continue
+            for v_req in ("version", "events", "users"):
+                if v_req not in vitem:
+                    errors.append(f"{p}version_distribution[{vidx}].{v_req} is required")
+            if "events" in vitem and (not isinstance(vitem["events"], int) or vitem["events"] < 0):
+                errors.append(f"{p}version_distribution[{vidx}].events must be a non-negative integer")
+            if "users" in vitem and (not isinstance(vitem["users"], int) or vitem["users"] < 0):
+                errors.append(f"{p}version_distribution[{vidx}].users must be a non-negative integer")
+    elif vdist is not None:
+        errors.append(f"{p}version_distribution must be a list")
+
+    # Blame Frame
+    bf = issue.get("blame_frame")
+    if bf is not None:
+        if not isinstance(bf, dict):
+            errors.append(f"{p}blame_frame must be an object or null")
+        else:
+            for bfk in ("file", "line", "symbol", "class_name", "method_name", "is_blame", "source_available"):
+                if bfk not in bf:
+                    errors.append(f"{p}blame_frame.{bfk} is required")
+            if "line" in bf and bf["line"] is not None and (not isinstance(bf["line"], int) or bf["line"] <= 0):
+                errors.append(f"{p}blame_frame.line must be a positive integer or null")
+            if "is_blame" in bf and not isinstance(bf["is_blame"], bool):
+                errors.append(f"{p}blame_frame.is_blame must be a boolean")
+            if "source_available" in bf and not isinstance(bf["source_available"], bool):
+                errors.append(f"{p}blame_frame.source_available must be a boolean")
+
+    # AI Issue Analysis
+    ai_ia = issue.get("ai_analysis")
+    if isinstance(ai_ia, dict):
+        for ak in ("status", "root_cause", "suggested_fix", "effort", "confidence", "reasoning_sources"):
+            if ak not in ai_ia:
+                errors.append(f"{p}ai_analysis.{ak} is required")
+        if "status" in ai_ia and ai_ia["status"] not in {"available", "unavailable", "pending", "skipped"}:
+            errors.append(f"{p}ai_analysis.status must be available, unavailable, pending, or skipped")
+        eff = ai_ia.get("effort")
+        if eff is not None and eff not in {"S", "M", "L"}:
+            errors.append(f"{p}ai_analysis.effort must be S, M, L, or null")
+        conf = ai_ia.get("confidence")
+        if conf is not None and conf not in {"high", "medium", "low", "needs_manual_review"}:
+            errors.append(f"{p}ai_analysis.confidence must be high, medium, low, needs_manual_review, or null")
+    elif ai_ia is not None:
+        errors.append(f"{p}ai_analysis must be an object")
+
+    # Detail
+    det = issue.get("detail")
+    if det is not None:
+        if not isinstance(det, dict):
+            errors.append(f"{p}detail must be an object or null")
+        else:
+            for det_k in ("stack_trace", "breadcrumbs", "logs", "custom_keys", "top_devices", "top_os"):
+                if det_k not in det:
+                    errors.append(f"{p}detail.{det_k} is required")
+
+    # Lifecycle (V2.3)
+    lc = issue.get("lifecycle")
+    validate_issue_lifecycle(lc, errors, p)
+
+
 def validate_app_dashboard_v2(data: dict, prefix: str = "") -> List[str]:
     """Validates an AppDashboardV2Data dictionary strictly against Schema V2 rules."""
     errors: List[str] = []
@@ -752,125 +881,7 @@ def validate_app_dashboard_v2(data: dict, prefix: str = "") -> List[str]:
     issues = data.get("top_issues")
     if isinstance(issues, list):
         for idx, issue in enumerate(issues):
-            if not isinstance(issue, dict):
-                errors.append(f"{p}top_issues[{idx}] must be an object")
-                continue
-            for req_k in (
-                "issue_id", "platform", "title", "subtitle", "error_type", "priority",
-                "events", "affected_users", "first_seen_timestamp", "last_seen_timestamp",
-                "first_seen_version", "last_seen_version", "version_distribution",
-                "blame_frame", "ai_analysis", "detail"
-            ):
-                if req_k not in issue:
-                    errors.append(f"{p}top_issues[{idx}].{req_k} is required")
-            if "platform" in issue and issue["platform"] not in {"ios", "android"}:
-                errors.append(f"{p}top_issues[{idx}].platform must be 'ios' or 'android'")
-            if "error_type" in issue and issue["error_type"] not in {"FATAL", "ANR", "NON_FATAL"}:
-                errors.append(f"{p}top_issues[{idx}].error_type must be FATAL, ANR, or NON_FATAL")
-            if "events" in issue and (not isinstance(issue["events"], int) or issue["events"] < 0):
-                errors.append(f"{p}top_issues[{idx}].events must be a non-negative integer")
-            if "affected_users" in issue and (not isinstance(issue["affected_users"], int) or issue["affected_users"] < 0):
-                errors.append(f"{p}top_issues[{idx}].affected_users must be a non-negative integer")
-            if "first_seen_timestamp" in issue and not is_valid_iso8601_utc(issue["first_seen_timestamp"]):
-                errors.append(f"{p}top_issues[{idx}].first_seen_timestamp must be ISO 8601 UTC timestamp (ending in Z)")
-            if "last_seen_timestamp" in issue and not is_valid_iso8601_utc(issue["last_seen_timestamp"]):
-                errors.append(f"{p}top_issues[{idx}].last_seen_timestamp must be ISO 8601 UTC timestamp (ending in Z)")
-
-            # Priority
-            prio = issue.get("priority")
-            if isinstance(prio, dict):
-                for pk in ("score", "level", "trend", "score_breakdown"):
-                    if pk not in prio:
-                        errors.append(f"{p}top_issues[{idx}].priority.{pk} is required")
-                if "score" in prio and (not isinstance(prio["score"], int) or prio["score"] < 0):
-                    errors.append(f"{p}top_issues[{idx}].priority.score must be a non-negative integer")
-                if "level" in prio and prio["level"] not in {"P0", "P1", "P2", "P3"}:
-                    errors.append(f"{p}top_issues[{idx}].priority.level must be P0, P1, P2, or P3")
-                if "trend" in prio and prio["trend"] not in {"new", "worsening", "stable", "improving"}:
-                    errors.append(f"{p}top_issues[{idx}].priority.trend must be new, worsening, stable, or improving")
-            elif prio is not None:
-                errors.append(f"{p}top_issues[{idx}].priority must be an object")
-
-            # Version distribution
-            vdist = issue.get("version_distribution")
-            if isinstance(vdist, list):
-                for vidx, vitem in enumerate(vdist):
-                    if not isinstance(vitem, dict):
-                        errors.append(f"{p}top_issues[{idx}].version_distribution[{vidx}] must be an object")
-                        continue
-                    for v_req in ("version", "events", "users"):
-                        if v_req not in vitem:
-                            errors.append(f"{p}top_issues[{idx}].version_distribution[{vidx}].{v_req} is required")
-                    if "events" in vitem and (not isinstance(vitem["events"], int) or vitem["events"] < 0):
-                        errors.append(f"{p}top_issues[{idx}].version_distribution[{vidx}].events must be a non-negative integer")
-                    if "users" in vitem and (not isinstance(vitem["users"], int) or vitem["users"] < 0):
-                        errors.append(f"{p}top_issues[{idx}].version_distribution[{vidx}].users must be a non-negative integer")
-            elif vdist is not None:
-                errors.append(f"{p}top_issues[{idx}].version_distribution must be a list")
-
-            # Blame Frame
-            bf = issue.get("blame_frame")
-            if bf is not None:
-                if not isinstance(bf, dict):
-                    errors.append(f"{p}top_issues[{idx}].blame_frame must be an object or null")
-                else:
-                    for bfk in ("file", "line", "symbol", "class_name", "method_name", "is_blame", "source_available"):
-                        if bfk not in bf:
-                            errors.append(f"{p}top_issues[{idx}].blame_frame.{bfk} is required")
-                    if "line" in bf and bf["line"] is not None and (not isinstance(bf["line"], int) or bf["line"] <= 0):
-                        errors.append(f"{p}top_issues[{idx}].blame_frame.line must be a positive integer or null")
-                    if "is_blame" in bf and not isinstance(bf["is_blame"], bool):
-                        errors.append(f"{p}top_issues[{idx}].blame_frame.is_blame must be a boolean")
-                    if "source_available" in bf and not isinstance(bf["source_available"], bool):
-                        errors.append(f"{p}top_issues[{idx}].blame_frame.source_available must be a boolean")
-
-            # AI Issue Analysis
-            ai_ia = issue.get("ai_analysis")
-            if isinstance(ai_ia, dict):
-                for ak in ("status", "root_cause", "suggested_fix", "effort", "confidence", "reasoning_sources"):
-                    if ak not in ai_ia:
-                        errors.append(f"{p}top_issues[{idx}].ai_analysis.{ak} is required")
-                if "status" in ai_ia and ai_ia["status"] not in {"available", "unavailable", "pending", "skipped"}:
-                    errors.append(f"{p}top_issues[{idx}].ai_analysis.status must be available, unavailable, pending, or skipped")
-                eff = ai_ia.get("effort")
-                if eff is not None and eff not in {"S", "M", "L"}:
-                    errors.append(f"{p}top_issues[{idx}].ai_analysis.effort must be S, M, L, or null")
-                conf = ai_ia.get("confidence")
-                if conf is not None and conf not in {"high", "medium", "low", "needs_manual_review"}:
-                    errors.append(f"{p}top_issues[{idx}].ai_analysis.confidence must be high, medium, low, needs_manual_review, or null")
-            elif ai_ia is not None:
-                errors.append(f"{p}top_issues[{idx}].ai_analysis must be an object")
-
-            # Detail
-            det = issue.get("detail")
-            if det is not None:
-                if not isinstance(det, dict):
-                    errors.append(f"{p}top_issues[{idx}].detail must be an object or null")
-                else:
-                    for det_k in ("stack_trace", "breadcrumbs", "logs", "custom_keys", "top_devices", "top_os"):
-                        if det_k not in det:
-                            errors.append(f"{p}top_issues[{idx}].detail.{det_k} is required")
-
-            # Lifecycle
-            lc = issue.get("lifecycle")
-            if lc is not None:
-                if not isinstance(lc, dict):
-                    errors.append(f"{p}top_issues[{idx}].lifecycle must be an object")
-                else:
-                    for lck in ("status", "latest_version", "first_seen_version", "last_seen_version", "versions_seen", "confidence"):
-                        if lck not in lc:
-                            errors.append(f"{p}top_issues[{idx}].lifecycle.{lck} is required")
-                    if "status" in lc and lc["status"] not in {
-                        "new_in_latest", "persistent", "regressed", "resolved", "not_observed_latest"
-                    }:
-                        errors.append(
-                            f"{p}top_issues[{idx}].lifecycle.status must be one of: "
-                            "new_in_latest, persistent, regressed, resolved, not_observed_latest"
-                        )
-                    if "confidence" in lc and lc["confidence"] not in {"high", "medium", "low"}:
-                        errors.append(f"{p}top_issues[{idx}].lifecycle.confidence must be high, medium, or low")
-                    if "versions_seen" in lc and (not isinstance(lc["versions_seen"], int) or lc["versions_seen"] < 0):
-                        errors.append(f"{p}top_issues[{idx}].lifecycle.versions_seen must be a non-negative integer")
+            validate_issue_summary(issue, idx, errors, f"{p}top_issues[{idx}].")
     elif issues is not None:
         errors.append(f"{p}top_issues must be a list")
 
@@ -938,6 +949,9 @@ def validate_app_dashboard_v2(data: dict, prefix: str = "") -> List[str]:
                     errors.append(f"{p}periods['{p_key}'].kpi is required")
                 if "top_issues" not in p_val or not isinstance(p_val["top_issues"], list):
                     errors.append(f"{p}periods['{p_key}'].top_issues is required")
+                else:
+                    for idx, issue in enumerate(p_val["top_issues"]):
+                        validate_issue_summary(issue, idx, errors, f"{p}periods['{p_key}'].top_issues[{idx}].")
                 if "version_health" not in p_val or not isinstance(p_val["version_health"], list):
                     errors.append(f"{p}periods['{p_key}'].version_health is required")
                 if "distributions" not in p_val or not isinstance(p_val["distributions"], dict):

@@ -14,11 +14,15 @@ Verifies:
 6. Multi-app catalog isolation.
 7. Priority deterministic regressed_boost (+2 pts).
 8. Dashboard UI contract (filters, badges, and prompt).
-9. Schema validation for IssueLifecycle.
+9. Schema validation for IssueLifecycle across top_issues and period snapshots.
+10. Production pipeline order: Sessions adoption evidence enables resolved state.
+11. Intermediate version gap sample sufficiency verification for regressed.
+12. Filter/sort copy prompt stability by issue_id.
 """
 
 from __future__ import annotations
 
+import copy
 import json
 import tempfile
 import unittest
@@ -26,6 +30,7 @@ from pathlib import Path
 
 from crash_trend.analyze_gemini import calculate_priority
 from crash_trend.build_dashboard import build_html
+from crash_trend.fetch_sessions import enrich_app_dashboard_with_sessions
 from crash_trend.lifecycle import (
     IssueHistoricalCatalog,
     detect_issue_lifecycle,
@@ -97,6 +102,7 @@ class TestIssueLifecycleFixtures(unittest.TestCase):
             latest_version=self.latest_version,
             sample_sufficient=True,
             current_version_events=events,
+            known_version_sufficiency={"1.0.8": True, "1.0.9": True, "1.0.10": True},
         )
         self.assertEqual(lc["status"], "regressed")
         self.assertEqual(lc["first_seen_version"], "1.0.8")
@@ -205,7 +211,7 @@ class TestHistoricalCatalog(unittest.TestCase):
                 "sources": {"crashlytics_bq": {"status": "available"}},
                 "kpi": {"crash_events": {"value": 2}, "affected_users": {"value": 1}},
                 "daily_trend": [],
-                "version_health": [{"version": "1.0.10", "status": "latest"}],
+                "version_health": [{"version": "1.0.10", "status": "latest", "adoption_rate": 0.5}],
                 "distributions": {"platform": [], "device_models": [], "os_versions": [], "app_versions": [{"app_version": "1.0.10"}], "custom_keys": []},
                 "top_issues": [
                     {
@@ -416,8 +422,188 @@ class TestDashboardUIContractLifecycle(unittest.TestCase):
         self.assertIn("iss.lifecycle", html)
 
 
+class TestProductionPipelineAndEvidenceTiming(unittest.TestCase):
+    """Verifies that Sessions evidence injected after BigQuery properly promotes resolved state (Must Fix 1 & 2)."""
+
+    def test_production_pipeline_order_sessions_enables_resolved(self):
+        # 1. Simulate BigQuery output where latest release 1.0.10 has 0 crashes and is absent from Crashlytics
+        app_bq = {
+            "metadata": {"app_id": "demo", "display_name": "Demo", "firebase_project_id": "p", "platforms": ["android"]},
+            "period": {"days": 30, "start_time": "2026-08-05T00:00:00Z", "end_time": "2026-09-03T23:59:59Z"},
+            "sources": {"crashlytics_bq": {"status": "available"}},
+            "kpi": {"crash_events": {"value": 15}, "affected_users": {"value": 8}},
+            "daily_trend": [],
+            "version_health": [
+                {"version": "1.0.8", "status": "active", "crash_events": 10},
+                {"version": "1.0.9", "status": "latest", "crash_events": 5},
+                # Notice: 1.0.10 is NOT in BigQuery because 0 crashes occurred!
+            ],
+            "distributions": {"platform": [], "device_models": [], "os_versions": [], "app_versions": [{"app_version": "1.0.8"}, {"app_version": "1.0.9"}], "custom_keys": []},
+            "top_issues": [
+                {
+                    "issue_id": "iss_fixed_in_10",
+                    "title": "Old Bug",
+                    "first_seen_version": "1.0.8",
+                    "last_seen_version": "1.0.9",
+                    "version_distribution": [
+                        {"version": "1.0.8", "events": 10, "users": 5},
+                        {"version": "1.0.9", "events": 5, "users": 3},
+                    ],
+                }
+            ],
+            "periods": {},
+        }
+
+        # Initial BigQuery lifecycle: latest_version was 1.0.9, issue occurred in 1.0.9 => persistent
+        enriched_bq = enrich_app_data_with_lifecycle(app_bq, app_name="demo")
+        iss_bq = enriched_bq["top_issues"][0]
+        self.assertEqual(iss_bq["lifecycle"]["status"], "persistent")
+        self.assertEqual(iss_bq["lifecycle"]["latest_version"], "1.0.9")
+
+        # 2. Stage 2: Firebase Sessions runs and injects 1.0.10 with high adoption and sessions
+        sessions_result = {
+            "sources": {"status": "available", "last_sync_timestamp": "2026-09-03T12:00:00Z"},
+            "kpi": {"crash_free_users": {"rate": 0.999, "total": 10000, "crashed": 10}, "crash_free_sessions": {"rate": 0.999, "total": 50000, "crashed": 15}},
+            "daily_trend": {},
+            "version_health": {
+                "1.0.8": {"adoption_rate": 0.1, "sessions_total": 5000, "crash_free_users_rate": 0.98},
+                "1.0.9": {"adoption_rate": 0.4, "sessions_total": 20000, "crash_free_users_rate": 0.99},
+                "1.0.10": {"adoption_rate": 0.5, "sessions_total": 25000, "crash_free_users_rate": 1.0},
+            },
+        }
+
+        # Run Sessions enrichment
+        enriched_sessions = enrich_app_dashboard_with_sessions(app_bq, sessions_result)
+
+        # 1.0.10 must be materialized into version_health and marked as latest
+        v_10 = next((v for v in enriched_sessions["version_health"] if v.get("version") == "1.0.10"), None)
+        self.assertIsNotNone(v_10)
+        self.assertEqual(v_10.get("status"), "latest")
+        self.assertEqual(v_10.get("adoption_rate"), 0.5)
+
+        # Issue lifecycle must now be RESOLVED in 1.0.10!
+        iss_after = enriched_sessions["top_issues"][0]
+        self.assertEqual(iss_after["lifecycle"]["status"], "resolved")
+        self.assertEqual(iss_after["lifecycle"]["latest_version"], "1.0.10")
+        self.assertEqual(iss_after["lifecycle"]["confidence"], "high")
+
+    def test_latest_version_from_sessions_materialized(self):
+        app_data = {
+            "version_health": [{"version": "1.0.0", "status": "active"}],
+            "top_issues": [],
+            "periods": {},
+        }
+        sessions_data = {
+            "sources": {"status": "available"},
+            "version_health": {
+                "1.0.0": {"adoption_rate": 0.1, "sessions_total": 100},
+                "2.0.0": {"adoption_rate": 0.9, "sessions_total": 9000},
+            },
+        }
+        enriched = enrich_app_dashboard_with_sessions(app_data, sessions_data)
+        latest_v = get_latest_app_version(enriched)
+        self.assertEqual(latest_v, "2.0.0")
+
+
+class TestRegressionGapSampleSufficiency(unittest.TestCase):
+    """Verifies that intermediate absence gap requires sample sufficiency to declare regressed (Must Fix 3)."""
+
+    def test_intermediate_version_sample_insufficient_not_regressed(self):
+        # 1.0.8 (present) -> 1.0.9 (absent, but sample insufficient) -> 1.0.10 (present)
+        all_versions = ["1.0.8", "1.0.9", "1.0.10"]
+        events = {"1.0.8": 5, "1.0.9": 0, "1.0.10": 2}
+        sufficiency = {"1.0.8": True, "1.0.9": False, "1.0.10": True}  # 1.0.9 is NOT sufficient!
+
+        lc = detect_issue_lifecycle(
+            issue_id="iss_test",
+            historical_versions=["1.0.8", "1.0.10"],
+            all_known_versions=all_versions,
+            latest_version="1.0.10",
+            sample_sufficient=True,
+            current_version_events=events,
+            known_version_sufficiency=sufficiency,
+        )
+
+        # Must NOT be judged as regressed; must be persistent!
+        self.assertEqual(lc["status"], "persistent")
+        self.assertIsNone(lc["previously_absent_since"])
+        self.assertIn("樣本不足", lc["reason"])
+
+    def test_intermediate_version_sample_sufficient_is_regressed(self):
+        # 1.0.8 (present) -> 1.0.9 (absent, and sample sufficient) -> 1.0.10 (present)
+        all_versions = ["1.0.8", "1.0.9", "1.0.10"]
+        events = {"1.0.8": 5, "1.0.9": 0, "1.0.10": 2}
+        sufficiency = {"1.0.8": True, "1.0.9": True, "1.0.10": True}  # 1.0.9 IS sufficient!
+
+        lc = detect_issue_lifecycle(
+            issue_id="iss_test",
+            historical_versions=["1.0.8", "1.0.10"],
+            all_known_versions=all_versions,
+            latest_version="1.0.10",
+            sample_sufficient=True,
+            current_version_events=events,
+            known_version_sufficiency=sufficiency,
+        )
+
+        # Correctly regressed!
+        self.assertEqual(lc["status"], "regressed")
+        self.assertEqual(lc["previously_absent_since"], "1.0.9")
+        self.assertEqual(lc["reappeared_version"], "1.0.10")
+
+
+class TestCopyPromptStability(unittest.TestCase):
+    """Verifies that copyFixPrompt passes issue_id and not filtered index (Must Fix 4)."""
+
+    def test_copy_prompt_by_issue_id_in_html(self):
+        bundle = {
+            "schema_version": "2.3.0",
+            "generated_at": "2026-09-03T12:00:00Z",
+            "default_app": "demo",
+            "apps": {
+                "demo": {
+                    "metadata": {"app_id": "demo", "display_name": "Demo", "firebase_project_id": "p", "platforms": ["android"]},
+                    "period": {"days": 30, "start_time": "2026-08-05T00:00:00Z", "end_time": "2026-09-03T23:59:59Z"},
+                    "sources": {"crashlytics_bq": {"status": "available"}},
+                    "kpi": {"crash_events": {"value": 10}, "affected_users": {"value": 5}},
+                    "daily_trend": [],
+                    "version_health": [{"version": "1.0.10", "status": "latest"}],
+                    "distributions": {"platform": [], "device_models": [], "os_versions": [], "app_versions": [], "custom_keys": []},
+                    "top_issues": [
+                        {
+                            "issue_id": "specific_issue_uuid_12345",
+                            "title": "Crash A",
+                            "subtitle": "NullPointerException",
+                            "platform": "android",
+                            "error_type": "FATAL",
+                            "priority": {"score": 85, "level": "P0", "trend": "new", "score_breakdown": None},
+                            "events": 10,
+                            "affected_users": 5,
+                            "first_seen_version": "1.0.8",
+                            "last_seen_version": "1.0.10",
+                            "version_distribution": [],
+                            "blame_frame": None,
+                            "ai_analysis": None,
+                            "detail": None,
+                            "lifecycle": None,
+                        }
+                    ],
+                    "ai_summary": {"status": "unavailable", "overview": ""},
+                    "periods": {},
+                }
+            },
+        }
+
+        html = build_html(bundle)
+        # Verify button template calls copyFixPrompt with iss.issue_id
+        self.assertIn("copyFixPrompt('${esc(iss.issue_id)}')", html)
+        # Verify copyFixPrompt definition looks up by issueId
+        self.assertIn("function copyFixPrompt(issueId)", html)
+        self.assertIn("i.issue_id === issueId", html)
+        self.assertIn("specific_issue_uuid_12345", html)
+
+
 class TestSchemaValidationLifecycle(unittest.TestCase):
-    """Verifies schema validation rules for IssueLifecycle."""
+    """Verifies schema validation rules for IssueLifecycle across top_issues and period snapshots."""
 
     def setUp(self):
         fixture_path = Path(__file__).resolve().parent / "fixtures" / "dashboard_v2.json"
@@ -425,7 +611,6 @@ class TestSchemaValidationLifecycle(unittest.TestCase):
         self.app_data = data["apps"]["shop_app"]
 
     def test_valid_lifecycle_passes(self):
-        import copy
         app = copy.deepcopy(self.app_data)
         app["top_issues"][0]["lifecycle"] = {
             "status": "persistent",
@@ -442,7 +627,6 @@ class TestSchemaValidationLifecycle(unittest.TestCase):
         self.assertEqual(errors, [])
 
     def test_invalid_lifecycle_status_rejected(self):
-        import copy
         app = copy.deepcopy(self.app_data)
         app["top_issues"][0]["lifecycle"] = {
             "status": "bogus_status",  # INVALID!
@@ -454,6 +638,33 @@ class TestSchemaValidationLifecycle(unittest.TestCase):
         }
         errors = validate_app_dashboard_v2(app)
         self.assertTrue(any("lifecycle.status must be one of" in e for e in errors))
+
+    def test_schema_validation_covers_periods_lifecycle(self):
+        """Verifies that invalid lifecycle in period snapshots is caught by validator (Should Fix 6)."""
+        app = copy.deepcopy(self.app_data)
+        app["periods"] = {
+            "30": {
+                "period": {"days": 30, "start_time": "2026-08-05T00:00:00Z", "end_time": "2026-09-03T23:59:59Z"},
+                "kpi": copy.deepcopy(app["kpi"]),
+                "version_health": copy.deepcopy(app["version_health"]),
+                "distributions": copy.deepcopy(app["distributions"]),
+                "top_issues": [
+                    {
+                        **copy.deepcopy(app["top_issues"][0]),
+                        "lifecycle": {
+                            "status": "bogus_status_in_period",  # INVALID!
+                            "latest_version": "1.0.10",
+                            "first_seen_version": "1.0.8",
+                            "last_seen_version": "1.0.10",
+                            "versions_seen": 2,
+                            "confidence": "high",
+                        },
+                    }
+                ],
+            }
+        }
+        errors = validate_app_dashboard_v2(app)
+        self.assertTrue(any("periods['30'].top_issues[0].lifecycle.status must be one of" in e for e in errors))
 
 
 if __name__ == "__main__":

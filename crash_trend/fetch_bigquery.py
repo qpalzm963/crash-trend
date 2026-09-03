@@ -168,6 +168,21 @@ SQLS: Dict[str, str] = {
         GROUP BY 1, 2
         ORDER BY events DESC
         LIMIT 500""",
+    # 5.5. 跨版本歷史目錄（維護真正的跨視窗 Issue 歷史與生命週期）
+    "lifecycle_catalog": """
+        SELECT
+            issue_id,
+            application.display_version AS app_version,
+            MIN(event_timestamp) AS first_seen_timestamp,
+            MAX(event_timestamp) AS last_seen_timestamp,
+            COUNT(*) AS events,
+            COUNT(DISTINCT installation_uuid) AS users
+        FROM `{table}`
+        WHERE event_timestamp >= TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL {days} - 1 DAY))
+          AND event_timestamp < TIMESTAMP_ADD(TIMESTAMP(CURRENT_DATE()), INTERVAL 1 DAY)
+        GROUP BY 1, 2
+        ORDER BY events DESC
+        LIMIT 2000""",
     # 6. 維度分布：機型
     "by_device": """
         SELECT
@@ -852,13 +867,29 @@ def transform_bq_to_v2(
         "periods": periods_dict,
     }
 
+    raw_catalog_rows: List[dict] = []
+    tables_map = (bq_result or {}).get("tables") or {}
+    for t_data in tables_map.values():
+        if isinstance(t_data, dict):
+            lc_rows = t_data.get("lifecycle_catalog")
+            if lc_rows:
+                raw_catalog_rows.extend(lc_rows)
+            else:
+                for iv in t_data.get("issue_versions") or []:
+                    raw_catalog_rows.append({
+                        "issue_id": iv.get("issue_id"),
+                        "app_version": iv.get("app_version"),
+                        "events": iv.get("events", 0),
+                        "users": iv.get("users", 0),
+                    })
+
     try:
         from crash_trend.lifecycle import enrich_app_data_with_lifecycle
-        enrich_app_data_with_lifecycle(result_data, app_name=app_id)
+        enrich_app_data_with_lifecycle(result_data, app_name=app_id, catalog_rows=raw_catalog_rows)
     except ImportError:
         try:
             from lifecycle import enrich_app_data_with_lifecycle
-            enrich_app_data_with_lifecycle(result_data, app_name=app_id)
+            enrich_app_data_with_lifecycle(result_data, app_name=app_id, catalog_rows=raw_catalog_rows)
         except ImportError:
             pass
 

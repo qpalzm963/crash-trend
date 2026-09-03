@@ -709,6 +709,36 @@ def enrich_app_dashboard_with_sessions(app_data: Dict[str, Any], sessions_result
                 item["crash_free_sessions_rate"] = None
                 item["adoption_rate"] = None
 
+        # Materialize versions from Sessions that had 0 crashes (Must Fix 2)
+        if is_available and version_sessions:
+            existing_vers = {str(item.get("version")).strip() for item in app_data["version_health"] if isinstance(item, dict) and item.get("version")}
+            for ver_key, v_info in version_sessions.items():
+                if ver_key and ver_key not in existing_vers:
+                    app_data["version_health"].append({
+                        "version": ver_key,
+                        "status": "active",
+                        "crash_events": 0,
+                        "affected_users": 0,
+                        "crash_free_users_rate": v_info.get("crash_free_users_rate", 1.0),
+                        "crash_free_sessions_rate": v_info.get("crash_free_sessions_rate", 1.0),
+                        "adoption_rate": v_info.get("adoption_rate", 0.0),
+                    })
+                    existing_vers.add(ver_key)
+
+            # Update latest version marker
+            if existing_vers:
+                try:
+                    from crash_trend.versions import max_version
+                except ImportError:
+                    from versions import max_version  # type: ignore
+                max_v = max_version(list(existing_vers))
+                for item in app_data["version_health"]:
+                    if isinstance(item, dict) and item.get("version"):
+                        if str(item.get("version")).strip() == max_v:
+                            item["status"] = "latest"
+                        elif item.get("status") == "latest":
+                            item["status"] = "active"
+
     # 4. Multi-period Snapshot Enrichment
     if "periods" in app_data and isinstance(app_data["periods"], dict):
         sess_periods = sessions_result.get("periods") or {}
@@ -777,6 +807,48 @@ def enrich_app_dashboard_with_sessions(app_data: Dict[str, Any], sessions_result
                         item["crash_free_users_rate"] = None
                         item["crash_free_sessions_rate"] = None
                         item["adoption_rate"] = None
+
+                # Materialize 0-crash versions in snap["version_health"]
+                if snap_avail and snap_ver_sess:
+                    snap_existing_vers = {str(item.get("version")).strip() for item in snap["version_health"] if isinstance(item, dict) and item.get("version")}
+                    for ver_key, v_info in snap_ver_sess.items():
+                        if ver_key and ver_key not in snap_existing_vers:
+                            snap["version_health"].append({
+                                "version": ver_key,
+                                "status": "active",
+                                "crash_events": 0,
+                                "affected_users": 0,
+                                "crash_free_users_rate": v_info.get("crash_free_users_rate", 1.0),
+                                "crash_free_sessions_rate": v_info.get("crash_free_sessions_rate", 1.0),
+                                "adoption_rate": v_info.get("adoption_rate", 0.0),
+                            })
+                            snap_existing_vers.add(ver_key)
+
+                    if snap_existing_vers:
+                        try:
+                            from crash_trend.versions import max_version
+                        except ImportError:
+                            from versions import max_version  # type: ignore
+                        snap_max_v = max_version(list(snap_existing_vers))
+                        for item in snap["version_health"]:
+                            if isinstance(item, dict) and item.get("version"):
+                                if str(item.get("version")).strip() == snap_max_v:
+                                    item["status"] = "latest"
+                                elif item.get("status") == "latest":
+                                    item["status"] = "active"
+
+    # 5. Re-run Lifecycle Enrichment with definitive Sessions adoption evidence (Must Fix 1)
+    try:
+        from crash_trend.lifecycle import enrich_app_data_with_lifecycle
+        app_id = app_data.get("metadata", {}).get("app_id")
+        enrich_app_data_with_lifecycle(app_data, app_name=app_id)
+    except ImportError:
+        try:
+            from lifecycle import enrich_app_data_with_lifecycle
+            app_id = app_data.get("metadata", {}).get("app_id")
+            enrich_app_data_with_lifecycle(app_data, app_name=app_id)
+        except ImportError:
+            pass
 
     return app_data
 

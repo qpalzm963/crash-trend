@@ -2,7 +2,7 @@
 
 Provides:
 - IssueHistoricalCatalog: Cross-window persistence of true historical first_seen,
-  last_seen, and version distributions per issue across analysis runs.
+  last_seen, version distributions, and app_versions per issue across analysis runs.
 - detect_issue_lifecycle: Deterministic evaluation of the 5 lifecycle states:
   new_in_latest, persistent, regressed, resolved, not_observed_latest.
 - enrich_app_data_with_lifecycle: Enriches AppDashboardV2Data top_issues and period snapshots.
@@ -25,14 +25,18 @@ except ImportError:
     from versions import max_version, min_version, version_key  # type: ignore
 
 
-def get_latest_app_version(app_data: dict) -> str | None:
-    """Extracts the true latest app version from version_health or distributions.
+def get_latest_app_version(
+    app_data: dict,
+    catalog: Optional["IssueHistoricalCatalog"] = None,
+) -> str | None:
+    """Extracts the true latest app version from version_health, distributions, or catalog.
 
     Priority:
     1. version_health item where status == 'latest'
     2. Max semver version among version_health items
     3. Max semver version in distributions.app_versions
-    4. None (do NOT infer from top_issues.last_seen_version to avoid false positives)
+    4. Max semver version in catalog.app_versions (if catalog supplied)
+    5. None (do NOT infer from top_issues.last_seen_version to avoid false positives)
     """
     if not isinstance(app_data, dict):
         return None
@@ -51,6 +55,11 @@ def get_latest_app_version(app_data: dict) -> str | None:
     if dist_v_list:
         return max_version(dist_v_list)
 
+    if catalog:
+        cat_versions = catalog.get_known_app_versions()
+        if cat_versions:
+            return max_version(cat_versions)
+
     return None
 
 
@@ -64,6 +73,8 @@ def is_version_sample_sufficient(
 
     An issue with 0 events can only be labeled 'resolved' if the version itself
     has enough traffic/adoption. Otherwise, it is 'not_observed_latest'.
+    Similarly, an intermediate version can only prove an absence gap for 'regressed'
+    if the version had sufficient observation evidence.
     """
     if not isinstance(version_info, dict):
         return False
@@ -93,13 +104,15 @@ def detect_issue_lifecycle(
     latest_version: str,
     sample_sufficient: bool = False,
     current_version_events: Optional[Dict[str, int]] = None,
+    known_version_sufficiency: Optional[Dict[str, bool]] = None,
+    version_health_map: Optional[Dict[str, dict]] = None,
 ) -> IssueLifecycle:
     """Deterministically calculates the lifecycle contract for an issue.
 
     States:
     - new_in_latest: First observed exclusively in latest_version.
-    - persistent: Present in older version(s) and still occurring in latest_version without intermediate gaps.
-    - regressed: Present in older version(s) -> absent in >= 1 intermediate valid version -> reappeared.
+    - persistent: Present in older version(s) and still occurring in latest_version without proven intermediate gaps.
+    - regressed: Present in older version(s) -> absent in >= 1 intermediate valid version with sufficient sample -> reappeared.
     - resolved: Historically occurred, 0 events in latest_version with sufficient sample/adoption.
     - not_observed_latest: 0 events in latest_version, but sample/adoption is insufficient.
     """
@@ -157,7 +170,21 @@ def detect_issue_lifecycle(
         ]
         absent_versions = [v for v in intermediate if v not in seen_set]
 
-        if absent_versions:
+        # Must Fix 3: An intermediate version only counts as an absence gap
+        # if that version had sufficient observation evidence!
+        proven_absent_versions: List[str] = []
+        for v in absent_versions:
+            if known_version_sufficiency is not None:
+                if known_version_sufficiency.get(v, False):
+                    proven_absent_versions.append(v)
+            elif version_health_map is not None:
+                if is_version_sample_sufficient(version_health_map.get(v)):
+                    proven_absent_versions.append(v)
+            else:
+                # If neither map is provided, default to treating absent versions as candidate gaps
+                proven_absent_versions.append(v)
+
+        if proven_absent_versions:
             return {
                 "status": "regressed",
                 "latest_version": latest_version,
@@ -165,11 +192,14 @@ def detect_issue_lifecycle(
                 "last_seen_version": last_seen_ver,
                 "versions_seen": versions_seen_count,
                 "confidence": "high",
-                "previously_absent_since": absent_versions[0],
+                "previously_absent_since": proven_absent_versions[0],
                 "reappeared_version": latest_version,
-                "reason": f"於版本 {absent_versions[0]} 消失後在 {latest_version} 重新出現",
+                "reason": f"於版本 {proven_absent_versions[0]} 消失後在 {latest_version} 重新出現",
             }
         else:
+            reason = f"自版本 {first_seen_ver} 持續存在至最新版本 {latest_version}"
+            if absent_versions:
+                reason += f" (中間版本 {', '.join(absent_versions)} 樣本不足以證明曾消失)"
             return {
                 "status": "persistent",
                 "latest_version": latest_version,
@@ -179,7 +209,7 @@ def detect_issue_lifecycle(
                 "confidence": "high",
                 "previously_absent_since": None,
                 "reappeared_version": None,
-                "reason": f"自版本 {first_seen_ver} 持續存在至最新版本 {latest_version}",
+                "reason": reason,
             }
     else:
         # Issue not observed in latest_version
@@ -215,6 +245,7 @@ class IssueHistoricalCatalog:
     def __init__(self, catalog_path: Optional[Path] = None):
         self.catalog_path = catalog_path
         self.issues: Dict[str, Dict[str, Any]] = {}
+        self.app_versions: Dict[str, Dict[str, Any]] = {}
         self.updated_at: Optional[str] = None
 
     def load(self) -> None:
@@ -223,6 +254,7 @@ class IssueHistoricalCatalog:
             try:
                 data = json.loads(self.catalog_path.read_text(encoding="utf-8"))
                 self.issues = data.get("issues", {})
+                self.app_versions = data.get("app_versions", {})
                 self.updated_at = data.get("updated_at")
             except Exception:
                 pass
@@ -238,8 +270,41 @@ class IssueHistoricalCatalog:
             "version": "1.0",
             "updated_at": now_iso,
             "issues": self.issues,
+            "app_versions": self.app_versions,
         }
         self.catalog_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def update_app_versions(self, version_health: Iterable[dict]) -> None:
+        """Records version-level metrics and sample sufficiency into catalog."""
+        now_iso = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+        for v in version_health:
+            if not isinstance(v, dict):
+                continue
+            ver = str(v.get("version", "")).strip()
+            if not ver:
+                continue
+            existing = self.app_versions.get(ver, {})
+            adoption = v.get("adoption_rate") if v.get("adoption_rate") is not None else existing.get("adoption_rate")
+            sessions = v.get("sessions_total") if v.get("sessions_total") is not None else existing.get("sessions_total")
+            events = v.get("crash_events", 0) or existing.get("crash_events", 0)
+            status = v.get("status") or existing.get("status") or "active"
+
+            is_suff = is_version_sample_sufficient({
+                "adoption_rate": adoption,
+                "sessions_total": sessions,
+                "crash_events": events,
+                "sample_sufficient": v.get("sample_sufficient") or existing.get("sample_sufficient"),
+            })
+
+            self.app_versions[ver] = {
+                "version": ver,
+                "status": status,
+                "adoption_rate": adoption,
+                "sessions_total": sessions,
+                "crash_events": events,
+                "sample_sufficient": is_suff,
+                "last_updated": now_iso,
+            }
 
     def update_from_issues(self, issues: Iterable[dict]) -> None:
         """Merges a list of issues and their version distributions into the catalog."""
@@ -300,6 +365,56 @@ class IssueHistoricalCatalog:
                     "last_updated": now_iso,
                 }
 
+    def update_from_catalog_rows(self, rows: Iterable[dict]) -> None:
+        """Ingests broad catalog query rows (issue_id, app_version, first_seen_ts, last_seen_ts, events, users)."""
+        now_iso = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+        for row in rows:
+            iid = row.get("issue_id")
+            ver = str(row.get("app_version", "")).strip()
+            if not iid or not ver:
+                continue
+            ts_first = row.get("first_seen_timestamp")
+            ts_last = row.get("last_seen_timestamp")
+
+            existing = self.issues.get(iid)
+            if existing:
+                all_vers = set(existing.get("versions_seen", [])) | {ver}
+                sorted_vers = sorted(list(all_vers), key=version_key)
+                existing["versions_seen"] = sorted_vers
+                existing["first_seen_version"] = min_version([existing.get("first_seen_version"), ver]) or ver
+                existing["last_seen_version"] = max_version([existing.get("last_seen_version"), ver]) or ver
+                if ts_first and (not existing.get("first_seen_timestamp") or ts_first < existing["first_seen_timestamp"]):
+                    existing["first_seen_timestamp"] = ts_first
+                if ts_last and (not existing.get("last_seen_timestamp") or ts_last > existing["last_seen_timestamp"]):
+                    existing["last_seen_timestamp"] = ts_last
+                existing["last_updated"] = now_iso
+            else:
+                self.issues[iid] = {
+                    "issue_id": iid,
+                    "platform": row.get("platform", "android"),
+                    "title": row.get("title", ""),
+                    "subtitle": row.get("subtitle", ""),
+                    "error_type": row.get("error_type", "NON_FATAL"),
+                    "first_seen_version": ver,
+                    "last_seen_version": ver,
+                    "first_seen_timestamp": ts_first,
+                    "last_seen_timestamp": ts_last,
+                    "versions_seen": [ver],
+                    "last_updated": now_iso,
+                }
+
+    def get_known_app_versions(self) -> List[str]:
+        """Returns sorted list of all known app versions recorded in catalog."""
+        v_set = set(self.app_versions.keys())
+        for iss in self.issues.values():
+            for v in iss.get("versions_seen", []):
+                if v:
+                    v_set.add(v)
+        return sorted(list(v_set), key=version_key)
+
+    def get_version_info(self, version: str) -> Optional[Dict[str, Any]]:
+        return self.app_versions.get(version)
+
     def get_issue_history(self, issue_id: str) -> Optional[Dict[str, Any]]:
         return self.issues.get(issue_id)
 
@@ -309,30 +424,13 @@ def enrich_app_data_with_lifecycle(
     catalog: Optional[IssueHistoricalCatalog] = None,
     app_name: Optional[str] = None,
     out_dir: Optional[Path] = None,
+    catalog_rows: Optional[Iterable[dict]] = None,
 ) -> dict:
     """Enriches app_data top_issues and all periods snapshots with deterministic lifecycle."""
     if not isinstance(app_data, dict):
         return app_data
 
-    # 1. Resolve authoritative latest_version
-    latest_ver = get_latest_app_version(app_data) or "1.0.0"
-
-    # 2. Gather all known versions
-    vh = app_data.get("version_health") or []
-    all_known_set = set(str(v.get("version")).strip() for v in vh if isinstance(v, dict) and v.get("version"))
-    dist_v = app_data.get("distributions", {}).get("app_versions") or []
-    for d in dist_v:
-        if isinstance(d, dict) and d.get("app_version"):
-            all_known_set.add(str(d["app_version"]).strip())
-    all_known_set.add(latest_ver)
-    all_known_sorted = sorted(list(all_known_set), key=version_key)
-
-    # 3. Check sample sufficiency for latest_version
-    vh_map = {str(v.get("version")).strip(): v for v in vh if isinstance(v, dict) and v.get("version")}
-    latest_v_info = vh_map.get(latest_ver)
-    sample_sufficient = is_version_sample_sufficient(latest_v_info)
-
-    # 4. Catalog setup and update
+    # 1. Catalog setup and load
     cat = catalog
     if cat is None:
         cat_path = None
@@ -342,7 +440,39 @@ def enrich_app_data_with_lifecycle(
         cat = IssueHistoricalCatalog(catalog_path=cat_path)
         cat.load()
 
-    # Collect all issues across top_issues and all period snapshots
+    if catalog_rows:
+        cat.update_from_catalog_rows(catalog_rows)
+
+    # Ingest app_versions from current version_health into catalog
+    vh = app_data.get("version_health") or []
+    cat.update_app_versions(vh)
+
+    # 2. Gather all known versions across version_health, distributions, and catalog
+    all_known_set = set(str(v.get("version")).strip() for v in vh if isinstance(v, dict) and v.get("version"))
+    dist_v = app_data.get("distributions", {}).get("app_versions") or []
+    for d in dist_v:
+        if isinstance(d, dict) and d.get("app_version"):
+            all_known_set.add(str(d["app_version"]).strip())
+    for cv in cat.get_known_app_versions():
+        all_known_set.add(cv)
+
+    # 3. Resolve authoritative latest_version
+    latest_ver = get_latest_app_version(app_data, catalog=cat)
+    if not latest_ver:
+        latest_ver = max_version(list(all_known_set)) if all_known_set else "1.0.0"
+    all_known_set.add(latest_ver)
+    all_known_sorted = sorted(list(all_known_set), key=version_key)
+
+    # 4. Build sample sufficiency mapping for all known versions
+    vh_map = {str(v.get("version")).strip(): v for v in vh if isinstance(v, dict) and v.get("version")}
+    known_version_sufficiency: Dict[str, bool] = {}
+    for v in all_known_sorted:
+        v_info = vh_map.get(v) or cat.get_version_info(v)
+        known_version_sufficiency[v] = is_version_sample_sufficient(v_info)
+
+    sample_sufficient = known_version_sufficiency.get(latest_ver, False)
+
+    # 5. Collect all issues across top_issues and all period snapshots and update catalog
     all_issues_to_index: List[dict] = []
     if isinstance(app_data.get("top_issues"), list):
         all_issues_to_index.extend(app_data["top_issues"])
@@ -356,7 +486,7 @@ def enrich_app_data_with_lifecycle(
     cat.update_from_issues(all_issues_to_index)
     cat.save()
 
-    # 5. Enrich top-level top_issues
+    # 6. Enrich top-level top_issues
     if isinstance(app_data.get("top_issues"), list):
         for iss in app_data["top_issues"]:
             iid = iss.get("issue_id", "")
@@ -385,19 +515,25 @@ def enrich_app_data_with_lifecycle(
                 latest_version=latest_ver,
                 sample_sufficient=sample_sufficient,
                 current_version_events=v_events,
+                known_version_sufficiency=known_version_sufficiency,
             )
             iss["lifecycle"] = lc
 
-    # 6. Enrich each period snapshot's top_issues
+    # 7. Enrich each period snapshot's top_issues
     if isinstance(periods, dict):
         for p_key, snap in periods.items():
             if not isinstance(snap, dict):
                 continue
 
-            snap_latest_ver = get_latest_app_version(snap) or latest_ver
             snap_vh = snap.get("version_health") or vh
+            snap_latest_ver = get_latest_app_version(snap, catalog=cat) or latest_ver
             snap_vh_map = {str(v.get("version")).strip(): v for v in snap_vh if isinstance(v, dict) and v.get("version")}
-            snap_sample_sufficient = is_version_sample_sufficient(snap_vh_map.get(snap_latest_ver))
+
+            snap_sufficiency: Dict[str, bool] = {}
+            for v in all_known_sorted:
+                v_info = snap_vh_map.get(v) or cat.get_version_info(v)
+                snap_sufficiency[v] = is_version_sample_sufficient(v_info)
+            snap_sample_sufficient = snap_sufficiency.get(snap_latest_ver, False)
 
             snap_issues = snap.get("top_issues") or []
             for iss in snap_issues:
@@ -425,6 +561,7 @@ def enrich_app_data_with_lifecycle(
                     latest_version=snap_latest_ver,
                     sample_sufficient=snap_sample_sufficient,
                     current_version_events=v_events,
+                    known_version_sufficiency=snap_sufficiency,
                 )
                 iss["lifecycle"] = lc
 
