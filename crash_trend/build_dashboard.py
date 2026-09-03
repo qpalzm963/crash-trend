@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
 try:
-    from crash_trend.schema_v2 import validate_dashboard_v2
+    from crash_trend.schema_v2 import validate_dashboard_v2, SCHEMA_VERSION
 except ImportError:
     try:
         from schema_v2 import validate_dashboard_v2, SCHEMA_VERSION
@@ -1939,8 +1939,8 @@ function setPeriod(days) {
     showToast(`目前資料無 ${days} 天之獨立數據`);
     return;
   }
-  if (snap && (snap.status === "error" || snap.kpi?.affected_users?.status === "error")) {
-    showToast(`${days} 天數據查詢異常：${snap.error_message || "權威查詢失敗"}`);
+  if (snap && (snap.status === "error" || snap.status === "insufficient_data" || snap.kpi?.affected_users?.status === "error" || snap.kpi?.affected_users?.status === "insufficient_data")) {
+    showToast(`${days} 天數據查詢異常：${snap.error_message || "權威彙總缺失"}`);
     return;
   }
   curPeriodDays = Number(days);
@@ -2110,7 +2110,7 @@ function renderHeader() {
     if (btn) {
       const snap = app.periods ? app.periods[String(d)] : null;
       const hasPeriod = (snap != null) || (!app.periods && d <= availableDays);
-      const isError = snap && (snap.status === "error" || snap.kpi?.affected_users?.status === "error");
+      const isError = snap && (snap.status === "error" || snap.status === "insufficient_data" || snap.kpi?.affected_users?.status === "error" || snap.kpi?.affected_users?.status === "insufficient_data");
       if (!hasPeriod) {
         btn.disabled = true;
         btn.title = `目前資料無 ${d} 天之獨立數據`;
@@ -2119,7 +2119,7 @@ function renderHeader() {
         btn.style.cursor = "not-allowed";
       } else if (isError) {
         btn.disabled = true;
-        btn.title = `${d} 天數據異常：${snap.error_message || "權威彙總失敗"}`;
+        btn.title = `${d} 天數據異常：${snap.error_message || "權威彙總缺失"}`;
         btn.classList.add("disabled");
         btn.style.opacity = "0.45";
         btn.style.cursor = "not-allowed";

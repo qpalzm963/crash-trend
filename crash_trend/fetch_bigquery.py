@@ -538,13 +538,13 @@ def transform_bq_period_snapshot(
     if overview_fatal + overview_anr + overview_non_fatal != overview_total_events:
         overview_non_fatal = max(0, overview_total_events - overview_fatal - overview_anr)
 
-    overview_missing = bool(tables_data) and not has_any_overview
+    overview_failed = bool(overview_failed_tables) or (bool(tables_data) and not has_any_overview)
     has_errors = bool(period_errors)
 
     if has_errors:
         crash_events_status: SourceStatus = "error"
         affected_users_status: SourceStatus = "error"
-    elif overview_missing:
+    elif overview_failed:
         crash_events_status = "available" if overview_total_events > 0 or not tables_data else "insufficient_data"
         affected_users_status = "insufficient_data"
     else:
@@ -688,10 +688,16 @@ def transform_bq_period_snapshot(
 
     if period_errors:
         snap_status: SourceStatus = "error"
-        snap_error: Optional[str] = "; ".join(period_errors)
-    elif overview_missing:
+        if isinstance(period_errors, dict):
+            snap_error: Optional[str] = "; ".join(f"{k}: {v}" for k, v in period_errors.items())
+        elif isinstance(period_errors, list):
+            snap_error = "; ".join(str(e) for e in period_errors)
+        else:
+            snap_error = str(period_errors)
+    elif overview_failed:
         snap_status = "insufficient_data"
-        snap_error = f"Overview 權威彙總缺失 ({', '.join(overview_failed_tables)})"
+        missing_tables_desc = f" ({', '.join(overview_failed_tables)})" if overview_failed_tables else ""
+        snap_error = f"Overview 權威彙總缺失{missing_tables_desc}"
     else:
         snap_status = "available"
         snap_error = None

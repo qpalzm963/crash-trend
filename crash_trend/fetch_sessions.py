@@ -590,7 +590,7 @@ def fetch_sessions_data(
                     dataset=dataset,
                     tables=tables,
                     days=p,
-                    comparison_days=comparison_days,
+                    comparison_days=p if comparison_days else None,
                     client=client,
                     crash_dataset=crash_dataset,
                     crash_tables=crash_tables,
@@ -716,11 +716,12 @@ def enrich_app_dashboard_with_sessions(app_data: Dict[str, Any], sessions_result
             if not isinstance(snap, dict):
                 continue
             snap_sess = sess_periods.get(p_key)
-            if snap_sess and snap_sess.get("sources", {}).get("status") == "available":
+            if snap_sess:
+                snap_status = snap_sess.get("sources", {}).get("status", "unavailable")
                 snap_kpi_sess = snap_sess.get("kpi") or {}
                 snap_daily_sess = snap_sess.get("daily_trend") or {}
                 snap_ver_sess = snap_sess.get("version_health") or {}
-                snap_avail = True
+                snap_avail = (snap_status == "available")
             elif str(p_key) == str(app_data.get("period", {}).get("days")) and is_available:
                 snap_kpi_sess = kpi_sessions
                 snap_daily_sess = daily_sessions
@@ -733,13 +734,18 @@ def enrich_app_dashboard_with_sessions(app_data: Dict[str, Any], sessions_result
                 snap_avail = False
 
             if "kpi" in snap and isinstance(snap["kpi"], dict):
+                snap_unavail_reason = (
+                    (snap_sess.get("sources", {}).get("error_message") if snap_sess else None)
+                    or src_sessions.get("error_message")
+                    or "該時間範圍無獨立 Sessions 資料"
+                )
                 snap["kpi"]["crash_free_users"] = snap_kpi_sess.get(
                     "crash_free_users",
-                    build_crash_free_metric(None, None, status="unavailable", unavailable_reason=src_sessions.get("error_message") or "該時間範圍無獨立 Sessions 資料"),
+                    build_crash_free_metric(None, None, status="unavailable", unavailable_reason=snap_unavail_reason),
                 )
                 snap["kpi"]["crash_free_sessions"] = snap_kpi_sess.get(
                     "crash_free_sessions",
-                    build_crash_free_metric(None, None, status="unavailable", unavailable_reason=src_sessions.get("error_message") or "該時間範圍無獨立 Sessions 資料"),
+                    build_crash_free_metric(None, None, status="unavailable", unavailable_reason=snap_unavail_reason),
                 )
 
             if "daily_trend" in snap and isinstance(snap["daily_trend"], list):
