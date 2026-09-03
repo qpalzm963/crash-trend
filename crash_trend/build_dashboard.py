@@ -2125,7 +2125,15 @@ function resolveSourceHealth(sourceKey, srcObj, generatedAt) {
     label = "✓ 正常";
     badgeClass = "badge-active";
     dotClass = "available";
-    if (!note) note = "資料來源正常運作";
+    if (!note) {
+      if (sourceKey === "ai" || sourceKey === "gemini_ai") {
+        const modePart = srcObj.requested_mode ? ` [${srcObj.requested_mode}]` : "";
+        const fbPart = srcObj.fallback_used ? " (Fallback)" : "";
+        note = `模型: ${srcObj.model || "—"}${modePart}${fbPart}`;
+      } else {
+        note = "資料來源正常運作";
+      }
+    }
   } else {
     status = "unavailable";
     label = "未提供";
@@ -2415,7 +2423,14 @@ function renderAISummaries() {
   const snap = getCurPeriodSnapshot();
   const ai = snap?.ai_summary || app.ai_summary || {};
 
-  const modelText = ai.model || "Gemini Flash";
+  const aiSrc = (app.sources && (app.sources.ai || app.sources.gemini_ai)) || {};
+  let modelText = ai.model || "Gemini Flash";
+  if (aiSrc.requested_mode) {
+    modelText += ` (${aiSrc.requested_mode})`;
+  }
+  if (aiSrc.fallback_used) {
+    modelText += " [Fallback]";
+  }
   $("aiModelTag").textContent = modelText;
   $("aiFullModelTag").textContent = modelText;
 
