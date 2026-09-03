@@ -23,21 +23,22 @@ This module provides:
 from __future__ import annotations
 
 import datetime as dt
+import json
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 try:
-    from crash_trend.config import ROOT, app_argparser, get_app, load_config, out_dir, write_json
+    from crash_trend.config import ROOT, app_argparser, get_app, is_sessions_enabled, load_config, out_dir, write_json
     from crash_trend.fetch_bigquery import list_crash_tables
     from crash_trend.schema_v2 import CrashFreeMetric, SourceStatus
 except ImportError:
     try:
-        from config import ROOT, app_argparser, get_app, load_config, out_dir, write_json
+        from config import ROOT, app_argparser, get_app, is_sessions_enabled, load_config, out_dir, write_json
         from fetch_bigquery import list_crash_tables
         from schema_v2 import CrashFreeMetric, SourceStatus
     except ImportError:
-        from crash_trend.config import ROOT, app_argparser, get_app, load_config, out_dir, write_json
+        from crash_trend.config import ROOT, app_argparser, get_app, is_sessions_enabled, load_config, out_dir, write_json
         from crash_trend.schema_v2 import CrashFreeMetric, SourceStatus
         list_crash_tables = None  # type: ignore
 
@@ -561,6 +562,9 @@ def fetch_sessions_for_app(
 ) -> Dict[str, Any]:
     """Fetches Sessions data for a given app defined in apps.yaml."""
     app_cfg = get_app(app_name)
+    if not is_sessions_enabled(app_cfg):
+        return build_unavailable_sessions_result("Sessions 匯出已停用 (disabled in config)")
+
     project = app_cfg.get("firebase_project")
     if not project:
         return build_unavailable_sessions_result(f"firebase_project not configured for app '{app_name}'")
@@ -665,12 +669,29 @@ def main() -> None:
     args = parser.parse_args()
 
     app_cfg = get_app(args.app)
+    if not is_sessions_enabled(app_cfg):
+        print(f"  （App「{args.app}」設定為停用 Sessions，略過 BigQuery 查詢）")
+        result = build_unavailable_sessions_result("Sessions 匯出已停用 (disabled in config)")
+        target_path = out_dir(args.app) / "sessions.json"
+        write_json(target_path, result)
+
+        v2_path = out_dir(args.app) / "dashboard_v2.json"
+        if v2_path.exists():
+            try:
+                app_data = json.loads(v2_path.read_text(encoding="utf-8"))
+                enriched = enrich_app_dashboard_with_sessions(app_data, result)
+                write_json(v2_path, enriched)
+                print(f"  ✓ 已更新 {v2_path.relative_to(ROOT)} Sessions 指標（標記為未開啟）")
+            except Exception as e:
+                print(f"  ⚠ 更新 dashboard_v2.json Sessions 指標失敗：{e}", file=sys.stderr)
+        return
+
     project = app_cfg.get("firebase_project")
     if not project:
         sys.exit(f"[錯誤] apps.yaml 裡的「{args.app}」未設定 firebase_project")
 
     print(f"=== 正在查詢 Firebase Sessions ({project}.{args.sessions_dataset}) ===")
-    result = fetch_sessions_data(project=project, dataset=args.sessions_dataset, days=args.days)
+    result = fetch_sessions_data(project=project, dataset=args.sessions_dataset, days=args.days, app_config=app_cfg)
 
     target_path = out_dir(args.app) / "sessions.json"
     write_json(target_path, result)

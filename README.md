@@ -61,16 +61,37 @@ open dashboard.html
 | `.env` | `GEMINI_API_KEY`、`GEMINI_MODEL`（預設 gemini-flash-latest） | ✗ 永不進版控 |
 | `~/.config/crash-trend/sa.json` | BigQuery 唯讀 SA 金鑰（`create_sa.sh` 產生） | ✗ 永不進版控（Docker read-only 掛載） |
 
-### 多 App 設定範例 (`apps.yaml`)
+### 多 App 設定與 Data Source Profile (`apps.yaml`)
+
+系統正式支援 **Crashlytics-only** 與 **Full Sessions** 雙模式。若未開啟 Sessions 匯出，管線完全不打無效 API、不報 404，儀表板以 `未開啟` 清楚標註，其餘 Crash 除錯與 AI 優先級功能 100% 正常。
 
 ```yaml
 credentials:
   bq_service_account: ~/.config/crash-trend/sa.json
 
 apps:
+  # 模式 A：Crashlytics-only 模式（推薦：輕量、零額外 Sessions 儲存成本）
+  clock_in_app:
+    display_name: MP打卡系統
+    firebase_project: mp-clockin-44dee
+    data_sources:
+      crashlytics_bigquery: true          # 啟用 Crashlytics 匯出
+      sessions: false                     # 停用 Sessions 查詢（不需 firebase_sessions 表）
+      mcp: optional                       # optional 備援
+    bq_dataset: firebase_crashlytics
+    package_name: com.mp.clockinapp
+    bundle_id: com.mp.clockin
+    source_repo: ~/develop/clock_in_app
+    platforms: [android, ios]
+    core_paths: [auth_repository, punch, clock_in]
+
+  # 模式 B：完整模式 (含 Firebase Sessions 計算 Crash-free %)
   shop_app:
     display_name: 購物商城 App
     firebase_project: shop-prod-12345
+    data_sources:
+      crashlytics_bigquery: true
+      sessions: true                      # 啟用 Sessions 查詢計算 Crash-free 率
     bq_dataset: firebase_crashlytics
     sessions_dataset: firebase_sessions
     package_name: com.example.shop

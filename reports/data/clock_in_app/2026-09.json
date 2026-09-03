@@ -1,0 +1,118 @@
+{
+  "month": "2026-09",
+  "app": "clock_in_app",
+  "display_name": "MP打卡系統",
+  "generated_at": "2026-09-03",
+  "kpis": {
+    "events": 0,
+    "users": 0,
+    "fatal_share": null,
+    "issue_count": 0,
+    "events_fatal": 0,
+    "events_anr": 0,
+    "events_nonfatal": 0
+  },
+  "sources": {
+    "crashlytics_bq": true,
+    "mcp_report": false,
+    "manual_console": false,
+    "mcp_crashlytics": false
+  },
+  "top_issues": [],
+  "distributions": {
+    "ios": {
+      "device": [
+        {
+          "label": "iPhone17,3",
+          "events": 10,
+          "users": 2
+        },
+        {
+          "label": "iPhone11,8",
+          "events": 7,
+          "users": 1
+        },
+        {
+          "label": "iPhone14,2",
+          "events": 3,
+          "users": 2
+        },
+        {
+          "label": "iPhone16,2",
+          "events": 2,
+          "users": 1
+        }
+      ],
+      "os": [
+        {
+          "label": "26.6.0",
+          "events": 9,
+          "users": 1
+        },
+        {
+          "label": "17.5.1",
+          "events": 7,
+          "users": 1
+        },
+        {
+          "label": "27.0.0",
+          "events": 3,
+          "users": 2
+        },
+        {
+          "label": "26.5.0",
+          "events": 3,
+          "users": 2
+        }
+      ],
+      "app_version": [
+        {
+          "label": "1.0.10",
+          "events": 18,
+          "users": 3
+        },
+        {
+          "label": "1.0.9",
+          "events": 4,
+          "users": 3
+        }
+      ]
+    },
+    "android": {
+      "device": [
+        {
+          "label": "OnePlus8Pro",
+          "events": 1,
+          "users": 1
+        },
+        {
+          "label": "SM-S9060",
+          "events": 1,
+          "users": 1
+        }
+      ],
+      "os": [
+        {
+          "label": "11",
+          "events": 1,
+          "users": 1
+        },
+        {
+          "label": "16",
+          "events": 1,
+          "users": 1
+        }
+      ],
+      "app_version": [
+        {
+          "label": "1.0.10",
+          "events": 2,
+          "users": 2
+        }
+      ]
+    }
+  },
+  "weekly_trend": [],
+  "priority_list": [],
+  "fix_review": null
+}

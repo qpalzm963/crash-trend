@@ -59,3 +59,45 @@ def app_argparser(desc: str) -> argparse.ArgumentParser:
     p.add_argument("--app", required=True, help="apps.yaml 中的 app 名稱")
     p.add_argument("--days", type=int, default=90, help="回溯天數（預設 90）")
     return p
+
+
+def get_data_sources(app_cfg: dict) -> dict:
+    """Extracts and normalizes data_sources configuration for an app."""
+    ds = dict(app_cfg.get("data_sources") or {})
+
+    # Check shorthand flags
+    if "sessions" not in ds:
+        if "sessions" in app_cfg:
+            ds["sessions"] = app_cfg["sessions"]
+        elif "sessions_enabled" in app_cfg:
+            ds["sessions"] = app_cfg["sessions_enabled"]
+        elif "sessions_dataset" in app_cfg and app_cfg["sessions_dataset"] is not None:
+            ds["sessions"] = bool(app_cfg["sessions_dataset"])
+        else:
+            ds["sessions"] = False
+
+    if "crashlytics_bigquery" not in ds:
+        if "crashlytics_bigquery" in app_cfg:
+            ds["crashlytics_bigquery"] = app_cfg["crashlytics_bigquery"]
+        else:
+            ds["crashlytics_bigquery"] = True
+
+    if "mcp" not in ds:
+        if "mcp" in app_cfg:
+            ds["mcp"] = app_cfg["mcp"]
+        else:
+            ds["mcp"] = "optional"
+
+    return ds
+
+
+def is_sessions_enabled(app_cfg: dict) -> bool:
+    """Returns True only if Sessions data source is explicitly enabled for the app."""
+    ds = get_data_sources(app_cfg)
+    val = ds.get("sessions")
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, str):
+        return val.lower() in ("true", "1", "yes", "enabled", "on")
+    return bool(val)
+
