@@ -47,7 +47,7 @@ class PeriodInfo(TypedDict):
 
 
 class SourceStatus(TypedDict):
-    status: Literal["available", "unavailable", "disabled", "error"]
+    status: Literal["available", "unavailable", "disabled", "error", "stale", "insufficient_data"]
     tables_queried: NotRequired[Optional[List[str]]]
     model: NotRequired[Optional[str]]
     last_sync_timestamp: Optional[str]
@@ -294,6 +294,7 @@ class DashboardV2Bundle(TypedDict):
     generated_at: str
     default_app: str
     apps: Dict[str, AppDashboardV2Data]
+    pipeline_run: NotRequired[Optional[Dict[str, Any]]]
 
 
 # ---------------------------------------------------------------------------
@@ -473,7 +474,7 @@ def validate_app_dashboard_v2(data: dict, prefix: str = "") -> List[str]:
     # 3. Sources
     sources = data.get("sources")
     if isinstance(sources, dict):
-        valid_src_statuses = {"available", "unavailable", "disabled", "error"}
+        valid_src_statuses = {"available", "unavailable", "disabled", "error", "stale", "insufficient_data"}
         for s_name in ("crashlytics_bq", "firebase_sessions", "mcp_crashlytics", "gemini_ai"):
             s_obj = sources.get(s_name)
             if not isinstance(s_obj, dict):

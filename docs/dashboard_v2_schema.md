@@ -143,7 +143,8 @@ classDiagram
   }
 }
 ```
-- `status` 取值：`"available"`（正常可用）、`"unavailable"`（未啟用/無數據）、`"disabled"`（手動關閉）、`"error"`（查詢失敗）。
+- `status` 取值：`"available"`（正常可用）、`"unavailable"`（未啟用/無數據）、`"disabled"`（手動關閉/未開啟）、`"error"`（查詢失敗）、`"stale"`（快取過期/使用備用快取中）、`"insufficient_data"`（資料量不足以計算）。
+- V2.2 補充：可選欄位 `bundle.pipeline_run` 記錄最近一次管線健康狀態 (`out/pipeline_run.json`)。
 
 ---
 
