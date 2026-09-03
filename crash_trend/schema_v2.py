@@ -47,8 +47,18 @@ class PeriodInfo(TypedDict):
     comparison_period: Optional[PeriodComparison]
 
 
+SnapshotStatus = Literal[
+    "available",
+    "unavailable",
+    "disabled",
+    "error",
+    "stale",
+    "insufficient_data",
+]
+
+
 class SourceStatus(TypedDict):
-    status: Literal["available", "unavailable", "disabled", "error", "stale", "insufficient_data"]
+    status: SnapshotStatus
     tables_queried: NotRequired[Optional[List[str]]]
     provider: NotRequired[Optional[str]]
     model: NotRequired[Optional[str]]
@@ -288,7 +298,7 @@ class AppPeriodSnapshot(TypedDict):
     distributions: Distributions
     top_issues: List[IssueSummary]
     ai_summary: NotRequired[Optional[AISummary]]
-    status: NotRequired[SourceStatus]
+    status: NotRequired[SnapshotStatus]
     error_message: NotRequired[Optional[str]]
 
 

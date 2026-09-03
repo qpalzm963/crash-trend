@@ -1913,14 +1913,28 @@ function switchView(viewName) {
   }
 }
 
+function isUsablePeriodSnapshot(snap) {
+  if (!snap) return false;
+  if (snap.status === "error" || snap.status === "insufficient_data") return false;
+  const usStatus = snap.kpi?.affected_users?.status;
+  if (usStatus === "error" || usStatus === "insufficient_data") return false;
+  return true;
+}
+
 function switchApp(appId) {
   if (DATA.apps && DATA.apps[appId]) {
     curAppId = appId;
     $("appSelector").value = appId;
     const app = DATA.apps[appId];
-    if (app.periods && (!app.periods[String(curPeriodDays)] || app.periods[String(curPeriodDays)].status === "error")) {
-      const avail = Object.keys(app.periods).map(Number).filter(d => app.periods[String(d)]?.status !== "error").sort((a,b) => a - b);
-      curPeriodDays = avail.includes(30) ? 30 : (avail[0] || 90);
+    if (app.periods) {
+      const curSnap = app.periods[String(curPeriodDays)];
+      if (!isUsablePeriodSnapshot(curSnap)) {
+        const avail = Object.keys(app.periods)
+          .map(Number)
+          .filter(d => isUsablePeriodSnapshot(app.periods[String(d)]))
+          .sort((a,b) => a - b);
+        curPeriodDays = avail.includes(30) ? 30 : (avail[0] || (Object.keys(app.periods).map(Number).sort((a,b) => a - b)[0] || 30));
+      }
     }
     renderAll();
   }
@@ -1939,7 +1953,7 @@ function setPeriod(days) {
     showToast(`目前資料無 ${days} 天之獨立數據`);
     return;
   }
-  if (snap && (snap.status === "error" || snap.status === "insufficient_data" || snap.kpi?.affected_users?.status === "error" || snap.kpi?.affected_users?.status === "insufficient_data")) {
+  if (snap && !isUsablePeriodSnapshot(snap)) {
     showToast(`${days} 天數據查詢異常：${snap.error_message || "權威彙總缺失"}`);
     return;
   }
@@ -1969,8 +1983,20 @@ function getCurAppData() {
 function getCurPeriodSnapshot() {
   const app = getCurAppData();
   if (!app) return null;
-  if (app.periods && app.periods[String(curPeriodDays)]) {
-    return app.periods[String(curPeriodDays)];
+  if (app.periods) {
+    const snap = app.periods[String(curPeriodDays)];
+    if (snap && isUsablePeriodSnapshot(snap)) {
+      return snap;
+    }
+    const avail = Object.keys(app.periods)
+      .map(Number)
+      .filter(d => isUsablePeriodSnapshot(app.periods[String(d)]))
+      .sort((a,b) => a - b);
+    if (avail.length > 0) {
+      const fallbackDays = avail.includes(30) ? 30 : avail[0];
+      return app.periods[String(fallbackDays)];
+    }
+    if (snap) return snap;
   }
   return {
     period: app.period || { days: curPeriodDays },
@@ -2110,16 +2136,16 @@ function renderHeader() {
     if (btn) {
       const snap = app.periods ? app.periods[String(d)] : null;
       const hasPeriod = (snap != null) || (!app.periods && d <= availableDays);
-      const isError = snap && (snap.status === "error" || snap.status === "insufficient_data" || snap.kpi?.affected_users?.status === "error" || snap.kpi?.affected_users?.status === "insufficient_data");
+      const isUsable = snap ? isUsablePeriodSnapshot(snap) : (!app.periods && d <= availableDays);
       if (!hasPeriod) {
         btn.disabled = true;
         btn.title = `目前資料無 ${d} 天之獨立數據`;
         btn.classList.add("disabled");
         btn.style.opacity = "0.45";
         btn.style.cursor = "not-allowed";
-      } else if (isError) {
+      } else if (!isUsable) {
         btn.disabled = true;
-        btn.title = `${d} 天數據異常：${snap.error_message || "權威彙總缺失"}`;
+        btn.title = `${d} 天數據異常：${snap?.error_message || "權威彙總缺失"}`;
         btn.classList.add("disabled");
         btn.style.opacity = "0.45";
         btn.style.cursor = "not-allowed";
@@ -2132,10 +2158,16 @@ function renderHeader() {
       }
     }
   });
-  if (app.periods && !app.periods[String(curPeriodDays)]) {
-    const avail = Object.keys(app.periods).map(Number).sort((a,b) => a - b);
-    curPeriodDays = avail.includes(30) ? 30 : (avail[0] || 90);
-  } else if (!app.periods && curPeriodDays > availableDays) {
+  if (app.periods) {
+    const curSnap = app.periods[String(curPeriodDays)];
+    if (!isUsablePeriodSnapshot(curSnap)) {
+      const avail = Object.keys(app.periods)
+        .map(Number)
+        .filter(d => isUsablePeriodSnapshot(app.periods[String(d)]))
+        .sort((a,b) => a - b);
+      curPeriodDays = avail.includes(30) ? 30 : (avail[0] || (Object.keys(app.periods).map(Number).sort((a,b) => a - b)[0] || 30));
+    }
+  } else if (curPeriodDays > availableDays) {
     curPeriodDays = availableDays >= 30 ? 30 : (availableDays >= 7 ? 7 : availableDays);
   }
   document.querySelectorAll(".period-btn").forEach(b => b.classList.remove("active"));

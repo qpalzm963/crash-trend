@@ -615,8 +615,8 @@ class TestPeriodSwitchingReviewRegressions(unittest.TestCase):
             "apps": {"test_app": app_data},
         }
         html = build_html(bundle)
-        self.assertIn('snap.status === "insufficient_data"', html)
-        self.assertIn('snap.kpi?.affected_users?.status === "insufficient_data"', html)
+        self.assertIn("isUsablePeriodSnapshot", html)
+        self.assertIn('usStatus === "insufficient_data"', html)
 
     def test_priority_trend_uses_same_period_baseline(self):
         """Regression 3: Priority trend must compare against same-period baseline (prev_app_data.periods[p_key])."""
@@ -716,6 +716,58 @@ class TestPeriodSwitchingReviewRegressions(unittest.TestCase):
 
             # New issue gets populated into cache
             self.assertIn("iss_new", cache)
+
+    def test_is_usable_period_snapshot_logic_in_dashboard(self):
+        """Regression 5: Dashboard JS must include isUsablePeriodSnapshot and guard switchApp/renderHeader/getCurPeriodSnapshot."""
+        from crash_trend.schema_v2 import SnapshotStatus, AppPeriodSnapshot
+
+        # Verify SnapshotStatus typing and AppPeriodSnapshot contract
+        self.assertIn("insufficient_data", SnapshotStatus.__args__)
+        self.assertIn("error", SnapshotStatus.__args__)
+        self.assertIn("available", SnapshotStatus.__args__)
+
+        snap_data: AppPeriodSnapshot = {
+            "period": {"days": 7, "start_time": "2026-08-28T00:00:00Z", "end_time": "2026-09-03T23:59:59Z", "comparison_period": None},
+            "kpi": {
+                "crash_events": {"value": 10, "previous_value": None, "change_pct": None, "status": "available"},
+                "affected_users": {"value": 0, "previous_value": None, "change_pct": None, "status": "insufficient_data"},
+                "crash_free_users": {"rate": None, "total": None, "crashed": None, "previous_rate": None, "change_pct_points": None, "status": "unavailable", "unavailable_reason": None},
+                "crash_free_sessions": {"rate": None, "total": None, "crashed": None, "previous_rate": None, "change_pct_points": None, "status": "unavailable", "unavailable_reason": None},
+                "new_issues_count": {"value": 0, "previous_value": None, "change_pct": None, "status": "available"},
+                "events_by_error_type": {"fatal": 0, "anr": 0, "non_fatal": 10},
+            },
+            "version_health": [],
+            "distributions": {"platform": [], "device_models": [], "os_versions": [], "app_versions": [], "custom_keys": []},
+            "top_issues": [],
+            "status": "insufficient_data",
+            "error_message": "Overview 權威彙總缺失",
+        }
+        self.assertEqual(snap_data["status"], "insufficient_data")
+
+        # Verify HTML contains unified isUsablePeriodSnapshot logic guarding switchApp and getCurPeriodSnapshot
+        bundle = {
+            "schema_version": "2.3.0",
+            "generated_at": "2026-09-03T12:00:00Z",
+            "default_app": "demo",
+            "apps": {
+                "demo": {
+                    "metadata": {"app_id": "demo", "display_name": "Demo", "firebase_project_id": "p", "platforms": ["android"]},
+                    "period": {"days": 30, "start_time": "2026-08-05T00:00:00Z", "end_time": "2026-09-03T23:59:59Z"},
+                    "sources": {"crashlytics_bq": {"status": "available"}},
+                    "kpi": {"crash_events": {"value": 10}, "affected_users": {"value": 5}},
+                    "daily_trend": [],
+                    "version_health": [],
+                    "distributions": {"platform": [], "device_models": [], "os_versions": [], "app_versions": [], "custom_keys": []},
+                    "top_issues": [],
+                    "ai_summary": {"status": "unavailable", "overview": ""},
+                    "periods": {"7": snap_data},
+                }
+            },
+        }
+        html = build_html(bundle)
+        self.assertIn("function isUsablePeriodSnapshot(snap)", html)
+        self.assertIn("isUsablePeriodSnapshot", html)
+        self.assertIn("snap.status === \"insufficient_data\"", html)
 
 
 if __name__ == "__main__":

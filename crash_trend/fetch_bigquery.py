@@ -44,6 +44,7 @@ try:
         OverviewKPI,
         PeriodInfo,
         PlatformDistItem,
+        SnapshotStatus,
         SourcesAvailability,
         SourceStatus,
         VersionDistCount,
@@ -71,6 +72,7 @@ except ImportError:
         OverviewKPI,
         PeriodInfo,
         PlatformDistItem,
+        SnapshotStatus,
         SourcesAvailability,
         SourceStatus,
         VersionDistCount,
@@ -542,8 +544,8 @@ def transform_bq_period_snapshot(
     has_errors = bool(period_errors)
 
     if has_errors:
-        crash_events_status: SourceStatus = "error"
-        affected_users_status: SourceStatus = "error"
+        crash_events_status: Literal["available", "insufficient_data", "error"] = "error"
+        affected_users_status: Literal["available", "insufficient_data", "error"] = "error"
     elif overview_failed:
         crash_events_status = "available" if overview_total_events > 0 or not tables_data else "insufficient_data"
         affected_users_status = "insufficient_data"
@@ -687,7 +689,7 @@ def transform_bq_period_snapshot(
         })
 
     if period_errors:
-        snap_status: SourceStatus = "error"
+        snap_status: SnapshotStatus = "error"
         if isinstance(period_errors, dict):
             snap_error: Optional[str] = "; ".join(f"{k}: {v}" for k, v in period_errors.items())
         elif isinstance(period_errors, list):
