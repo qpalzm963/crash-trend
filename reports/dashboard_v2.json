@@ -1,10 +1,6 @@
 {
   "schema_version": "2.0",
-<<<<<<< HEAD
-  "generated_at": "2026-09-03T02:32:21Z",
-=======
-  "generated_at": "2026-09-03T01:56:56Z",
->>>>>>> upstream/feature/issue-9-pipeline-integration
+  "generated_at": "2026-09-03T02:34:07Z",
   "default_app": "clock_in_app",
   "apps": {
     "clock_in_app": {
@@ -35,22 +31,13 @@
             "com_mp_clockin_IOS",
             "com_mp_clockinapp_ANDROID"
           ],
-<<<<<<< HEAD
-          "last_sync_timestamp": "2026-09-03T02:32:20Z",
-          "error_message": "{'com_mp_clockin_IOS.top_issues': '400 Unrecognized name: error; Did you mean errors? at [7:17]; reason: invalidQuery, location: query, message: Unrecognized name: error; Did you mean errors? at [7:17]\\n\\nLocation: US\\nJob ID: ea78ed59-c05e-4624-b8b0-faa2ca36e4ca\\n', 'com_mp_clockinapp_ANDROID.top_issues': '400 Unrecognized name: error; Did you mean errors? at [7:17]; reason: invalidQuery, location: query, message: Unrecognized name: error; Did you mean errors? at [7:17]\\n\\nLocation: US\\nJob ID:"
-=======
-          "last_sync_timestamp": "2026-09-03T01:56:31Z",
+          "last_sync_timestamp": "2026-09-03T02:33:36Z",
           "error_message": null
->>>>>>> upstream/feature/issue-9-pipeline-integration
         },
         "firebase_sessions": {
           "status": "unavailable",
           "last_sync_timestamp": null,
-<<<<<<< HEAD
           "error_message": "Sessions 匯出已停用 (disabled in config)"
-=======
-          "error_message": "Firebase Sessions export table not found in dataset mp-clockin-44dee.firebase_sessions"
->>>>>>> upstream/feature/issue-9-pipeline-integration
         },
         "mcp_crashlytics": {
           "status": "unavailable",
@@ -84,11 +71,7 @@
           "previous_rate": null,
           "change_pct_points": null,
           "status": "unavailable",
-<<<<<<< HEAD
           "unavailable_reason": "Sessions 匯出已停用 (disabled in config)"
-=======
-          "unavailable_reason": "Firebase Sessions export table not found in dataset mp-clockin-44dee.firebase_sessions"
->>>>>>> upstream/feature/issue-9-pipeline-integration
         },
         "crash_free_sessions": {
           "rate": null,
@@ -97,11 +80,7 @@
           "previous_rate": null,
           "change_pct_points": null,
           "status": "unavailable",
-<<<<<<< HEAD
           "unavailable_reason": "Sessions 匯出已停用 (disabled in config)"
-=======
-          "unavailable_reason": "Firebase Sessions export table not found in dataset mp-clockin-44dee.firebase_sessions"
->>>>>>> upstream/feature/issue-9-pipeline-integration
         },
         "new_issues_count": {
           "value": 6,
@@ -2090,22 +2069,14 @@
             "share": 0.0833
           },
           {
-<<<<<<< HEAD
-            "model": "OnePlus8Pro",
-=======
             "model": "SM-S9060",
->>>>>>> upstream/feature/issue-9-pipeline-integration
             "platform": "android",
             "events": 1,
             "users": 1,
             "share": 0.0417
           },
           {
-<<<<<<< HEAD
-            "model": "SM-S9060",
-=======
             "model": "OnePlus8Pro",
->>>>>>> upstream/feature/issue-9-pipeline-integration
             "platform": "android",
             "events": 1,
             "users": 1,
@@ -2142,22 +2113,14 @@
             "share": 0.125
           },
           {
-<<<<<<< HEAD
             "os_version": "11",
-=======
-            "os_version": "16",
->>>>>>> upstream/feature/issue-9-pipeline-integration
             "platform": "android",
             "events": 1,
             "users": 1,
             "share": 0.0417
           },
           {
-<<<<<<< HEAD
             "os_version": "16",
-=======
-            "os_version": "11",
->>>>>>> upstream/feature/issue-9-pipeline-integration
             "platform": "android",
             "events": 1,
             "users": 1,
@@ -2189,9 +2152,6 @@
         ],
         "custom_keys": []
       },
-<<<<<<< HEAD
-      "top_issues": [],
-=======
       "top_issues": [
         {
           "issue_id": "6bd75409106e99395ea4bf5db45ec36d",
@@ -2376,7 +2336,7 @@
           "issue_id": "36f11121063ec22929cfd25d6f095c5e",
           "platform": "ios",
           "title": "package:clock_in_app/core/notification/push_notification_service.dart - PushNotificationService.initialize",
-          "subtitle": "FlutterError - [firebase_messaging/apns-token-not-set] APNS token has not been received on the device yet. Please ensure the APNS token is available before calling `getAPNSToken()`.. Error thrown PushNotificationService.initialize.",
+          "subtitle": "FlutterError - [firebase_messaging/unknown] The request timed out.. Error thrown PushNotificationService.initialize.",
           "error_type": "NON_FATAL",
           "priority": {
             "score": 28,
@@ -2393,8 +2353,8 @@
           },
           "events": 2,
           "affected_users": 2,
-          "first_seen_timestamp": "2026-07-15T09:20:10Z",
-          "last_seen_timestamp": "2026-07-15T09:20:10Z",
+          "first_seen_timestamp": "2026-07-17T05:59:17Z",
+          "last_seen_timestamp": "2026-07-17T05:59:17Z",
           "first_seen_version": "1.0.9",
           "last_seen_version": "1.0.9",
           "version_distribution": [
@@ -2654,7 +2614,6 @@
           "trend": "new"
         }
       ],
->>>>>>> upstream/feature/issue-9-pipeline-integration
       "ai_summary": {
         "status": "disabled",
         "model": null,
