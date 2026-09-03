@@ -983,6 +983,7 @@ def get_mcp_source_status(app_name: str) -> dict:
     mode = mcp_cfg["mode"]
     max_age_days = mcp_cfg["max_age_days"]
     st_path = ROOT / "out" / app_name / "stacktraces.json"
+    err_path = ROOT / "out" / app_name / "stacktraces_last_error.json"
 
     if mode == "off":
         return {
@@ -991,7 +992,21 @@ def get_mcp_source_status(app_name: str) -> dict:
             "error_message": "MCP 模式已停用 (disabled in config)",
         }
 
+    last_err_msg = None
+    if err_path.exists():
+        try:
+            err_data = json.loads(err_path.read_text(encoding="utf-8"))
+            last_err_msg = err_data.get("error_message") or str(err_data.get("errors") or "")
+        except Exception:
+            pass
+
     if not st_path.exists():
+        if last_err_msg:
+            return {
+                "status": "error",
+                "last_sync_timestamp": None,
+                "error_message": f"MCP 執行失敗：{last_err_msg}",
+            }
         return {
             "status": "unavailable",
             "last_sync_timestamp": None,
@@ -1007,10 +1022,13 @@ def get_mcp_source_status(app_name: str) -> dict:
         }
     else:
         age_disp = f"{age_days:.1f}" if age_days is not None else "未知"
+        msg = f"MCP 快取過期（已快取 {age_disp} 天 > 上限 {max_age_days} 天）"
+        if last_err_msg:
+            msg += f"；最近一次刷新失敗：{last_err_msg}"
         return {
             "status": "available",
             "last_sync_timestamp": gen_at,
-            "error_message": f"MCP 快取過期（已快取 {age_disp} 天 > 上限 {max_age_days} 天）",
+            "error_message": msg,
         }
 
 

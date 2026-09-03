@@ -82,7 +82,10 @@ class TestMcpCacheFreshness(unittest.TestCase):
         now = dt.datetime(2026, 9, 3, 12, 0, 0, tzinfo=dt.timezone.utc)
         # Cached 2 days ago
         cached_time = (now - dt.timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        cache_file.write_text(json.dumps({"generated_at": cached_time, "issues": {}}), encoding="utf-8")
+        cache_file.write_text(json.dumps({
+            "generated_at": cached_time,
+            "issues": {"ISSUE_1": {"stack_trace": "line1"}},
+        }), encoding="utf-8")
 
         fresh, age, gen_at = is_mcp_cache_fresh(cache_file, max_age_days=7, now=now)
         self.assertTrue(fresh)
@@ -94,7 +97,10 @@ class TestMcpCacheFreshness(unittest.TestCase):
         now = dt.datetime(2026, 9, 3, 12, 0, 0, tzinfo=dt.timezone.utc)
         # Cached 9 days ago
         cached_time = (now - dt.timedelta(days=9)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        cache_file.write_text(json.dumps({"generated_at": cached_time, "issues": {}}), encoding="utf-8")
+        cache_file.write_text(json.dumps({
+            "generated_at": cached_time,
+            "issues": {"ISSUE_1": {"stack_trace": "line1"}},
+        }), encoding="utf-8")
 
         fresh, age, gen_at = is_mcp_cache_fresh(cache_file, max_age_days=7, now=now)
         self.assertFalse(fresh)
@@ -152,23 +158,147 @@ class TestFetchStacktracesModes(unittest.TestCase):
             main()
         mock_client_cls.assert_not_called()
 
-    @patch("crash_trend.fetch_stacktraces.write_json")
+    @patch("crash_trend.fetch_stacktraces.out_dir")
     @patch("crash_trend.fetch_stacktraces.McpClient")
     @patch("crash_trend.fetch_stacktraces.get_app")
-    def test_mcp_client_failure_exits_cleanly_without_breaking_pipeline(
-        self, mock_get_app, mock_client_cls, mock_write_json
+    def test_mcp_client_failure_preserves_existing_good_cache(
+        self, mock_get_app, mock_client_cls, mock_out_dir
     ) -> None:
+        """Stale good cache must NEVER be destroyed by a subsequent refresh failure."""
         from crash_trend.fetch_stacktraces import main
+        tmpdir = tempfile.TemporaryDirectory()
+        odir = Path(tmpdir.name)
+        mock_out_dir.return_value = odir
+
+        good_cache = {
+            "app": "app1",
+            "generated_at": "2026-08-20T00:00:00Z",
+            "period_days": 89,
+            "issues": {"ISSUE_OLD": {"title": "Old Error", "stack_trace": "line1"}},
+            "missing": [],
+            "errors": {},
+        }
+        (odir / "stacktraces.json").write_text(json.dumps(good_cache), encoding="utf-8")
+
+        mock_get_app.return_value = {
+            "firebase_project": "proj-1",
+            "mcp": {"mode": "weekly", "max_age_days": 7},
+            "app_ids": {"android": "1:123:android:abc"},
+        }
+        mock_client_cls.side_effect = McpError("firebase login required")
+
+        with patch("sys.argv", ["fetch_stacktraces.py", "--app", "app1", "--weekly-check"]):
+            # Must exit 0 safely
+            main()
+
+        # 1. Existing good cache must be intact
+        persisted = json.loads((odir / "stacktraces.json").read_text(encoding="utf-8"))
+        self.assertIn("ISSUE_OLD", persisted["issues"])
+        self.assertEqual(persisted["generated_at"], "2026-08-20T00:00:00Z")
+
+        # 2. Failure must be captured in stacktraces_last_error.json
+        err_file = odir / "stacktraces_last_error.json"
+        self.assertTrue(err_file.exists())
+        err_data = json.loads(err_file.read_text(encoding="utf-8"))
+        self.assertIn("firebase login required", err_data["error_message"])
+
+        tmpdir.cleanup()
+
+    @patch("crash_trend.fetch_stacktraces.out_dir")
+    @patch("crash_trend.fetch_stacktraces.fetch_platform")
+    @patch("crash_trend.fetch_stacktraces.bq_issues_to_unified")
+    @patch("crash_trend.fetch_stacktraces.load_if_exists")
+    @patch("crash_trend.fetch_stacktraces.McpClient")
+    @patch("crash_trend.fetch_stacktraces.get_app")
+    def test_successful_fetch_removes_previous_last_error(
+        self, mock_get_app, mock_client_cls, mock_load_bq, mock_unified, mock_fetch_plat, mock_out_dir
+    ) -> None:
+        """When a subsequent fetch succeeds, stacktraces_last_error.json is cleanly deleted."""
+        from crash_trend.fetch_stacktraces import main
+        tmpdir = tempfile.TemporaryDirectory()
+        odir = Path(tmpdir.name)
+        mock_out_dir.return_value = odir
+
+        (odir / "stacktraces_last_error.json").write_text(
+            json.dumps({"error_message": "previous error"}), encoding="utf-8"
+        )
+
         mock_get_app.return_value = {
             "firebase_project": "proj-1",
             "mcp": {"mode": "manual"},
             "app_ids": {"android": "1:123:android:abc"},
         }
-        mock_client_cls.side_effect = McpError("firebase login required")
+        mock_load_bq.return_value = {"tables": ["com_example_android"]}
+        mock_unified.return_value = ([{"issue_id": "I1", "platform": "android", "title": "T1"}], None, None, None)
+        mock_fetch_plat.return_value = ({"I1": {"stack_trace": "new trace", "blame_frame": {}}}, [])
+
         with patch("sys.argv", ["fetch_stacktraces.py", "--app", "app1"]):
-            # Must not raise exception
             main()
-        mock_write_json.assert_called()
+
+        self.assertFalse((odir / "stacktraces_last_error.json").exists())
+        self.assertTrue((odir / "stacktraces.json").exists())
+        tmpdir.cleanup()
+
+    def test_failed_cache_is_never_considered_fresh(self) -> None:
+        """A cache with errors and no issues must NEVER be considered fresh even with now() timestamp."""
+        tmpdir = tempfile.TemporaryDirectory()
+        tmppath = Path(tmpdir.name)
+        now_str = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        # 1. Empty issues with errors
+        cf1 = tmppath / "failed1.json"
+        cf1.write_text(json.dumps({
+            "generated_at": now_str,
+            "issues": {},
+            "errors": {"mcp": "login required"},
+        }), encoding="utf-8")
+        fresh1, _, _ = is_mcp_cache_fresh(cf1, max_age_days=7)
+        self.assertFalse(fresh1)
+
+        # 2. Empty issues without errors
+        cf2 = tmppath / "failed2.json"
+        cf2.write_text(json.dumps({
+            "generated_at": now_str,
+            "issues": {},
+            "errors": {},
+        }), encoding="utf-8")
+        fresh2, _, _ = is_mcp_cache_fresh(cf2, max_age_days=7)
+        self.assertFalse(fresh2)
+
+        tmpdir.cleanup()
+
+    @patch("crash_trend.fetch_stacktraces.out_dir")
+    @patch("crash_trend.fetch_stacktraces.McpClient")
+    @patch("crash_trend.fetch_stacktraces.get_app")
+    def test_next_weekly_run_retries_after_failure(
+        self, mock_get_app, mock_client_cls, mock_out_dir
+    ) -> None:
+        """After a failure occurs, the next weekly run does NOT consider it fresh and retries MCP."""
+        from crash_trend.fetch_stacktraces import main
+        tmpdir = tempfile.TemporaryDirectory()
+        odir = Path(tmpdir.name)
+        mock_out_dir.return_value = odir
+
+        mock_get_app.return_value = {
+            "firebase_project": "proj-1",
+            "mcp": {"mode": "weekly", "max_age_days": 7},
+            "app_ids": {"android": "1:123:android:abc"},
+        }
+        mock_client_cls.side_effect = McpError("firebase login required")
+
+        # 1. First weekly run fails
+        with patch("sys.argv", ["fetch_stacktraces.py", "--app", "app1", "--weekly-check"]):
+            main()
+        self.assertTrue((odir / "stacktraces_last_error.json").exists())
+
+        # 2. Next weekly run should attempt MCP again (mock_client_cls called again) rather than skipping!
+        mock_client_cls.reset_mock()
+        mock_client_cls.side_effect = McpError("still not logged in")
+        with patch("sys.argv", ["fetch_stacktraces.py", "--app", "app1", "--weekly-check"]):
+            main()
+        mock_client_cls.assert_called_once()
+
+        tmpdir.cleanup()
 
 
 class TestFetchIssueDetailsSupplementalMerge(unittest.TestCase):

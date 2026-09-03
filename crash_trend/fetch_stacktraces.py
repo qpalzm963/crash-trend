@@ -364,10 +364,17 @@ def main() -> None:
     }
 
     def bail(key: str, msg: str) -> None:
-        """fail loud 但不擋 pipeline：記 errors、寫檔、以 0 退出。"""
+        """fail loud 但不擋 pipeline：記 errors、保留既有 last-known-good cache、寫入 stacktraces_last_error.json，以 0 退出。"""
         result["errors"][key] = msg
         print(f"[注意] {msg}")
-        write_json(odir / "stacktraces.json", result)
+        write_json(odir / "stacktraces_last_error.json", {
+            "app": args.app,
+            "failed_at": now,
+            "error_key": key,
+            "error_message": msg,
+            "errors": dict(result["errors"]),
+        })
+        # 注意：絕不在此覆蓋或清空已有的 stacktraces.json（保留 last-known-good 快取）
 
     bq = load_if_exists(odir / "crashlytics_bq.json")
     bq_mode = bool(bq and bq.get("tables"))
@@ -435,8 +442,26 @@ def main() -> None:
 
     if result["missing"]:
         print(f"[注意] {len(result['missing'])} 個 issue 不在 topIssues 前 {REPORT_PAGE_SIZE} 名內，無 sampleEvent：{result['missing']}")
-    write_json(odir / "stacktraces.json", result)
-    print(f"  ✓ stack trace {len(result['issues'])}/{len(scored)} 個 issue")
+
+    # 只有在成功抓到 issues 時才更新 Last-Known-Good 快取
+    if result["issues"]:
+        write_json(odir / "stacktraces.json", result)
+        last_err_path = odir / "stacktraces_last_error.json"
+        if last_err_path.exists():
+            try:
+                last_err_path.unlink()
+            except Exception:
+                pass
+        print(f"  ✓ stack trace {len(result['issues'])}/{len(scored)} 個 issue")
+    else:
+        write_json(odir / "stacktraces_last_error.json", {
+            "app": args.app,
+            "failed_at": now,
+            "error_key": "fetch_empty",
+            "error_message": "未能成功取得任何 issue 之 stack trace",
+            "errors": dict(result["errors"]),
+        })
+        print("  [注意] 本次未取得任何 stack trace，保留既有快取")
 
 
 if __name__ == "__main__":

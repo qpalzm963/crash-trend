@@ -43,7 +43,11 @@ def out_dir(app_name: str) -> Path:
 
 def write_json(path: Path, data) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"  ✓ 寫入 {path.relative_to(ROOT)}")
+    try:
+        display_path = path.relative_to(ROOT)
+    except ValueError:
+        display_path = path
+    print(f"  ✓ 寫入 {display_path}")
 
 
 def load_prev_month(app_name: str, month: str) -> dict | None:
@@ -143,7 +147,8 @@ def get_mcp_config(app_cfg: dict) -> dict:
 def is_mcp_cache_fresh(
     cache_path: Path, max_age_days: int = 7, now: Optional[dt.datetime] = None
 ) -> Tuple[bool, Optional[float], Optional[str]]:
-    """Checks whether an MCP stacktraces.json cache file is fresh.
+    """Checks whether an MCP stacktraces.json cache file is fresh and valid.
+    A failed cache (e.g. has errors and no valid issues) is NEVER considered fresh.
     Returns: (is_fresh, age_in_days, generated_at_iso)
     """
     if not cache_path.exists():
@@ -152,6 +157,16 @@ def is_mcp_cache_fresh(
     try:
         data = json.loads(cache_path.read_text(encoding="utf-8"))
     except Exception:
+        return False, None, None
+
+    # Check for errors in cache - any error marks the cache as un-fresh / needs retry
+    errors = data.get("errors") or {}
+    if errors:
+        return False, None, None
+
+    # Issues must be present as a non-empty dictionary (empty issues indicates an empty/failed fetch)
+    issues = data.get("issues")
+    if not issues or not isinstance(issues, dict):
         return False, None, None
 
     gen_at_str = data.get("generated_at")

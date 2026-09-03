@@ -873,12 +873,12 @@ def main() -> None:
                 result["tables"][table][name] = run_query(client, formatted_sql)
                 print(f"  ✓ {table}.{name}: {len(result['tables'][table][name])} 列")
             except Exception as e:
-                # 若 BigQuery 實體資料表欄位為複數 errors，自動重試相容
+                # 防禦性重試：官方標準 schema 為 Apple error (單數)；若個別專案之資料表欄位名為複數 errors，作為 secondary fallback 重試相容
                 if "Unrecognized name: error" in str(e) and "error[" in formatted_sql:
                     try:
                         retry_sql = formatted_sql.replace("error[SAFE_OFFSET(0)]", "errors[SAFE_OFFSET(0)]")
                         result["tables"][table][name] = run_query(client, retry_sql)
-                        print(f"  ✓ {table}.{name} (相容 errors 欄位): {len(result['tables'][table][name])} 列")
+                        print(f"  ✓ {table}.{name} (防禦性相容 errors 重試成功): {len(result['tables'][table][name])} 列")
                         continue
                     except Exception:
                         pass
