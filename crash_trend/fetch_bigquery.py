@@ -114,15 +114,12 @@ SQLS: Dict[str, str] = {
         SELECT
             issue_id,
             COALESCE(
-                exceptions[SAFE_OFFSET(0)].title,
                 exceptions[SAFE_OFFSET(0)].type,
                 error[SAFE_OFFSET(0)].title,
                 threads[SAFE_OFFSET(0)].title,
                 'Unknown Error'
             ) AS issue_title,
             COALESCE(
-                exceptions[SAFE_OFFSET(0)].subtitle,
-                exceptions[SAFE_OFFSET(0)].exception_message,
                 exceptions[SAFE_OFFSET(0)].frames[SAFE_OFFSET(0)].symbol,
                 error[SAFE_OFFSET(0)].subtitle,
                 threads[SAFE_OFFSET(0)].subtitle,

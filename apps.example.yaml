@@ -1,16 +1,20 @@
 # crash-trend 設定範例 —— 複製為 apps.yaml 後填入實值
-# 支援 Dashboard V2 多 App 管理、Firebase Sessions Crash-free 指標與 AI 優先級分析
+# 支援 Dashboard V2 多 App 管理、Data Source Profile (Crashlytics-only / Full Sessions) 與 AI 優先級分析
 
 credentials:
   # BigQuery 服務帳號 json 路徑（用 scripts/create_sa.sh 產生；筆電與伺服器共用同一把）
   bq_service_account: ~/.config/crash-trend/sa.json
 
 apps:
-  shop_app:                               # app 代號（英文識別碼，作為目錄與 URL anchor）
+  shop_app:                               # 範例 1：完整模式 (Crashlytics + Sessions)
     display_name: 購物商城 App             # 儀表板與報表顯示名稱
     firebase_project: shop-app-12345      # Firebase 專案 ID（BigQuery 專案同名或關聯專案）
+    data_sources:                         # 資料源設定 (選填，可細部控制)
+      crashlytics_bigquery: true          # 預設 true
+      sessions: true                      # 啟用 Firebase Sessions 計算 Crash-free 率
+      mcp: optional                       # optional / manual / off
     bq_dataset: firebase_crashlytics      # Crashlytics BigQuery dataset（預設值通常免改）
-    sessions_dataset: firebase_sessions   # Firebase Sessions BigQuery dataset（計算 Crash-free 率）
+    sessions_dataset: firebase_sessions   # Firebase Sessions BigQuery dataset (sessions: true 時使用)
     package_name: com.example.shop        # Android Package Name（多 App 共享 dataset 時精準過濾表）
     bundle_id: com.example.shop.ios       # iOS Bundle Identifier（選填）
     source_repo: ~/develop/shop_app       # 原始碼本地路徑（AI 與 Blame Frame 原始碼對映；無則留空）
@@ -26,11 +30,14 @@ apps:
       - user_tier
       - network_type
 
-  rider_app:                              # 第二個 App 範例（多 App 切換）
+  rider_app:                              # 範例 2：Crashlytics-only 模式 (推薦：輕量、不佔 Sessions 儲存)
     display_name: 外送司機端
     firebase_project: rider-app-67890
+    data_sources:
+      crashlytics_bigquery: true          # 啟用 Crashlytics 匯出 (錯誤排行、堆疊、每日趨勢、受影響人數)
+      sessions: false                     # 停用 Sessions 匯出 (不查詢 firebase_sessions，免額外儲存)
+      mcp: optional                       # optional 備援
     bq_dataset: firebase_crashlytics
-    sessions_dataset: firebase_sessions
     package_name: com.example.rider
     source_repo: ~/develop/rider_app
     platforms:

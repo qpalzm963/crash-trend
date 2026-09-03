@@ -61,16 +61,37 @@ open dashboard.html
 | `.env` | `GEMINI_API_KEY`、`GEMINI_MODEL`（預設 gemini-flash-latest） | ✗ 永不進版控 |
 | `~/.config/crash-trend/sa.json` | BigQuery 唯讀 SA 金鑰（`create_sa.sh` 產生） | ✗ 永不進版控（Docker read-only 掛載） |
 
-### 多 App 設定範例 (`apps.yaml`)
+### 多 App 設定與 Data Source Profile (`apps.yaml`)
+
+系統正式支援 **Crashlytics-only** 與 **Full Sessions** 雙模式。若未開啟 Sessions 匯出，管線完全不打無效 API、不報 404，儀表板以 `未開啟` 清楚標註，其餘 Crash 除錯與 AI 優先級功能 100% 正常。
 
 ```yaml
 credentials:
   bq_service_account: ~/.config/crash-trend/sa.json
 
 apps:
+  # 模式 A：Crashlytics-only 模式（推薦：輕量、零額外 Sessions 儲存成本）
+  clock_in_app:
+    display_name: MP打卡系統
+    firebase_project: mp-clockin-44dee
+    data_sources:
+      crashlytics_bigquery: true          # 啟用 Crashlytics 匯出
+      sessions: false                     # 停用 Sessions 查詢（不需 firebase_sessions 表）
+      mcp: optional                       # optional 備援
+    bq_dataset: firebase_crashlytics
+    package_name: com.mp.clockinapp
+    bundle_id: com.mp.clockin
+    source_repo: ~/develop/clock_in_app
+    platforms: [android, ios]
+    core_paths: [auth_repository, punch, clock_in]
+
+  # 模式 B：完整模式 (含 Firebase Sessions 計算 Crash-free %)
   shop_app:
     display_name: 購物商城 App
     firebase_project: shop-prod-12345
+    data_sources:
+      crashlytics_bigquery: true
+      sessions: true                      # 啟用 Sessions 查詢計算 Crash-free 率
     bq_dataset: firebase_crashlytics
     sessions_dataset: firebase_sessions
     package_name: com.example.shop
@@ -98,21 +119,8 @@ crash_trend/
   post_report.py         # 月度摘要卡發送（聊天整合，可選）
   config.py              # apps.yaml 讀取與路徑工具
 scripts/
-  weekly_sync.sh         # 週同步主要進入點（Docker/launchd/手動皆呼叫此腳本）
-  create_sa.sh           # 一鍵建 BigQuery 唯讀 SA
+  weekly_sync.sh         # 週同步主要排程入口
+  create_sa.sh           # GCP 服務帳號一鍵建立
+  export_from_bq.py      # 手動單次 query dump 工具
+tests/                   # 單元測試與整合測試
 ```
-
----
-
-## 容錯與優雅降級 (Graceful Degradation)
-
-- **無 Firebase Sessions**：自動將 Sessions 來源標記為 `unavailable`，Crash-free 卡片顯示明確的 "Unavailable" 字樣，**絕不顯示 0%**。
-- **無 GEMINI_API_KEY**：AI 分析標為 `disabled`，Priority Score 依然以確定性權重公式精確計算。
-- **MCP 未登入**：自動以 BigQuery sample events 或 subtitle 啟發式解析 Blame Frame，流程不中斷。
-- **空資料期間**：無 Crash 事件時安全輸出 0 與空列表，不發生除以零或 Null 錯誤。
-
----
-
-## License
-
-MIT

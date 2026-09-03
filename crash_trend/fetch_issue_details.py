@@ -699,7 +699,10 @@ def fetch_issue_details_from_bq(
         try:
             device_rows = [dict(r) for r in client.query(sql_devices).result(max_results=500)]
             for r in device_rows:
-                devices_by_issue.setdefault(r["issue_id"], []).append(r)
+                iid = r.get("issue_id")
+                if iid not in devices_by_issue:
+                    devices_by_issue[iid] = []
+                devices_by_issue[iid].append({"name": r.get("model") or "Unknown", "count": r.get("events", 0)})
         except Exception as e:
             print(f"  ⚠ BigQuery devices query failed for {table}: {e}")
 
@@ -707,7 +710,10 @@ def fetch_issue_details_from_bq(
         try:
             os_rows = [dict(r) for r in client.query(sql_os).result(max_results=500)]
             for r in os_rows:
-                os_by_issue.setdefault(r["issue_id"], []).append(r)
+                iid = r.get("issue_id")
+                if iid not in os_by_issue:
+                    os_by_issue[iid] = []
+                os_by_issue[iid].append({"name": r.get("os_version") or "Unknown", "count": r.get("events", 0)})
         except Exception as e:
             print(f"  ⚠ BigQuery OS query failed for {table}: {e}")
 
@@ -975,7 +981,10 @@ def main() -> None:
     bq_client = None
     if bigquery is not None:
         try:
-            from crash_trend.fetch_bigquery import make_client
+            try:
+                from crash_trend.fetch_bigquery import make_client
+            except ImportError:
+                from fetch_bigquery import make_client
             bq_client = make_client(app["firebase_project"])
         except Exception as e:
             print(f"  [注意] 無法建立 BigQuery client：{e}")

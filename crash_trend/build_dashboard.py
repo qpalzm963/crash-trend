@@ -1338,7 +1338,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         <div class="kpi-card" id="cardCrashFreeUsers">
           <div class="kpi-top">
             <div class="kpi-meta">
-              <span class="kpi-title">Crash-free Users</span>
+              <span class="kpi-title">無當機用戶率 <small style="font-weight: normal; opacity: 0.7;">(Crash-free Users)</small></span>
               <div class="kpi-value-row" id="cfUsersValueRow">
                 <span class="kpi-value" id="kpiCFUsers">—</span>
               </div>
@@ -1360,7 +1360,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         <div class="kpi-card" id="cardCrashEvents">
           <div class="kpi-top">
             <div class="kpi-meta">
-              <span class="kpi-title">Crash Events</span>
+              <span class="kpi-title">當機事件總數 <small style="font-weight: normal; opacity: 0.7;">(Crash Events)</small></span>
               <div class="kpi-value-row">
                 <span class="kpi-value" id="kpiEvents">0</span>
               </div>
@@ -1379,7 +1379,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         <div class="kpi-card" id="cardAffectedUsers">
           <div class="kpi-top">
             <div class="kpi-meta">
-              <span class="kpi-title">Affected Users</span>
+              <span class="kpi-title">受影響人數 <small style="font-weight: normal; opacity: 0.7;">(Affected Users)</small></span>
               <div class="kpi-value-row">
                 <span class="kpi-value" id="kpiUsers">0</span>
               </div>
@@ -1398,7 +1398,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         <div class="kpi-card" id="cardNewIssues">
           <div class="kpi-top">
             <div class="kpi-meta">
-              <span class="kpi-title">New Issues</span>
+              <span class="kpi-title">新增問題數 <small style="font-weight: normal; opacity: 0.7;">(New Issues)</small></span>
               <div class="kpi-value-row">
                 <span class="kpi-value" id="kpiNewIssues">0</span>
               </div>
@@ -1942,13 +1942,31 @@ function renderKPIs() {
     }
     cfuCounts.textContent = `${fmt(cfu.crashed)} 崩潰 / ${fmt(cfu.total)} 用戶`;
   } else {
-    // Explicit Unavailable semantics - strictly no 0%
-    cfuVal.innerHTML = `<span class="kpi-badge-unavailable">Unavailable</span>`;
-    cfuVal.classList.add("unavailable-text");
+    // Explicit Unavailable / Error / Insufficient Data semantics - strictly no 0%
     cfuProg.style.strokeDashoffset = 113.097;
+    cfuVal.classList.add("unavailable-text");
     cfuDelta.className = "delta-pill neutral";
-    cfuDelta.textContent = cfu.unavailable_reason || "Firebase Sessions 未啟用";
-    cfuCounts.textContent = "—";
+
+    const reason = cfu.unavailable_reason || (srcs.firebase_sessions ? srcs.firebase_sessions.error_message : "") || "";
+    const isExplicitlyDisabled = reason.toLowerCase().includes("disabled") || reason.includes("已停用") || reason.includes("未開啟");
+
+    if (cfu.status === "error") {
+      cfuVal.innerHTML = `<span class="kpi-badge-unavailable" style="background:var(--danger-light);color:var(--danger-text)">錯誤</span>`;
+      cfuDelta.textContent = "BigQuery 查詢失敗";
+      cfuCounts.textContent = reason || "請檢查查詢或權限";
+    } else if (cfu.status === "insufficient_data") {
+      cfuVal.innerHTML = `<span class="kpi-badge-unavailable" style="background:var(--warning-light);color:var(--warning-text)">資料不足</span>`;
+      cfuDelta.textContent = "連線樣本過少";
+      cfuCounts.textContent = reason || "無法計算無當機率";
+    } else if (isExplicitlyDisabled) {
+      cfuVal.innerHTML = `<span class="kpi-badge-unavailable">未開啟</span>`;
+      cfuDelta.textContent = "未開啟連線統計";
+      cfuCounts.textContent = "缺少總上線人數";
+    } else {
+      cfuVal.innerHTML = `<span class="kpi-badge-unavailable">無資料</span>`;
+      cfuDelta.textContent = "未找到 Sessions 資料";
+      cfuCounts.textContent = reason || "未匯出連線資料";
+    }
   }
 
   // 2. Crash Events
