@@ -73,7 +73,7 @@ class TestBigQuerySQLAssembly(unittest.TestCase):
         sql = SQLS["top_issues"]
         # Real Crashlytics cross-platform schema checks
         self.assertIn("exceptions[SAFE_OFFSET(0)].type", sql)
-        self.assertIn("error[SAFE_OFFSET(0)].title", sql)
+        self.assertIn("errors[SAFE_OFFSET(0)].title", sql)
         self.assertIn("threads[SAFE_OFFSET(0)].title", sql)
         self.assertIn("FORMAT_TIMESTAMP('%Y-%m-%dT%H:%M:%SZ', MIN(event_timestamp)) AS first_seen_timestamp", sql)
         self.assertIn("FORMAT_TIMESTAMP('%Y-%m-%dT%H:%M:%SZ', MAX(event_timestamp)) AS last_seen_timestamp", sql)
