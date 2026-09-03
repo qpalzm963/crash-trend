@@ -868,11 +868,20 @@ def main() -> None:
                 table_sqls["custom_keys"] = ck_sql
 
         for name, sql in table_sqls.items():
+            formatted_sql = sql.format(table=fq, days=args.days) if "{table}" in sql else sql
             try:
-                formatted_sql = sql.format(table=fq, days=args.days) if "{table}" in sql else sql
                 result["tables"][table][name] = run_query(client, formatted_sql)
                 print(f"  ✓ {table}.{name}: {len(result['tables'][table][name])} 列")
             except Exception as e:
+                # 若 BigQuery 實體資料表欄位為複數 errors，自動重試相容
+                if "Unrecognized name: error" in str(e) and "error[" in formatted_sql:
+                    try:
+                        retry_sql = formatted_sql.replace("error[SAFE_OFFSET(0)]", "errors[SAFE_OFFSET(0)]")
+                        result["tables"][table][name] = run_query(client, retry_sql)
+                        print(f"  ✓ {table}.{name} (相容 errors 欄位): {len(result['tables'][table][name])} 列")
+                        continue
+                    except Exception:
+                        pass
                 result["errors"][f"{table}.{name}"] = str(e)[:800]
                 print(f"  ⚠ {table}.{name} 失敗：{str(e)[:200]}", file=sys.stderr)
 

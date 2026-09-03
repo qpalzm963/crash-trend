@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import sys
 from pathlib import Path
+from typing import Optional, Tuple
 
 import yaml
 
@@ -100,4 +102,75 @@ def is_sessions_enabled(app_cfg: dict) -> bool:
     if isinstance(val, str):
         return val.lower() in ("true", "1", "yes", "enabled", "on")
     return bool(val)
+
+
+def get_mcp_config(app_cfg: dict) -> dict:
+    """Returns normalized MCP config: {'mode': 'off' | 'manual' | 'weekly', 'max_age_days': int}."""
+    mcp_val = app_cfg.get("mcp")
+    if mcp_val is None:
+        ds = app_cfg.get("data_sources") or {}
+        mcp_val = ds.get("mcp")
+
+    mode = "manual"
+    max_age_days = 7
+
+    if isinstance(mcp_val, dict):
+        raw_mode = str(mcp_val.get("mode") or "manual").lower()
+        if mcp_val.get("enabled") is False or raw_mode in ("off", "false", "disabled", "none"):
+            mode = "off"
+        elif raw_mode in ("weekly", "scheduled", "cron"):
+            mode = "weekly"
+        else:
+            mode = "manual"
+        try:
+            max_age_days = int(mcp_val.get("max_age_days", 7))
+        except (ValueError, TypeError):
+            max_age_days = 7
+    elif isinstance(mcp_val, bool):
+        mode = "manual" if mcp_val else "off"
+    elif isinstance(mcp_val, str):
+        raw_mode = mcp_val.strip().lower()
+        if raw_mode in ("off", "false", "disabled", "none"):
+            mode = "off"
+        elif raw_mode in ("weekly", "scheduled", "cron"):
+            mode = "weekly"
+        else:
+            mode = "manual"
+
+    return {"mode": mode, "max_age_days": max(1, max_age_days)}
+
+
+def is_mcp_cache_fresh(
+    cache_path: Path, max_age_days: int = 7, now: Optional[dt.datetime] = None
+) -> Tuple[bool, Optional[float], Optional[str]]:
+    """Checks whether an MCP stacktraces.json cache file is fresh.
+    Returns: (is_fresh, age_in_days, generated_at_iso)
+    """
+    if not cache_path.exists():
+        return False, None, None
+
+    try:
+        data = json.loads(cache_path.read_text(encoding="utf-8"))
+    except Exception:
+        return False, None, None
+
+    gen_at_str = data.get("generated_at")
+    if not gen_at_str:
+        return False, None, None
+
+    try:
+        cleaned = gen_at_str.replace("Z", "+00:00")
+        gen_dt = dt.datetime.fromisoformat(cleaned)
+        if gen_dt.tzinfo is None:
+            gen_dt = gen_dt.replace(tzinfo=dt.timezone.utc)
+    except Exception:
+        return False, None, gen_at_str
+
+    curr_now = now or dt.datetime.now(dt.timezone.utc)
+    age_seconds = (curr_now - gen_dt).total_seconds()
+    age_days = max(0.0, round(age_seconds / 86400.0, 2))
+
+    is_fresh = age_days <= max_age_days
+    return is_fresh, age_days, gen_at_str
+
 

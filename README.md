@@ -99,7 +99,28 @@ apps:
     platforms: [android, ios]
     core_paths: [checkout, payment, CartActivity]
     custom_keys: [user_tier, network_type]
+### 3. MCP 補強策略 (MCP Refresh Strategy)
+
+Firebase Crashlytics MCP 為**可選補強資料源**，主要用於補充 BigQuery 缺失之完整堆疊、Blame frame、Breadcrumbs 與 Logs。
+
+| 模式 (`mcp.mode`) | 行為說明 | 適用情境 |
+| :--- | :--- | :--- |
+| **`manual`** *(預設)* | 排程完全不發送 MCP 請求，由開發者本機手動執行指令刷新快取至 `out/<app>/stacktraces.json` | 避免 CI/伺服器無登入態或 quota 限制 |
+| **`weekly`** | `weekly_sync.sh` 自動檢查快取是否超過 `max_age_days`（預設 7 天），過期才嘗試刷新；**MCP 失敗絕不中斷管線** | 本機排程且有固定 `firebase login` 授權 |
+| **`off`** | 完全停用 MCP，純靠 BigQuery 欄位與堆疊啟發式解析 | 不需要 MCP 或完全離線環境 |
+
+**前置需求與手動指令**：
+```bash
+# 1. 確保安裝最新版 Firebase CLI 並登入
+npm i -g firebase-tools@latest
+firebase login
+
+# 2. 手動刷新特定 App 之 MCP 快取 (manual 模式)
+python3 crash_trend/fetch_stacktraces.py --app clock_in_app
 ```
+
+> [!NOTE]
+> Firebase Crashlytics MCP 依賴 `firebase login` 之使用者權限；GCP 服務帳號（Service Account）呼叫未公開之 Crashlytics v1alpha API 一律會回傳 404。因此 MCP 嚴格定位為選配補強，BigQuery 已有之完整資訊絕不會被 MCP 覆蓋。
 
 ---
 

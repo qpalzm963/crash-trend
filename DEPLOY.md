@@ -8,8 +8,8 @@
    執行 `scripts/create_sa.sh <firebase_project>` 建立服務帳號並下載金鑰（若有多個 Firebase 專案，可對其餘專案執行 `scripts/create_sa.sh <專案> --grant-only <sa_email>`）。
 2. **Gemini API key**：至 Google AI Studio 產生。
 3. **推到私有 Git**：將你的 instance repo（含 `apps.yaml`）推到私有 Git。
-4. **（可選）真實 stack trace 登入**：
-   容器內建 `firebase-tools`；在主機上執行一次 `firebase login`（user token，**非** service account——SA 打 Crashlytics 會 404），token 存於 `~/.config/configstore/firebase-tools.json`，由 compose 掛入容器供 `fetch_issue_details.py` / `fetch_stacktraces.py` 用。若未登入則自動以 BigQuery 頂層 sample events 或 subtitle 啟發式解析 Blame Frame，不中斷管線。
+4. **（可選）MCP 補強與真實 stack trace 登入**：
+   預設 `mcp.mode: manual`（伺服器排程預設不自動呼叫 MCP，零 quota 消耗）。若希望 weekly 自動刷新，可在 `apps.yaml` 設為 `mcp.mode: weekly` 並在主機上執行一次 `firebase login`（user token，**非** service account——SA 打 Crashlytics 會 404），token 存於 `~/.config/configstore/firebase-tools.json`，由 compose 掛入容器。若未登入或 MCP 失敗，管線會自動以 BigQuery 頂層 sample events 或 subtitle 啟發式解析 Blame Frame，完全不中斷管線。若要完全關閉 MCP 亦可設定 `mcp.mode: off`。
 
 ---
 

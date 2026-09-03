@@ -26,9 +26,30 @@ import time
 
 import yaml
 
-from analyze_gemini import score_issues
-from config import ROOT, app_argparser, get_app, out_dir, write_json
-from normalize import bq_issues_to_unified, load_if_exists, norm_error_type
+try:
+    from crash_trend.config import (
+        ROOT,
+        app_argparser,
+        get_app,
+        get_mcp_config,
+        is_mcp_cache_fresh,
+        out_dir,
+        write_json,
+    )
+    from crash_trend.analyze_gemini import score_issues
+    from crash_trend.normalize import bq_issues_to_unified, load_if_exists, norm_error_type
+except ImportError:
+    from config import (
+        ROOT,
+        app_argparser,
+        get_app,
+        get_mcp_config,
+        is_mcp_cache_fresh,
+        out_dir,
+        write_json,
+    )
+    from analyze_gemini import score_issues
+    from normalize import bq_issues_to_unified, load_if_exists, norm_error_type
 
 THROTTLE_SEC = 12  # v1alpha quota 很小，call 之間固定歇一下
 RETRY_WAITS = (30, 60)  # 429 退避秒數
@@ -310,10 +331,32 @@ def fetch_platform(client: McpClient, app_id: str, wanted_ids: list[str], days: 
 def main() -> None:
     p = app_argparser("拉取 Crashlytics 真實 stack trace／（BQ 未接時）issue 報表（headless MCP）")
     p.add_argument("--top", type=int, default=10, help="抓 score 排序前 N 個 issue 的 stack trace（預設 10）")
+    p.add_argument("--weekly-check", action="store_true", help="排程模式檢查：若非 weekly 模式或快取未過期則自動略過")
+    p.add_argument("--force", action="store_true", help="強制重新整理快取，忽略 max_age_days 檢查")
     args = p.parse_args()
     app = get_app(args.app)
+    mcp_cfg = get_mcp_config(app)
+    mode = mcp_cfg["mode"]
+    max_age_days = mcp_cfg["max_age_days"]
     days = min(args.days, 89)  # API 只接受最近 90 天內的區間
     odir = out_dir(args.app)
+    cache_path = odir / "stacktraces.json"
+
+    # 1. 檢查是否明確停用 (mode == "off")
+    if mode == "off" and not args.force:
+        print(f"  （App「{args.app}」MCP mode 為 off，已停用）")
+        return
+
+    # 2. 若為週排程檢查 (--weekly-check)：僅在 weekly 模式且快取過期/缺失時才執行
+    if args.weekly_check:
+        if mode != "weekly":
+            print(f"  （App「{args.app}」MCP mode 為 {mode}，非 weekly 自動刷新模式，略過）")
+            return
+        is_fresh, age_days, _ = is_mcp_cache_fresh(cache_path, max_age_days=max_age_days)
+        if is_fresh and not args.force:
+            print(f"  （App「{args.app}」MCP 快取仍有效（{age_days:.1f} 天 < {max_age_days} 天），略過重新抓取）")
+            return
+
     now = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     result: dict = {
         "app": args.app, "generated_at": now, "period_days": days,
