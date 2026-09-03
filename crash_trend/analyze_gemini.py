@@ -17,7 +17,7 @@
      - 當未配置 GEMINI_API_KEY 時，ai_summary.status 標為 disabled，各 issue ai_analysis.status 標為 unavailable。
      - 不影響 Priority Score 計算與整體 Dashboard 運作。
 
-環境變數：GEMINI_API_KEY 或 GEMINI_KEY_URL（後台代管）擇一、GEMINI_MODEL（預設 gemini-flash-latest）
+環境變數：GEMINI_API_KEY 或 GEMINI_KEY_URL（後台代管）擇一、GEMINI_MODEL（預設 gemini-2.5-flash）
 """
 
 from __future__ import annotations
@@ -49,6 +49,7 @@ try:
     from .ai_provider import (
         AIProvider,
         CANONICAL_AI_RESPONSE_SCHEMA,
+        DEFAULT_GEMINI_MODEL,
         GeminiProvider,
         OpenRouterProvider,
         get_ai_provider,
@@ -72,6 +73,7 @@ except ImportError:
         from ai_provider import (
             AIProvider,
             CANONICAL_AI_RESPONSE_SCHEMA,
+            DEFAULT_GEMINI_MODEL,
             GeminiProvider,
             OpenRouterProvider,
             get_ai_provider,
@@ -94,6 +96,7 @@ except ImportError:
         from crash_trend.ai_provider import (
             AIProvider,
             CANONICAL_AI_RESPONSE_SCHEMA,
+            DEFAULT_GEMINI_MODEL,
             GeminiProvider,
             OpenRouterProvider,
             get_ai_provider,
@@ -558,7 +561,7 @@ def parse_gemini_response(
     ai_summary: AISummary = {
         "status": "available",
         "provider": provider_name or "gemini",
-        "model": model_name or os.environ.get("GEMINI_MODEL", "gemini-flash-latest"),
+        "model": model_name or os.environ.get("GEMINI_MODEL", DEFAULT_GEMINI_MODEL),
         "generated_at": iso_utc_now(),
         "overview": str(ai_json.get("overview") or "本期穩定性分析完成。"),
         "key_takeaways": takeaways,
@@ -946,7 +949,7 @@ def render_md(
 
     lines += [
         "---",
-        f"*由 crash-trend 產生於 {dt.date.today().isoformat()}；分析模型：{ai.get('model') or os.environ.get('GEMINI_MODEL', 'gemini-flash-latest')}*",
+        f"*由 crash-trend 產生於 {dt.date.today().isoformat()}；分析模型：{ai.get('model') or os.environ.get('GEMINI_MODEL', DEFAULT_GEMINI_MODEL)}*",
     ]
     return "\n".join(lines)
 

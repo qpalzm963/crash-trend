@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional
 
 import requests
 
-DEFAULT_GEMINI_MODEL = "gemini-flash-latest"
+DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
 DEFAULT_OPENROUTER_MODEL = "google/gemini-2.5-flash"
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 GEMINI_API_URL_TEMPLATE = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
@@ -98,9 +98,11 @@ def to_gemini_schema(schema: Dict[str, Any]) -> Dict[str, Any]:
             continue
         elif k == "type":
             if isinstance(v, list):
-                # e.g. ["string", "null"] -> "STRING"
+                # e.g. ["string", "null"] -> "STRING", nullable=True
                 types = [t for t in v if t != "null"]
                 adapted["type"] = types[0].upper() if types else "STRING"
+                if "null" in v:
+                    adapted["nullable"] = True
             elif isinstance(v, str):
                 adapted["type"] = v.upper()
             else:
@@ -201,9 +203,11 @@ class GeminiProvider(AIProvider):
         self,
         api_key: Optional[str] = None,
         model: Optional[str] = None,
+        temperature: Optional[float] = None,
     ) -> None:
         self._explicit_key = api_key
         self._model = model or os.environ.get("GEMINI_MODEL") or DEFAULT_GEMINI_MODEL
+        self._temperature = temperature
 
     @property
     def provider_name(self) -> str:
@@ -212,6 +216,11 @@ class GeminiProvider(AIProvider):
     @property
     def model_name(self) -> str:
         return self._model
+
+    def _is_gemini_3_x(self, model: str) -> bool:
+        """Checks if model belongs to Gemini 3.x or modern reasoning generations (e.g. 2.5/3.x)."""
+        m = (model or "").lower()
+        return "gemini-3" in m or "gemini-2.5" in m or "gemini-exp" in m
 
     def is_configured(self) -> bool:
         if self._explicit_key:
@@ -250,8 +259,12 @@ class GeminiProvider(AIProvider):
 
         generation_config: Dict[str, Any] = {
             "responseMimeType": "application/json",
-            "temperature": 0.2,
         }
+        if self._temperature is not None:
+            generation_config["temperature"] = self._temperature
+        elif not self._is_gemini_3_x(self._model):
+            generation_config["temperature"] = 0.2
+
         effective_schema = to_gemini_schema(schema or CANONICAL_AI_RESPONSE_SCHEMA)
         if effective_schema:
             generation_config["responseSchema"] = effective_schema
@@ -261,12 +274,17 @@ class GeminiProvider(AIProvider):
             "generationConfig": generation_config,
         }
 
+        headers = {
+            "Content-Type": "application/json",
+            "x-goog-api-key": key,
+        }
+
         last_err: Optional[Exception] = None
         for attempt in (1, 2, 3):
             try:
                 r = requests.post(
                     url,
-                    params={"key": key},
+                    headers=headers,
                     json=body,
                     timeout=300,
                 )
@@ -488,7 +506,9 @@ def get_ai_provider(
     elif str(global_ai.get("provider", "gemini")).strip().lower() == "gemini" and global_ai.get("api_key"):
         api_key = global_ai["api_key"]
 
+    temp = app_ai.get("temperature", global_ai.get("temperature"))
     return GeminiProvider(
         api_key=api_key,
         model=model,
+        temperature=temp,
     )
