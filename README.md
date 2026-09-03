@@ -122,6 +122,11 @@ python3 crash_trend/fetch_stacktraces.py --app clock_in_app
 > [!NOTE]
 > Firebase Crashlytics MCP 依賴 `firebase login` 之使用者權限；GCP 服務帳號（Service Account）呼叫未公開之 Crashlytics v1alpha API 一律會回傳 404。因此 MCP 嚴格定位為選配補強，BigQuery 已有之完整資訊絕不會被 MCP 覆蓋。
 
+### 4. 管線健康度與來源新鮮度 (Pipeline Health & Source Health - V2.2)
+
+- **結構化執行摘要 (`out/pipeline_run.json`)**：每次排程或手動執行，自動記錄各 App、各 Stage 的狀態 (`success` / `failed` / `skipped` / `disabled` / `degraded`)、精確耗時與**經過敏感憑證消毒 (Credential Sanitization)** 之錯誤原因。
+- **儀表板來源健康度資訊卡**：總覽頁面直觀展示 BigQuery、Sessions、MCP、Gemini AI 之即時連線健康度與相對時間新鮮度（例如 `2 小時前`、`9 天前`、`本次同步`）；MCP 過期自動備註使用備用快取中，Sessions 停用明確標示 `未開啟`。
+
 ---
 
 ## 專案結構
@@ -129,6 +134,8 @@ python3 crash_trend/fetch_stacktraces.py --app clock_in_app
 ```
 crash_trend/
   schema_v2.py           # Dashboard V2 資料契約 (TypedDicts) 與嚴格驗證器
+  pipeline_health.py     # Pipeline Health：Run Summary、Stage 狀態、敏感資訊消毒
+  pipeline_run.py        # 端到端管線驅動器（排程與 CLI 進入點）
   fetch_bigquery.py      # BigQuery V2：Overview 聚合、日曆日每日趨勢、維度分布
   fetch_sessions.py      # Firebase Sessions：Crash-free Users / Sessions 指標與版本健康度
   fetch_issue_details.py # Issue Detail：Stack trace、Blame frame、Breadcrumbs、Logs (含 MCP fallback)
@@ -140,8 +147,9 @@ crash_trend/
   post_report.py         # 月度摘要卡發送（聊天整合，可選）
   config.py              # apps.yaml 讀取與路徑工具
 scripts/
-  weekly_sync.sh         # 週同步主要排程入口
+  weekly_sync.sh         # 週同步主要排程入口（整合 pipeline_run.py）
   create_sa.sh           # GCP 服務帳號一鍵建立
   export_from_bq.py      # 手動單次 query dump 工具
-tests/                   # 單元測試與整合測試
+tests/                   # 單元測試、E2E 契約測試與測試夾具
 ```
+

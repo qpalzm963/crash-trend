@@ -24,38 +24,9 @@ print(" ".join((cfg.get("apps") or {}).keys()))
 EOF
 )
 
-for app in $apps; do
-  echo "--- fetch_bigquery: $app"
-  # 1. BigQuery V2：抓取 Crashlytics 匯總指標與每日趨勢
-  $PY "$CT/crash_trend/fetch_bigquery.py" --app "$app" || echo "    （$app 本次無 BQ 資料，原因見上）"
+echo "--- pipeline_run (Dashboard V2.2 Pipeline Health & Stages)"
+$PY "$CT/crash_trend/pipeline_run.py" || FAILED="$FAILED pipeline_run"
 
-  echo "--- fetch_sessions: $app"
-  # 2. Firebase Sessions：計算 Crash-free 指標（未開 Sessions export 時優雅降級）
-  $PY "$CT/crash_trend/fetch_sessions.py" --app "$app" || echo "    （$app 無 Sessions 資料，優雅降級）"
-
-  echo "--- fetch_mcp (if weekly): $app"
-  # 2.5 MCP Refresh：依 app 設定 (off/manual/weekly) 決定是否刷新 cache，失敗絕不阻擋管線
-  $PY "$CT/crash_trend/fetch_stacktraces.py" --app "$app" --weekly-check || echo "    （$app MCP 略過或非 weekly 模式）"
-
-  echo "--- fetch_issue_details: $app"
-  # 3. Issue Details：從 BQ / MCP 抓取 Blame frame、Stack trace、Breadcrumbs 與 Logs
-  $PY "$CT/crash_trend/fetch_issue_details.py" --app "$app" || echo "    （$app 本次無詳細 stack/blame 資料，優雅降級）"
-
-  echo "--- normalize: $app"
-  # 4. 正規化與月度快照產出（供歷史月報與下游相容）
-  $PY "$CT/crash_trend/normalize.py" --app "$app" || FAILED="$FAILED normalize:$app"
-
-  echo "--- analyze_gemini: $app"
-  # 5. Priority / AI 分析：確定性評分（P0~P3）＋ Gemini AI 策略摘要（無 Key 時優雅降級）
-  $PY "$CT/crash_trend/analyze_gemini.py" --app "$app" || FAILED="$FAILED analyze:$app"
-
-  echo "--- check_surge: $app"
-  # 6. 暴增偵測每週跑（不受發卡月頻 gate）；失敗只記不擋
-  $PY "$CT/crash_trend/check_surge.py" --app "$app" || FAILED="$FAILED surge:$app"
-done
-
-echo "--- build_dashboard (Dashboard V2 Bundle)"
-$PY "$CT/crash_trend/build_dashboard.py" || FAILED="$FAILED dashboard"
 
 # 發卡到聊天室（chat 整合，見 DEPLOY.md）：資料每週同步，但卡片「每月一次」——
 # 用當月標記檔 gate（out/ 已 gitignore）。當月未發過才發；全部成功才記為已發，

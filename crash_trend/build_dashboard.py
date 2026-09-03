@@ -96,6 +96,13 @@ def assemble_bundle_from_apps(cfg: Optional[dict] = None) -> Optional[dict]:
         "apps": collected_apps,
     }
 
+    run_sum_path = ROOT / "out" / "pipeline_run.json"
+    if run_sum_path.is_file():
+        try:
+            bundle["pipeline_run"] = json.loads(run_sum_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
     # 驗證組裝之 bundle 是否符合 Schema V2，失敗時不寫入正式檔案
     val_errors = validate_dashboard_v2(bundle)
     if val_errors:
@@ -622,6 +629,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .src-dot.available { background: var(--success); box-shadow: 0 0 0 2px var(--success-light); }
   .src-dot.unavailable { background: var(--text-subtle); }
   .src-dot.disabled { background: var(--text-subtle); }
+  .src-dot.stale { background: var(--warning); box-shadow: 0 0 0 2px var(--warning-light); }
+  .src-dot.insufficient_data { background: var(--accent); box-shadow: 0 0 0 2px var(--accent-light); }
   .src-dot.error { background: var(--danger); box-shadow: 0 0 0 2px var(--danger-light); }
 
   .theme-toggle-btn {
@@ -1021,6 +1030,91 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .badge-active { background: var(--success-light); color: var(--success-text); }
   .badge-maintenance { background: var(--warning-light); color: var(--warning-text); }
   .badge-deprecated { background: var(--bg-muted); color: var(--text-muted); }
+  .badge-info { background: var(--accent-light); color: var(--accent-text); }
+
+  /* ── Data Sources Health Card ── */
+  .data-sources-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 16px 20px;
+    margin-bottom: 20px;
+    box-shadow: var(--shadow-sm);
+  }
+  .data-sources-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 14px;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .data-sources-title {
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--text-main);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .data-sources-run-info {
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+  .data-sources-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+  }
+  @media (max-width: 992px) {
+    .data-sources-grid { grid-template-columns: repeat(2, 1fr); }
+  }
+  @media (max-width: 576px) {
+    .data-sources-grid { grid-template-columns: 1fr; }
+  }
+  .data-source-item {
+    background: var(--bg-subtle);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    transition: border-color 0.15s;
+  }
+  .data-source-item:hover {
+    border-color: var(--border-hover);
+  }
+  .data-source-item-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .data-source-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-main);
+  }
+  .data-source-freshness {
+    font-size: 12px;
+    color: var(--text-muted);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .data-source-note {
+    font-size: 11.5px;
+    color: var(--text-subtle);
+    word-break: break-word;
+    margin-top: 2px;
+    line-height: 1.4;
+  }
+  .data-source-note.warning {
+    color: var(--warning-text);
+  }
+  .data-source-note.error {
+    color: var(--danger-text);
+  }
 
   /* Issue Accordion Item */
   .issue-accordion {
@@ -1411,6 +1505,20 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
             <span class="delta-pill" id="kpiNewIssuesDelta">—</span>
             <span>本期首見問題數</span>
           </div>
+        </div>
+      </div>
+
+      <!-- Data Sources Health -->
+      <div class="data-sources-card" id="overviewDataSourcesCard">
+        <div class="data-sources-header">
+          <div class="data-sources-title">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+            資料來源健康度 (Data Sources Health)
+          </div>
+          <div class="data-sources-run-info" id="overviewLatestRunInfo">載入中...</div>
+        </div>
+        <div class="data-sources-grid" id="overviewDataSourcesGrid">
+          <!-- Populated dynamically -->
         </div>
       </div>
 
@@ -1842,6 +1950,113 @@ function getCurAppData() {
   return (DATA.apps && DATA.apps[curAppId]) ? DATA.apps[curAppId] : null;
 }
 
+// ── Data Freshness and Source Health Resolution (Issue #23) ──
+function formatFreshness(isoStr, refIsoStr) {
+  if (!isoStr) return "—";
+  const d = new Date(isoStr);
+  if (isNaN(d.getTime())) return isoStr;
+  const now = refIsoStr ? new Date(refIsoStr) : new Date();
+  const diffMs = Math.max(0, now.getTime() - d.getTime());
+  const diffSec = Math.floor(diffMs / 1000);
+  const diffMin = Math.floor(diffSec / 60);
+  const diffHours = Math.floor(diffMin / 60);
+  const diffDays = Math.floor(diffHours / 24);
+
+  if (diffMin < 2) return "本次同步";
+  if (diffMin < 60) return `${diffMin} 分鐘前`;
+  if (diffHours < 24) return `${diffHours} 小時前`;
+  if (diffDays < 30) return `${diffDays} 天前`;
+  const diffMonths = Math.floor(diffDays / 30);
+  return `${diffMonths} 個月前`;
+}
+
+function resolveSourceHealth(sourceKey, srcObj, generatedAt) {
+  if (!srcObj) {
+    return {
+      status: "unavailable",
+      label: "未提供",
+      badgeClass: "badge-deprecated",
+      dotClass: "disabled",
+      freshness: "—",
+      timestamp: "—",
+      note: "無來源設定",
+      isSupplemental: false,
+    };
+  }
+
+  const rawStatus = (srcObj.status || "").toLowerCase();
+  const errMsg = srcObj.error_message || "";
+  const ts = srcObj.last_sync_timestamp;
+  const freshness = formatFreshness(ts, generatedAt);
+
+  let status = rawStatus || "unavailable";
+  let label = "正常";
+  let badgeClass = "badge-active";
+  let dotClass = "available";
+  let note = errMsg || "";
+  let isSupplemental = false;
+
+  const isExplicitDisabled = status === "disabled" ||
+    errMsg.includes("disabled") ||
+    errMsg.includes("已停用") ||
+    errMsg.includes("未開啟") ||
+    errMsg.includes("not configured");
+
+  const isStale = status === "stale" ||
+    (status === "available" && (errMsg.includes("過期") || errMsg.includes("stale")));
+
+  if (isExplicitDisabled) {
+    status = "disabled";
+    label = "— 未開啟";
+    badgeClass = "badge-deprecated";
+    dotClass = "disabled";
+    if (!note) note = "來源未啟用";
+  } else if (isStale) {
+    status = "stale";
+    label = "⚠ 過期";
+    badgeClass = "badge-maintenance";
+    dotClass = "stale";
+    isSupplemental = true;
+    if (!note) note = "快取已逾期（使用上次快取中）";
+    else if (!note.includes("使用")) note = `${note}（使用上次快取中）`;
+  } else if (status === "error" || (status !== "available" && errMsg && !ts)) {
+    status = "error";
+    label = "✕ 錯誤";
+    badgeClass = "badge-fatal";
+    dotClass = "error";
+    if (!note) note = "資料來源查詢或連線失敗";
+  } else if (status === "insufficient_data") {
+    status = "insufficient_data";
+    label = "ℹ 資料不足";
+    badgeClass = "badge-info";
+    dotClass = "insufficient_data";
+    if (!note) note = "區間內無足夠資料";
+  } else if (status === "available") {
+    status = "available";
+    label = "✓ 正常";
+    badgeClass = "badge-active";
+    dotClass = "available";
+    if (!note) note = "資料來源正常運作";
+  } else {
+    status = "unavailable";
+    label = "未提供";
+    badgeClass = "badge-deprecated";
+    dotClass = "disabled";
+  }
+
+  return {
+    status,
+    label,
+    badgeClass,
+    dotClass,
+    freshness,
+    timestamp: ts || "—",
+    note,
+    isSupplemental,
+    raw: srcObj,
+  };
+}
+
 // Render Header Elements
 function renderHeader() {
   const sel = $("appSelector");
@@ -1884,14 +2099,67 @@ function renderHeader() {
 
   const srcs = app.sources || {};
   const badgeWrap = $("headerSourceBadges");
-  const sKeys = [
-    ["BigQuery", srcs.crashlytics_bq],
-    ["Sessions", srcs.firebase_sessions],
-    ["Gemini AI", srcs.gemini_ai]
+  if (badgeWrap) {
+    const sKeys = [
+      ["BigQuery", "crashlytics_bq", srcs.crashlytics_bq],
+      ["Sessions", "firebase_sessions", srcs.firebase_sessions],
+      ["MCP", "mcp_crashlytics", srcs.mcp_crashlytics],
+      ["Gemini AI", "gemini_ai", srcs.gemini_ai]
+    ];
+    badgeWrap.innerHTML = sKeys.map(([name, key, obj]) => {
+      const res = resolveSourceHealth(key, obj, DATA.generated_at);
+      return `<span class="src-chip" title="${name}: ${res.label} (${res.freshness}) · ${esc(res.note)}"><span class="src-dot ${res.dotClass}"></span>${name}</span>`;
+    }).join("");
+  }
+}
+
+// Render Data Sources Health in Overview
+function renderDataSourcesHealth() {
+  const app = getCurAppData();
+  if (!app) return;
+  const grid = $("overviewDataSourcesGrid");
+  if (!grid) return;
+
+  const runInfo = $("overviewLatestRunInfo");
+  if (runInfo) {
+    if (DATA.pipeline_run) {
+      const pr = DATA.pipeline_run;
+      const appRun = pr.apps && pr.apps[curAppId];
+      const runStatus = appRun ? appRun.status : pr.status;
+      const icon = runStatus === "success" ? "✓" : (runStatus === "degraded" ? "⚠" : "✕");
+      const statusText = runStatus === "success" ? "同步正常" : (runStatus === "degraded" ? "部分降級" : "同步失敗");
+      const dur = pr.duration_sec != null ? ` · 耗時 ${pr.duration_sec}s` : "";
+      runInfo.innerHTML = `<span class="badge badge-status ${runStatus === 'success' ? 'badge-active' : (runStatus === 'degraded' ? 'badge-maintenance' : 'badge-fatal')}">${icon} ${statusText}</span> 最近執行: ${esc(formatFreshness(pr.finished_at, DATA.generated_at))}${dur}`;
+    } else {
+      runInfo.textContent = `報表產生於 ${formatFreshness(DATA.generated_at, null)}`;
+    }
+  }
+
+  const srcs = app.sources || {};
+  const sourcesList = [
+    { key: "crashlytics_bq", name: "Crashlytics BigQuery", obj: srcs.crashlytics_bq },
+    { key: "firebase_sessions", name: "Firebase Sessions", obj: srcs.firebase_sessions },
+    { key: "mcp_crashlytics", name: "Crashlytics MCP", obj: srcs.mcp_crashlytics },
+    { key: "gemini_ai", name: "Gemini AI", obj: srcs.gemini_ai },
   ];
-  badgeWrap.innerHTML = sKeys.map(([name, obj]) => {
-    const st = obj ? obj.status : "unavailable";
-    return `<span class="src-chip" title="${name}: ${st}"><span class="src-dot ${st}"></span>${name}</span>`;
+
+  grid.innerHTML = sourcesList.map(s => {
+    const res = resolveSourceHealth(s.key, s.obj, DATA.generated_at);
+    return `
+      <div class="data-source-item">
+        <div class="data-source-item-top">
+          <span class="data-source-name">${esc(s.name)}</span>
+          <span class="badge badge-status ${res.badgeClass}">${esc(res.label)}</span>
+        </div>
+        <div class="data-source-freshness">
+          <span>新鮮度</span>
+          <b>${esc(res.freshness)}</b>
+        </div>
+        <div class="data-source-note ${res.status === 'error' ? 'error' : (res.status === 'stale' ? 'warning' : '')}">
+          ${esc(res.note)}
+        </div>
+      </div>
+    `;
   }).join("");
 }
 
@@ -2581,18 +2849,21 @@ function renderPipelines() {
   ];
 
   grid.innerHTML = pipelines.map(p => {
-    const s = p.obj || { status: "unavailable" };
+    const res = resolveSourceHealth(p.key, p.obj, DATA.generated_at);
     return `
       <div class="chart-card col-6">
         <div class="chart-card-header">
           <div class="chart-title">${esc(p.name)}</div>
-          <span class="badge badge-status ${s.status === "available" ? "badge-active" : (s.status === "error" ? "badge-fatal" : "badge-deprecated")}">
-            ${esc(s.status.toUpperCase())}
+          <span class="badge badge-status ${res.badgeClass}">
+            ${esc(res.label)}
           </span>
         </div>
         <div style="font-size:12.5px;color:var(--text-muted);display:flex;flex-direction:column;gap:6px">
-          <div>最後同步時間: <b>${esc(s.last_sync_timestamp || "—")}</b></div>
-          ${s.error_message ? `<div style="color:var(--danger-text)">備註: ${esc(s.error_message)}</div>` : `<div>狀態正常，無錯誤報告。</div>`}
+          <div>最後同步時間: <b>${esc(res.timestamp)}</b> (${esc(res.freshness)})</div>
+          <div class="data-source-note ${res.status === 'error' ? 'error' : (res.status === 'stale' ? 'warning' : '')}">
+            備註: ${esc(res.note)}
+          </div>
+          ${res.isSupplemental ? `<div style="font-size:11.5px;color:var(--warning-text)">※ 正在使用 last-known-good supplemental 快取資料補強</div>` : ""}
         </div>
       </div>
     `;
@@ -2630,6 +2901,7 @@ function renderSettings() {
 // Full Render
 function renderAll() {
   renderHeader();
+  renderDataSourcesHealth();
   renderKPIs();
   renderAISummaries();
   renderCharts();
