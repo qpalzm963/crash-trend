@@ -105,6 +105,22 @@ def assemble_bundle_from_apps(cfg: Optional[dict] = None) -> Optional[dict]:
         except Exception:
             pass
 
+    # Enrich AI Policy and AI Usage Observability (Dashboard V2.5 - Issues #41, #42)
+    try:
+        from crash_trend.ai_config_service import get_effective_ai_policy
+        bundle["global_ai_policy"] = get_effective_ai_policy(None, cfg)
+        for app_id, a_data in collected_apps.items():
+            if isinstance(a_data, dict):
+                a_data["ai_policy"] = get_effective_ai_policy(app_id, cfg)
+    except Exception:
+        pass
+
+    try:
+        from crash_trend.ai_telemetry import aggregate_ai_usage
+        bundle["ai_usage"] = aggregate_ai_usage(days=7)
+    except Exception:
+        pass
+
     # Ensure all collected apps have lifecycle enriched before strict Schema V2.3 validation
     for app_id, a_data in collected_apps.items():
         if isinstance(a_data, dict) and isinstance(a_data.get("top_issues"), list):
@@ -1862,16 +1878,44 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       </div>
     </section>
 
-    <!-- VIEW: SETTINGS (設定) -->
+    <!-- VIEW: SETTINGS (設定與 AI 治理) -->
     <section class="view-container" id="view-settings">
       <div class="section-header">
         <div>
-          <h2 class="section-title">應用程式設定 (Settings)</h2>
-          <div class="section-subtitle">當前 App Metadata、監控自訂鍵值與系統資訊</div>
+          <h2 class="section-title">應用程式設定與 AI 治理 (Settings & AI Governance)</h2>
+          <div class="section-subtitle">當前 App Metadata、AI Routing Policy 治理控制與全域使用量觀測</div>
         </div>
       </div>
 
+      <!-- Card 1: AI Policy & Admin Controls (#41) -->
+      <div class="data-sources-card" id="aiPolicyCard" style="margin-bottom:8px">
+        <div class="data-sources-header">
+          <div class="data-sources-title">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+            AI Policy & Routing 治理設定 (Admin Controls)
+          </div>
+          <div id="aiPolicyHeaderBadge"></div>
+        </div>
+        <div id="aiPolicyContent" style="padding:16px 20px"></div>
+      </div>
+
+      <!-- Card 2: AI Observability & Quota Usage (#42) -->
+      <div class="data-sources-card" id="aiObservabilityCard" style="margin-bottom:8px">
+        <div class="data-sources-header">
+          <div class="data-sources-title">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></svg>
+            AI Usage & Quota Observability 使用量與配額觀測 (近 7 天)
+          </div>
+          <div id="aiUsageHeaderBadge"></div>
+        </div>
+        <div id="aiUsageContent" style="padding:16px 20px"></div>
+      </div>
+
+      <!-- Card 3: App Metadata -->
       <div class="table-container">
+        <div class="table-toolbar">
+          <div class="section-title" style="font-size:14px">App 系統組態與 Metadata</div>
+        </div>
         <table class="data-table">
           <tbody id="settingsTableBody"></tbody>
         </table>
@@ -3337,7 +3381,7 @@ function renderPipelines() {
   }
 }
 
-// Render Settings
+// Render Settings & AI Governance
 function renderSettings() {
   const app = getCurAppData();
   if (!app) return;
@@ -3357,6 +3401,152 @@ function renderSettings() {
     <tr><th>Schema 版本</th><td><code>${esc(DATA.schema_version || "2.0")}</code></td></tr>
     <tr><th>報表產生時間</th><td><code>${esc(DATA.generated_at || "")}</code></td></tr>
   `;
+
+  // Render AI Policy & Admin Controls (Issue #41)
+  const pol = app.ai_policy || DATA.global_ai_policy || {
+    mode: "auto",
+    primary_provider: "gemini",
+    primary_model: "gemini-3.8-flash",
+    lightweight_provider: "openrouter",
+    lightweight_model: "openrouter/free",
+    allow_paid_models: false,
+    include_source_snippet: true,
+    fallback_enabled: false,
+    has_per_app_override: false,
+  };
+
+  const badgeEl = $("aiPolicyHeaderBadge");
+  if (badgeEl) {
+    if (pol.has_per_app_override) {
+      badgeEl.innerHTML = `<span class="badge badge-maintenance">Per-App Override (${esc(curAppId)})</span>`;
+    } else {
+      badgeEl.innerHTML = `<span class="badge" style="background:var(--bg-subtle)">Global Policy</span>`;
+    }
+  }
+
+  const polEl = $("aiPolicyContent");
+  if (polEl) {
+    const costGuardBadge = pol.allow_paid_models
+      ? `<span class="badge badge-fatal" style="font-weight:600">⚠ 付費模型已啟用 (Paid Allowed)</span>`
+      : `<span class="badge badge-active" style="background:#e6f4ea;color:#137333;font-weight:600">✓ Free Tier Guard 啟動 (零費用保證)</span>`;
+
+    const privacyBadge = pol.include_source_snippet
+      ? `<span class="badge badge-active" style="background:var(--bg-subtle)">✓ 含原始碼片段</span>`
+      : `<span class="badge badge-status" style="background:var(--bg-subtle)">✕ 僅堆疊摘要 (Privacy Guard)</span>`;
+
+    const fallbackBadge = pol.fallback_enabled
+      ? `<span class="badge badge-active" style="background:var(--bg-subtle)">✓ 自動備援開啟</span>`
+      : `<span class="badge badge-status" style="background:var(--bg-subtle)">✕ 備援關閉</span>`;
+
+    polEl.innerHTML = `
+      <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(240px, 1fr));gap:16px;margin-bottom:16px">
+        <div style="background:var(--bg-surface);padding:12px 14px;border:1px solid var(--border);border-radius:var(--radius-md)">
+          <div style="font-size:12px;color:var(--text-muted);margin-bottom:4px">Routing Mode (路由模式)</div>
+          <div style="font-size:15px;font-weight:700"><code>${esc(pol.mode)}</code></div>
+          <div style="font-size:11px;color:var(--text-muted);margin-top:2px">來源: ${esc(pol.mode_source || "default")}</div>
+        </div>
+        <div style="background:var(--bg-surface);padding:12px 14px;border:1px solid var(--border);border-radius:var(--radius-md)">
+          <div style="font-size:12px;color:var(--text-muted);margin-bottom:4px">深度分析 (Primary Worker)</div>
+          <div style="font-size:15px;font-weight:700"><code>${esc(pol.primary_provider)}</code>: ${esc(pol.primary_model)}</div>
+          <div style="font-size:11px;color:var(--text-muted);margin-top:2px">負責核心根因診斷與修復建議</div>
+        </div>
+        <div style="background:var(--bg-surface);padding:12px 14px;border:1px solid var(--border);border-radius:var(--radius-md)">
+          <div style="font-size:12px;color:var(--text-muted);margin-bottom:4px">輕量任務 (Lightweight Worker)</div>
+          <div style="font-size:15px;font-weight:700"><code>${esc(pol.lightweight_provider)}</code>: ${esc(pol.lightweight_model)}</div>
+          <div style="font-size:11px;color:var(--text-muted);margin-top:2px">負責 Triage, Summary, 分類標籤</div>
+        </div>
+        <div style="background:var(--bg-surface);padding:12px 14px;border:1px solid var(--border);border-radius:var(--radius-md)">
+          <div style="font-size:12px;color:var(--text-muted);margin-bottom:4px">Cost Guard & 安全防護</div>
+          <div style="margin-top:2px">${costGuardBadge}</div>
+          <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">${privacyBadge} ${fallbackBadge}</div>
+        </div>
+      </div>
+
+      <div style="background:var(--bg-subtle);border:1px solid var(--border);border-radius:var(--radius-md);padding:14px 16px">
+        <div style="font-weight:600;font-size:13px;margin-bottom:6px">⚙ AI Policy 管理控制台 (Admin Controls)</div>
+        <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px">
+          如需修改 Policy，可直接執行標準 Config Service CLI 命令（單一管道寫入，自動校驗 Cost Guard 與脫敏）：
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <code id="aiCliCmd" style="background:var(--bg-surface);border:1px solid var(--border);padding:6px 12px;border-radius:4px;font-size:12px;flex:1;min-width:280px">python -m crash_trend.ai_config_service --app ${esc(curAppId)} --mode ${esc(pol.mode)}</code>
+          <button class="export-btn" onclick="navigator.clipboard.writeText($('aiCliCmd').textContent);showToast('已複製 CLI 管理指令');">複製指令</button>
+          ${pol.has_per_app_override ? `<button class="export-btn" style="color:var(--danger-text)" onclick="navigator.clipboard.writeText('python -m crash_trend.ai_config_service --app ${esc(curAppId)} --reset');showToast('已複製重置指令');">重置為全域 Policy</button>` : ''}
+        </div>
+      </div>
+    `;
+  }
+
+  // Render AI Usage & Quota Observability (Issue #42)
+  const usage = DATA.ai_usage || {
+    total_requests: 0,
+    success_count: 0,
+    error_count: 0,
+    fallback_count: 0,
+    rate_limit_count: 0,
+    free_tier_ratio: 1.0,
+    by_task_type: {},
+    by_provider: {},
+    by_model: {},
+    tokens: { status: "unavailable" },
+    cost_guard: { paid_models_ever_allowed: false },
+  };
+
+  const usageBadge = $("aiUsageHeaderBadge");
+  if (usageBadge) {
+    const cg = usage.cost_guard || {};
+    usageBadge.innerHTML = cg.paid_models_ever_allowed
+      ? `<span class="badge badge-fatal">曾允許付費請求</span>`
+      : `<span class="badge badge-active" style="background:#e6f4ea;color:#137333">100% Free Tier 呼叫</span>`;
+  }
+
+  const usageEl = $("aiUsageContent");
+  if (usageEl) {
+    const tok = usage.tokens || {};
+    const tokText = tok.status === "available"
+      ? `Prompt: <b>${fmt(tok.prompt_tokens)}</b> · Output: <b>${fmt(tok.completion_tokens)}</b> · Total: <b>${fmt(tok.total_tokens)}</b> tokens`
+      : `<span style="color:var(--text-muted)">無 Token Metadata（Provider 未回傳，不假造估算）</span>`;
+
+    const freePct = Math.round((usage.free_tier_ratio || 1.0) * 100);
+
+    const taskBadges = Object.entries(usage.by_task_type || {}).map(([t, c]) =>
+      `<span class="badge" style="background:var(--bg-surface);border:1px solid var(--border)"><code>${esc(t)}</code>: <b>${c}</b></span>`
+    ).join(" ") || "—";
+
+    const modelBadges = Object.entries(usage.by_model || {}).map(([m, c]) =>
+      `<span class="badge" style="background:var(--bg-surface);border:1px solid var(--border)"><code>${esc(m)}</code>: <b>${c}</b></span>`
+    ).join(" ") || "—";
+
+    usageEl.innerHTML = `
+      <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(160px, 1fr));gap:12px;margin-bottom:16px">
+        <div style="background:var(--bg-surface);padding:10px 12px;border:1px solid var(--border);border-radius:var(--radius-md)">
+          <div style="font-size:11px;color:var(--text-muted)">總 AI 請求量 (7d)</div>
+          <div style="font-size:20px;font-weight:700;color:var(--text-main);margin-top:2px">${fmt(usage.total_requests)}</div>
+        </div>
+        <div style="background:var(--bg-surface);padding:10px 12px;border:1px solid var(--border);border-radius:var(--radius-md)">
+          <div style="font-size:11px;color:var(--text-muted)">成功請求數</div>
+          <div style="font-size:20px;font-weight:700;color:var(--good-text);margin-top:2px">${fmt(usage.success_count)}</div>
+        </div>
+        <div style="background:var(--bg-surface);padding:10px 12px;border:1px solid var(--border);border-radius:var(--radius-md)">
+          <div style="font-size:11px;color:var(--text-muted)">429 Rate Limit (超額限速)</div>
+          <div style="font-size:20px;font-weight:700;color:${usage.rate_limit_count > 0 ? 'var(--warning-text)' : 'var(--text-main)'};margin-top:2px">${fmt(usage.rate_limit_count)}</div>
+        </div>
+        <div style="background:var(--bg-surface);padding:10px 12px;border:1px solid var(--border);border-radius:var(--radius-md)">
+          <div style="font-size:11px;color:var(--text-muted)">Fallback 備援切換次數</div>
+          <div style="font-size:20px;font-weight:700;color:${usage.fallback_count > 0 ? 'var(--accent)' : 'var(--text-main)'};margin-top:2px">${fmt(usage.fallback_count)}</div>
+        </div>
+        <div style="background:var(--bg-surface);padding:10px 12px;border:1px solid var(--border);border-radius:var(--radius-md)">
+          <div style="font-size:11px;color:var(--text-muted)">Free Tier 比例</div>
+          <div style="font-size:20px;font-weight:700;color:var(--good-text);margin-top:2px">${freePct}%</div>
+        </div>
+      </div>
+
+      <div style="font-size:12px;background:var(--bg-surface);border:1px solid var(--border);border-radius:var(--radius-md);padding:12px 14px">
+        <div style="margin-bottom:8px"><b>Token 消耗量審計：</b> ${tokText}</div>
+        <div style="margin-bottom:8px"><b>任務分佈 (Task Distribution)：</b> ${taskBadges}</div>
+        <div><b>模型分佈 (Model Distribution)：</b> ${modelBadges}</div>
+      </div>
+    `;
+  }
 }
 
 // Full Render

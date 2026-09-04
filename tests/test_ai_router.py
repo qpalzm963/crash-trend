@@ -332,7 +332,7 @@ class TestAIRouter(unittest.TestCase):
         self.assertEqual(src_ai["requested_mode"], "auto")
         self.assertEqual(src_ai["task_type"], "deep_analysis")
         self.assertEqual(src_ai["selected_provider"], "gemini")
-        self.assertEqual(src_ai["selected_model"], "gemini-2.5-flash")
+        self.assertEqual(src_ai["selected_model"], DEFAULT_GEMINI_MODEL)
         self.assertFalse(src_ai["fallback_used"])
         self.assertFalse(src_ai["paid_model_allowed"])
         self.assertIn("deep_analysis", src_ai["routing_reason"])

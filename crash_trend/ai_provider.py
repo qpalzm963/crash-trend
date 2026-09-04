@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional
 
 import requests
 
-DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
+DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
 DEFAULT_OPENROUTER_MODEL = "google/gemini-2.5-flash"
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 GEMINI_API_URL_TEMPLATE = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
@@ -82,12 +82,63 @@ CANONICAL_AI_RESPONSE_SCHEMA: Dict[str, Any] = {
     "additionalProperties": False,
 }
 
+# Canonical JSON Schema for Lightweight Issue Triage, Classification, and Tagging (Dashboard V2.5 - Issue #40)
+CANONICAL_LIGHTWEIGHT_TRIAGE_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "items": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "issue_id": {"type": "string"},
+                    "short_summary": {"type": "string"},
+                    "category": {
+                        "type": "string",
+                        "enum": [
+                            "UI_CRASH",
+                            "NETWORK",
+                            "NULL_POINTER",
+                            "STORAGE_IO",
+                            "LIFECYCLE_ANR",
+                            "AUTH",
+                            "DATABASE",
+                            "CONCURRENCY",
+                            "RESOURCE_EXHAUSTION",
+                            "THIRD_PARTY_SDK",
+                            "OTHER",
+                        ],
+                    },
+                    "tags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                    "warrants_deep_analysis": {"type": "boolean"},
+                    "triage_reason": {"type": "string"},
+                },
+                "required": [
+                    "issue_id",
+                    "short_summary",
+                    "category",
+                    "tags",
+                    "warrants_deep_analysis",
+                    "triage_reason",
+                ],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["items"],
+    "additionalProperties": False,
+}
+
 
 def to_gemini_schema(schema: Dict[str, Any]) -> Dict[str, Any]:
-    """Adapts canonical JSON Schema to Google Gemini GenerativeLanguage API schema format.
+    """Adapts canonical JSON Schema to legacy Gemini GenerativeLanguage API schema format (OpenAPI 3.0 subset).
 
-    Strips `additionalProperties` (which causes HTTP 400 on Gemini REST API) and normalizes
-    types to uppercase (OBJECT, STRING, ARRAY, etc.).
+    Maintained as a backward-compatibility fallback for OpenAPI 3.0 responseSchema.
+    New Gemini runtime calls directly leverage native JSON Schema via `responseJsonSchema`
+    (Dashboard V2.5 - Issue #39).
     """
     if not isinstance(schema, dict):
         return schema
@@ -204,10 +255,12 @@ class GeminiProvider(AIProvider):
         api_key: Optional[str] = None,
         model: Optional[str] = None,
         temperature: Optional[float] = None,
+        use_legacy_schema: bool = False,
     ) -> None:
         self._explicit_key = api_key
         self._model = model or os.environ.get("GEMINI_MODEL") or DEFAULT_GEMINI_MODEL
         self._temperature = temperature
+        self._use_legacy_schema = use_legacy_schema
 
     @property
     def provider_name(self) -> str:
@@ -265,9 +318,12 @@ class GeminiProvider(AIProvider):
         elif not self._is_gemini_3_x(self._model):
             generation_config["temperature"] = 0.2
 
-        effective_schema = to_gemini_schema(schema or CANONICAL_AI_RESPONSE_SCHEMA)
+        effective_schema = schema or CANONICAL_AI_RESPONSE_SCHEMA
         if effective_schema:
-            generation_config["responseSchema"] = effective_schema
+            if self._use_legacy_schema:
+                generation_config["responseSchema"] = to_gemini_schema(effective_schema)
+            else:
+                generation_config["responseJsonSchema"] = effective_schema
 
         body = {
             "contents": [{"parts": [{"text": prompt}]}],
@@ -295,6 +351,16 @@ class GeminiProvider(AIProvider):
                     raise RuntimeError(f"Gemini API 回傳狀態碼 {r.status_code}：{r.text[:300]}")
 
                 data = r.json()
+                usage = data.get("usageMetadata")
+                if usage and isinstance(usage, dict):
+                    self.last_tokens = {
+                        "prompt_tokens": usage.get("promptTokenCount"),
+                        "completion_tokens": usage.get("candidatesTokenCount"),
+                        "total_tokens": usage.get("totalTokenCount"),
+                    }
+                else:
+                    self.last_tokens = None
+
                 text = data["candidates"][0]["content"]["parts"][0]["text"]
                 cleaned_text = extract_json_block(text)
                 return json.loads(cleaned_text)
@@ -407,6 +473,16 @@ class OpenRouterProvider(AIProvider):
                     raise RuntimeError(f"OpenRouter API 回傳狀態碼 {r.status_code}：{r.text[:300]}")
 
                 data = r.json()
+                usage = data.get("usage")
+                if usage and isinstance(usage, dict):
+                    self.last_tokens = {
+                        "prompt_tokens": usage.get("prompt_tokens"),
+                        "completion_tokens": usage.get("completion_tokens"),
+                        "total_tokens": usage.get("total_tokens"),
+                    }
+                else:
+                    self.last_tokens = None
+
                 choices = data.get("choices") or []
                 if not choices:
                     raise RuntimeError(f"OpenRouter 回傳空白 choices：{data}")

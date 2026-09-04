@@ -58,7 +58,7 @@ open dashboard.html
 | 檔案 | 內容 | 版控 |
 |---|---|---|
 | `apps.yaml` | 各 App 的 Firebase 專案、BQ dataset、Sessions dataset、core_paths、custom_keys | 建議放私有 instance repo |
-| `.env` | `GEMINI_API_KEY`、`GEMINI_MODEL`（預設 gemini-2.5-flash） | ✗ 永不進版控 |
+| `.env` | `GEMINI_API_KEY`、`GEMINI_MODEL`（預設 gemini-3.8-flash） | ✗ 永不進版控 |
 | `~/.config/crash-trend/sa.json` | BigQuery 唯讀 SA 金鑰（`create_sa.sh` 產生） | ✗ 永不進版控（Docker read-only 掛載） |
 
 ### 多 App 設定與 Data Source Profile (`apps.yaml`)
@@ -125,7 +125,31 @@ python3 crash_trend/fetch_stacktraces.py --app clock_in_app
 ### 4. 管線健康度與來源新鮮度 (Pipeline Health & Source Health - V2.2)
 
 - **結構化執行摘要 (`out/pipeline_run.json`)**：每次排程或手動執行，自動記錄各 App、各 Stage 的狀態 (`success` / `failed` / `skipped` / `disabled` / `degraded`)、精確耗時與**經過敏感憑證消毒 (Credential Sanitization)** 之錯誤原因。
-- **儀表板來源健康度資訊卡**：總覽頁面直觀展示 BigQuery、Sessions、MCP、Gemini AI 之即時連線健康度與相對時間新鮮度（例如 `2 小時前`、`9 天前`、`本次同步`）；MCP 過期自動備註使用備用快取中，Sessions 停用明確標示 `未開啟`。
+- **儀表板來源健康度資訊卡**：總覽頁面直觀展示 BigQuery、Sessions、MCP、AI 之即時連線健康度與相對時間新鮮度（例如 `2 小時前`、`9 天前`、`本次同步`）；MCP 過期自動備註使用備用快取中，Sessions 停用明確標示 `未開啟`。
+
+### 5. AI 執行期治理與雙層生產路由 (AI Runtime & Routing - V2.5)
+
+系統支援雙層架構生產路由與嚴格零費用防護（Cost Guard）：
+
+| 功能領域 | 實作機制 | 說明 |
+| :--- | :--- | :--- |
+| **預設模型升級 (#38)** | `gemini-3.8-flash` | Direct Gemini 升級至 2026-09 最新 GA 模型，支援高思考深度，自動省略過時 temperature 參數。 |
+| **原生 JSON Schema (#39)** | `responseJsonSchema` | Gemini 與 OpenRouter 全面對齊單一 Canonical JSON Schema 契約，無 lossy schema rewrite。 |
+| **生產輕量路由 (#40)** | `auto` 雙工模式 | 輕量任務（Issue Triage、分類、摘要、打標）由 OpenRouter Free Worker 承接；深度診斷保留給 Gemini Direct。 |
+| **後台 Policy 治理 (#41)** | `ai_config_service.py` | 支援 `auto` / `gemini_only` / `openrouter_only` 安全切換；`allow_paid_models=false` 嚴格阻擋付費模型。 |
+| **使用量與配額觀測 (#42)** | `ai_telemetry.py` | 記錄近 7 天請求量、成功率、429 Rate Limit、備援次數；嚴格審計真實 Token 數據，不假造估算。 |
+
+**AI Policy 管理 CLI 指令範例**：
+```bash
+# 查看當前 Effective Policy (全域或指定 App)
+python3 -m crash_trend.ai_config_service --app clock_in_app --show
+
+# 切換路由模式 (auto / gemini_only / openrouter_only)
+python3 -m crash_trend.ai_config_service --app clock_in_app --mode auto
+
+# 重置特定 App 回全域預設 Policy
+python3 -m crash_trend.ai_config_service --app clock_in_app --reset
+```
 
 ---
 
@@ -136,11 +160,15 @@ crash_trend/
   schema_v2.py           # Dashboard V2 資料契約 (TypedDicts) 與嚴格驗證器
   pipeline_health.py     # Pipeline Health：Run Summary、Stage 狀態、敏感資訊消毒
   pipeline_run.py        # 端到端管線驅動器（排程與 CLI 進入點）
+  ai_provider.py         # AI Provider 實作 (Gemini Direct 與 OpenRouter，共享 Canonical JSON Schema)
+  ai_router.py           # AITaskRouter 任務分類、動態路由、Free Guard 與自動備援
+  ai_config_service.py   # AI Policy Admin 後台治理、安全更新與 CLI 管理工具
+  ai_telemetry.py        # AI Usage & Quota Observability 使用量審計與統計引擎
   fetch_bigquery.py      # BigQuery V2：Overview 聚合、日曆日每日趨勢、維度分布
   fetch_sessions.py      # Firebase Sessions：Crash-free Users / Sessions 指標與版本健康度
   fetch_issue_details.py # Issue Detail：Stack trace、Blame frame、Breadcrumbs、Logs (含 MCP fallback)
   fetch_stacktraces.py   # Firebase MCP 驅動客戶端 (headless stdio JSON-RPC)
-  analyze_gemini.py      # 確定性 Priority Score ＋ Gemini AI 策略摘要
+  analyze_gemini.py      # 確定性 Priority Score ＋ AI 雙層分析 (Triage + Deep Analysis)
   build_dashboard.py     # 多 App 聚合與自包含 SaaS Dashboard HTML 產生器
   check_surge.py         # 每日趨勢週暴增偵測告警
   pm_brief.py            # 優先 issue → 給 PM 的白話簡報

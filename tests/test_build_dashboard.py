@@ -155,6 +155,50 @@ class TestBuildDashboardV2(unittest.TestCase):
                 self.assertFalse((tmproot / "out" / "dashboard_v2.json").is_file())
                 self.assertFalse((tmproot / "reports" / "dashboard_v2.json").is_file())
 
+    def test_ai_policy_and_observability_rendering(self) -> None:
+        """Issue #41 & #42: Dashboard renders AI Policy & Governance and Observability UI cards."""
+        data = json.loads(self.fixture_v2_path.read_text(encoding="utf-8"))
+        data["global_ai_policy"] = {
+            "mode": "auto",
+            "primary_provider": "gemini",
+            "primary_model": "gemini-3.8-flash",
+            "lightweight_provider": "openrouter",
+            "lightweight_model": "openrouter/free",
+            "allow_paid_models": False,
+            "include_source_snippet": True,
+            "fallback_enabled": False,
+            "has_per_app_override": False,
+        }
+        data["ai_usage"] = {
+            "period_days": 7,
+            "total_requests": 15,
+            "success_count": 14,
+            "error_count": 0,
+            "fallback_count": 1,
+            "rate_limit_count": 0,
+            "free_tier_ratio": 1.0,
+            "by_task_type": {"issue_triage": 10, "deep_analysis": 5},
+            "by_provider": {"gemini": 5, "openrouter": 10},
+            "by_model": {"gemini-3.8-flash": 5, "openrouter/free": 10},
+            "tokens": {"status": "available", "total_tokens": 4200, "prompt_tokens": 3000, "completion_tokens": 1200},
+            "cost_guard": {"paid_models_ever_allowed": False, "policy": "strict_free_tier_enforced"},
+        }
+
+        html = build_html(data)
+
+        # AI Policy Admin card elements
+        self.assertIn("aiPolicyCard", html)
+        self.assertIn("AI Policy & Routing 治理設定", html)
+        self.assertIn("Free Tier Guard 啟動", html)
+        self.assertIn("ai_config_service", html)
+
+        # AI Observability card elements
+        self.assertIn("aiObservabilityCard", html)
+        self.assertIn("AI Usage & Quota Observability", html)
+        self.assertIn("429 Rate Limit", html)
+        self.assertIn("總 AI 請求量", html)
+        self.assertIn("Token 消耗量審計", html)
+
 
 if __name__ == "__main__":
     unittest.main()

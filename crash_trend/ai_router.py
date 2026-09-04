@@ -30,6 +30,22 @@ from .pipeline_health import sanitize_error_message
 SUPPORTED_ROUTING_MODES = {"auto", "gemini_only", "openrouter_only"}
 DEFAULT_LIGHTWEIGHT_MODEL = "openrouter/free"
 
+# AI Task Taxonomy (Dashboard V2.5 - Issue #40)
+TASK_DEEP_ANALYSIS = "deep_analysis"
+TASK_LIGHTWEIGHT = "lightweight"
+TASK_ISSUE_TRIAGE = "issue_triage"
+TASK_ISSUE_SUMMARY = "issue_summary"
+TASK_ISSUE_CLASSIFICATION = "issue_classification"
+TASK_ISSUE_TAGGING = "issue_tagging"
+
+LIGHTWEIGHT_TASKS = {
+    TASK_LIGHTWEIGHT,
+    TASK_ISSUE_TRIAGE,
+    TASK_ISSUE_SUMMARY,
+    TASK_ISSUE_CLASSIFICATION,
+    TASK_ISSUE_TAGGING,
+}
+
 
 def is_free_openrouter_model(model: str) -> bool:
     """Returns True if the OpenRouter model is explicitly recognized as a free model."""
@@ -104,6 +120,7 @@ class AIRouterResult:
     fallback_reason: Optional[str] = None
     active_provider: str = ""
     active_model: str = ""
+    tokens: Optional[Dict[str, Optional[int]]] = None
 
 
 def resolve_router_config(
@@ -364,6 +381,7 @@ class AITaskRouter:
                 fallback_reason=None,
                 active_provider=decision.selected_provider,
                 active_model=decision.selected_model,
+                tokens=getattr(primary_provider, "last_tokens", None),
             )
         except Exception as e:
             # Check fallback eligibility
@@ -395,6 +413,7 @@ class AITaskRouter:
                     fallback_reason=f"Transient failure on {decision.selected_provider}: {safe_reason}",
                     active_provider=fallback_provider_name,
                     active_model=fallback_model_name,
+                    tokens=getattr(fallback_provider, "last_tokens", None),
                 )
             except Exception as fb_err:
                 # Fallback also failed or non-transient; re-raise fallback error (or original)

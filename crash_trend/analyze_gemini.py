@@ -17,7 +17,7 @@
      - 當未配置 GEMINI_API_KEY 時，ai_summary.status 標為 disabled，各 issue ai_analysis.status 標為 unavailable。
      - 不影響 Priority Score 計算與整體 Dashboard 運作。
 
-環境變數：GEMINI_API_KEY 或 GEMINI_KEY_URL（後台代管）擇一、GEMINI_MODEL（預設 gemini-2.5-flash）
+環境變數：GEMINI_API_KEY 或 GEMINI_KEY_URL（後台代管）擇一、GEMINI_MODEL（預設 gemini-3.8-flash）
 """
 
 from __future__ import annotations
@@ -49,13 +49,25 @@ try:
     from .ai_provider import (
         AIProvider,
         CANONICAL_AI_RESPONSE_SCHEMA,
+        CANONICAL_LIGHTWEIGHT_TRIAGE_SCHEMA,
         DEFAULT_GEMINI_MODEL,
         GeminiProvider,
         OpenRouterProvider,
         get_ai_provider,
         resolve_gemini_key,
     )
-    from .ai_router import AITaskRouter, get_ai_router
+    from .ai_router import (
+        AITaskRouter,
+        LIGHTWEIGHT_TASKS,
+        TASK_DEEP_ANALYSIS,
+        TASK_ISSUE_CLASSIFICATION,
+        TASK_ISSUE_SUMMARY,
+        TASK_ISSUE_TAGGING,
+        TASK_ISSUE_TRIAGE,
+        TASK_LIGHTWEIGHT,
+        get_ai_router,
+    )
+    from .ai_telemetry import record_ai_call
     from .pipeline_health import sanitize_error_message
 except ImportError:
     try:
@@ -74,13 +86,25 @@ except ImportError:
         from ai_provider import (
             AIProvider,
             CANONICAL_AI_RESPONSE_SCHEMA,
+            CANONICAL_LIGHTWEIGHT_TRIAGE_SCHEMA,
             DEFAULT_GEMINI_MODEL,
             GeminiProvider,
             OpenRouterProvider,
             get_ai_provider,
             resolve_gemini_key,
         )
-        from ai_router import AITaskRouter, get_ai_router
+        from ai_router import (
+            AITaskRouter,
+            LIGHTWEIGHT_TASKS,
+            TASK_DEEP_ANALYSIS,
+            TASK_ISSUE_CLASSIFICATION,
+            TASK_ISSUE_SUMMARY,
+            TASK_ISSUE_TAGGING,
+            TASK_ISSUE_TRIAGE,
+            TASK_LIGHTWEIGHT,
+            get_ai_router,
+        )
+        from ai_telemetry import record_ai_call
         from pipeline_health import sanitize_error_message
     except ImportError:
         from crash_trend.config import ROOT, app_argparser, get_app, write_json
@@ -98,13 +122,25 @@ except ImportError:
         from crash_trend.ai_provider import (
             AIProvider,
             CANONICAL_AI_RESPONSE_SCHEMA,
+            CANONICAL_LIGHTWEIGHT_TRIAGE_SCHEMA,
             DEFAULT_GEMINI_MODEL,
             GeminiProvider,
             OpenRouterProvider,
             get_ai_provider,
             resolve_gemini_key,
         )
-        from crash_trend.ai_router import AITaskRouter, get_ai_router
+        from crash_trend.ai_router import (
+            AITaskRouter,
+            LIGHTWEIGHT_TASKS,
+            TASK_DEEP_ANALYSIS,
+            TASK_ISSUE_CLASSIFICATION,
+            TASK_ISSUE_SUMMARY,
+            TASK_ISSUE_TAGGING,
+            TASK_ISSUE_TRIAGE,
+            TASK_LIGHTWEIGHT,
+            get_ai_router,
+        )
+        from crash_trend.ai_telemetry import record_ai_call
         from crash_trend.pipeline_health import sanitize_error_message
 
 
@@ -521,6 +557,92 @@ def build_ai_prompt(
     )
 
 
+LIGHTWEIGHT_TRIAGE_PROMPT_TEMPLATE = """\
+你是一個資深行動端穩定性與 Crash 分流專家。針對 App「{display_name}」的以下候選 Crash Issues，請快速進行輕量任務分流分析（Triage、Classification、Tagging 與 Short Summary）：
+
+任務要求：
+1. short_summary：用一句話精簡說明該 Issue 的崩潰現象（繁體中文或英文）。
+2. category：必須嚴格為以下列舉之一：
+   ["UI_CRASH", "NETWORK", "NULL_POINTER", "STORAGE_IO", "LIFECYCLE_ANR", "AUTH", "DATABASE", "CONCURRENCY", "RESOURCE_EXHAUSTION", "THIRD_PARTY_SDK", "OTHER"]
+3. tags：提供 2～4 個核心關鍵標籤（例如：["login", "token_refresh", "okhttp"]）。
+4. warrants_deep_analysis：布林值（true/false）。若為複雜、致命 (FATAL/ANR)、高優先級或成因不明之崩潰，請標記 true；若為顯而易見之輕量問題或已知偶發，請標記 false。
+5. triage_reason：簡短說明為何給予此分流判斷。
+
+## 候選 Crash Issues：
+{issues}
+"""
+
+
+def build_lightweight_triage_prompt(
+    display_name: str,
+    scored_issues: list[dict],
+) -> str:
+    """建構傳送給 OpenRouter Free Worker 的輕量分流、分類與標籤 Prompt。"""
+    issues_clean = []
+    for i in scored_issues:
+        clean_i = {
+            "issue_id": i.get("issue_id", ""),
+            "title": i.get("title", ""),
+            "subtitle": i.get("subtitle", ""),
+            "error_type": i.get("error_type", ""),
+            "events": i.get("events", 0),
+            "affected_users": i.get("affected_users", i.get("users", 0)),
+            "priority": i.get("priority", {}),
+            "first_seen_version": i.get("first_seen_version", ""),
+            "last_seen_version": i.get("last_seen_version", ""),
+        }
+        issues_clean.append(clean_i)
+
+    return LIGHTWEIGHT_TRIAGE_PROMPT_TEMPLATE.format(
+        display_name=display_name,
+        issues=json.dumps(issues_clean, ensure_ascii=False, indent=2),
+    )
+
+
+def parse_lightweight_triage_response(
+    raw_res: dict,
+) -> dict[str, dict[str, Any]]:
+    """解析並防禦性清洗輕量分流回傳的 JSON 結構。"""
+    valid_categories = {
+        "UI_CRASH",
+        "NETWORK",
+        "NULL_POINTER",
+        "STORAGE_IO",
+        "LIFECYCLE_ANR",
+        "AUTH",
+        "DATABASE",
+        "CONCURRENCY",
+        "RESOURCE_EXHAUSTION",
+        "THIRD_PARTY_SDK",
+        "OTHER",
+    }
+    items = raw_res.get("items") or []
+    out_map: dict[str, dict[str, Any]] = {}
+    if isinstance(items, list):
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            iid = str(item.get("issue_id", "")).strip()
+            if not iid:
+                continue
+            cat = str(item.get("category", "OTHER")).strip().upper()
+            if cat not in valid_categories:
+                cat = "OTHER"
+            raw_tags = item.get("tags") or []
+            tags = [str(t).strip() for t in raw_tags if isinstance(t, (str, int)) and str(t).strip()]
+            warrants = bool(item.get("warrants_deep_analysis", True))
+            reason = str(item.get("triage_reason", "")).strip()
+            summary = str(item.get("short_summary", "")).strip()
+            out_map[iid] = {
+                "short_summary": summary,
+                "category": cat,
+                "tags": tags,
+                "warrants_deep_analysis": warrants,
+                "triage_reason": reason,
+            }
+    return out_map
+
+
 def parse_gemini_response(
     ai_json: dict,
     scored_issues: list[dict],
@@ -863,7 +985,58 @@ def enrich_app_data_with_priority_and_ai(
         snippets=snippets,
     )
 
-    # 4. 呼叫 Router / Provider 並防禦性解析
+    # 4. 呼叫 Router / Provider 並防禦性解析 (Dashboard V2.5 - Issue #40)
+    tasks_telemetry: dict[str, Any] = {}
+    triage_map: dict[str, dict[str, Any]] = {}
+
+    # 4.1 輕量任務：執行 Issue Triage, Short Summary, Classification, Tagging
+    # 在 auto 模式下由 OpenRouter Free Worker 執行
+    if active_router is not None and task_type not in LIGHTWEIGHT_TASKS and active_router.is_configured(task_type=TASK_ISSUE_TRIAGE):
+        try:
+            triage_prompt = build_lightweight_triage_prompt(display_name, scored_issues[:top_limit])
+            triage_res = active_router.analyze(
+                triage_prompt,
+                schema=CANONICAL_LIGHTWEIGHT_TRIAGE_SCHEMA,
+                task_type=TASK_ISSUE_TRIAGE,
+            )
+            triage_map = parse_lightweight_triage_response(triage_res.data)
+            record_ai_call(
+                app_id=app_data.get("metadata", {}).get("app_id", display_name),
+                task_type=TASK_ISSUE_TRIAGE,
+                provider=triage_res.active_provider,
+                model=triage_res.active_model,
+                status="fallback" if triage_res.fallback_used else "success",
+                paid_model_allowed=paid_model_allowed,
+                tokens=getattr(triage_res, "tokens", None),
+            )
+            tasks_telemetry["lightweight"] = {
+                "task_type": TASK_ISSUE_TRIAGE,
+                "status": "available",
+                "provider": triage_res.active_provider,
+                "model": triage_res.active_model,
+                "routing_reason": triage_res.decision.routing_reason,
+                "fallback_used": triage_res.fallback_used,
+                "fallback_reason": triage_res.fallback_reason,
+            }
+        except Exception as e_triage:
+            # 輕量任務失敗不得阻塞核心管線與 Dashboard 產生（優雅降級）
+            safe_triage_err = sanitize_error_message(str(e_triage))
+            record_ai_call(
+                app_id=app_data.get("metadata", {}).get("app_id", display_name),
+                task_type=TASK_ISSUE_TRIAGE,
+                provider=active_router.config.lightweight_provider if active_router else "unknown",
+                model=active_router.config.lightweight_model if active_router else "unknown",
+                status="rate_limit" if "429" in str(e_triage) else "error",
+                paid_model_allowed=paid_model_allowed,
+                error_message=safe_triage_err,
+            )
+            tasks_telemetry["lightweight"] = {
+                "task_type": TASK_ISSUE_TRIAGE,
+                "status": "error",
+                "error_message": safe_triage_err,
+            }
+
+    # 4.2 深度分析 / 主任務呼叫
     fallback_used = False
     fallback_reason = None
     try:
@@ -881,11 +1054,38 @@ def enrich_app_data_with_priority_and_ai(
             raw_ai_res, scored_issues, model_name=model_name, provider_name=provider_name
         )
         for issue in scored_issues:
-            issue["ai_analysis"] = analysis_map.get(issue.get("issue_id", ""), generate_disabled_issue_analysis())
+            iid = issue.get("issue_id", "")
+            base_analysis = analysis_map.get(iid, generate_disabled_issue_analysis())
+            if iid in triage_map:
+                t_info = triage_map[iid]
+                base_analysis["short_summary"] = t_info.get("short_summary")
+                base_analysis["category"] = t_info.get("category")
+                base_analysis["tags"] = t_info.get("tags")
+                base_analysis["warrants_deep_analysis"] = t_info.get("warrants_deep_analysis")
+                base_analysis["triage_reason"] = t_info.get("triage_reason")
+            issue["ai_analysis"] = base_analysis
 
         app_data["top_issues"] = scored_issues
         app_data["ai_summary"] = ai_summary
         now_ts = iso_utc_now()
+        record_ai_call(
+            app_id=app_data.get("metadata", {}).get("app_id", display_name),
+            task_type=task_type,
+            provider=provider_name,
+            model=model_name,
+            status="fallback" if fallback_used else "success",
+            paid_model_allowed=paid_model_allowed,
+            tokens=getattr(router_res if active_router else active_provider, "tokens", None),
+        )
+        tasks_telemetry["deep_analysis"] = {
+            "task_type": task_type,
+            "status": "available",
+            "provider": provider_name,
+            "model": model_name,
+            "routing_reason": routing_reason,
+            "fallback_used": fallback_used,
+            "fallback_reason": fallback_reason,
+        }
         if "sources" in app_data:
             app_data["sources"]["ai"] = {
                 "status": "available",
@@ -899,6 +1099,7 @@ def enrich_app_data_with_priority_and_ai(
                 "fallback_used": fallback_used,
                 "fallback_reason": fallback_reason,
                 "paid_model_allowed": paid_model_allowed,
+                "tasks": tasks_telemetry,
                 "last_sync_timestamp": now_ts,
                 "error_message": None,
             }
@@ -914,10 +1115,36 @@ def enrich_app_data_with_priority_and_ai(
         ai_summary = generate_error_ai_summary(safe_err, provider=provider_name)
         disabled_analysis = generate_disabled_issue_analysis()
         for i in scored_issues:
-            i["ai_analysis"] = disabled_analysis
+            iid = i.get("issue_id", "")
+            base_analysis = dict(disabled_analysis)
+            if iid in triage_map:
+                t_info = triage_map[iid]
+                base_analysis["short_summary"] = t_info.get("short_summary")
+                base_analysis["category"] = t_info.get("category")
+                base_analysis["tags"] = t_info.get("tags")
+                base_analysis["warrants_deep_analysis"] = t_info.get("warrants_deep_analysis")
+                base_analysis["triage_reason"] = t_info.get("triage_reason")
+            i["ai_analysis"] = base_analysis
 
         app_data["top_issues"] = scored_issues
         app_data["ai_summary"] = ai_summary
+        record_ai_call(
+            app_id=app_data.get("metadata", {}).get("app_id", display_name),
+            task_type=task_type,
+            provider=provider_name,
+            model=model_name,
+            status="rate_limit" if "429" in str(safe_err) else "error",
+            paid_model_allowed=paid_model_allowed,
+            error_message=safe_err,
+        )
+        tasks_telemetry["deep_analysis"] = {
+            "task_type": task_type,
+            "status": "error",
+            "provider": provider_name,
+            "model": model_name,
+            "routing_reason": routing_reason,
+            "error_message": safe_err,
+        }
         if "sources" in app_data:
             app_data["sources"]["ai"] = {
                 "status": "error",
@@ -931,6 +1158,7 @@ def enrich_app_data_with_priority_and_ai(
                 "fallback_used": fallback_used,
                 "fallback_reason": fallback_reason,
                 "paid_model_allowed": paid_model_allowed,
+                "tasks": tasks_telemetry,
                 "last_sync_timestamp": None,
                 "error_message": safe_err,
             }
