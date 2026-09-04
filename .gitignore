@@ -6,6 +6,7 @@ out/
 *service_account*.json
 *play_store_key*.json
 .env
+.admin_token
 
 # Python
 .venv/

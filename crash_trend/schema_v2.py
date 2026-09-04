@@ -379,6 +379,7 @@ class AppDashboardV2Data(TypedDict):
     ai_summary: AISummary
     limitations: List[str]
     periods: NotRequired[Dict[str, AppPeriodSnapshot]]
+    ai_policy: NotRequired[Optional[Dict[str, Any]]]
 
 
 class DashboardV2Bundle(TypedDict):
@@ -387,6 +388,8 @@ class DashboardV2Bundle(TypedDict):
     default_app: str
     apps: Dict[str, AppDashboardV2Data]
     pipeline_run: NotRequired[Optional[Dict[str, Any]]]
+    global_ai_policy: NotRequired[Optional[Dict[str, Any]]]
+    ai_usage: NotRequired[Optional[Dict[str, Any]]]
 
 
 # ---------------------------------------------------------------------------

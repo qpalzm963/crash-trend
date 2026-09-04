@@ -30,6 +30,22 @@ from .pipeline_health import sanitize_error_message
 SUPPORTED_ROUTING_MODES = {"auto", "gemini_only", "openrouter_only"}
 DEFAULT_LIGHTWEIGHT_MODEL = "openrouter/free"
 
+# AI Task Taxonomy (Dashboard V2.5 - Issue #40)
+TASK_DEEP_ANALYSIS = "deep_analysis"
+TASK_LIGHTWEIGHT = "lightweight"
+TASK_ISSUE_TRIAGE = "issue_triage"
+TASK_ISSUE_SUMMARY = "issue_summary"
+TASK_ISSUE_CLASSIFICATION = "issue_classification"
+TASK_ISSUE_TAGGING = "issue_tagging"
+
+LIGHTWEIGHT_TASKS = {
+    TASK_LIGHTWEIGHT,
+    TASK_ISSUE_TRIAGE,
+    TASK_ISSUE_SUMMARY,
+    TASK_ISSUE_CLASSIFICATION,
+    TASK_ISSUE_TAGGING,
+}
+
 
 def is_free_openrouter_model(model: str) -> bool:
     """Returns True if the OpenRouter model is explicitly recognized as a free model."""
@@ -37,6 +53,40 @@ def is_free_openrouter_model(model: str) -> bool:
         return False
     m = model.strip().lower()
     return m == "openrouter/free" or m.endswith(":free")
+
+
+# Gemini models verified to offer Standard Free Tier on Google AI Studio
+FREE_TIER_GEMINI_MODELS = {
+    "gemini-3.8-flash",
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-3.1-flash-lite",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-2.0-flash",
+    "gemini-2.0-flash-001",
+    "gemini-2.0-flash-lite",
+    "gemini-2.0-flash-lite-preview-02-05",
+    "gemini-1.5-flash",
+    "gemini-1.5-flash-8b",
+}
+
+
+def is_free_gemini_model(model: str) -> bool:
+    """Returns True if the Gemini model is explicitly recognized as Standard Free Tier eligible.
+
+    Unknown models, Pro models (e.g. gemini-3.1-pro-preview, gemini-1.5-pro), and paid-only Flash
+    models (e.g. gemini-2.5-flash-image, gemini-3.1-flash-image) strictly return False and require
+    allow_paid_models=True.
+    """
+    if not model or not isinstance(model, str):
+        return False
+    m = model.strip().lower()
+    if m.startswith("models/"):
+        m = m[len("models/"):]
+    # Strict allowlist matching: no fuzzy fallback
+    return m in FREE_TIER_GEMINI_MODELS
 
 
 def is_transient_error(e: Exception) -> bool:
@@ -104,6 +154,7 @@ class AIRouterResult:
     fallback_reason: Optional[str] = None
     active_provider: str = ""
     active_model: str = ""
+    tokens: Optional[Dict[str, Optional[int]]] = None
 
 
 def resolve_router_config(
@@ -283,16 +334,23 @@ class AITaskRouter:
                     fallback_target_model = None
 
         # Enforce Free Guard on selected model
-        if selected_provider == "openrouter" and not self.config.allow_paid_models:
-            if not is_free_openrouter_model(selected_model):
+        if not self.config.allow_paid_models:
+            if selected_provider == "openrouter" and not is_free_openrouter_model(selected_model):
                 raise ValueError(
                     f"Paid model '{selected_model}' not allowed when allow_paid_models is false"
                 )
+            elif selected_provider == "gemini" and not is_free_gemini_model(selected_model):
+                raise ValueError(
+                    f"Gemini model '{selected_model}' is not recognized as Free Tier eligible when allow_paid_models is false"
+                )
 
         # Enforce Free Guard on fallback target model
-        if fallback_target_provider == "openrouter" and not self.config.allow_paid_models:
-            if fallback_target_model and not is_free_openrouter_model(fallback_target_model):
+        if not self.config.allow_paid_models:
+            if fallback_target_provider == "openrouter" and fallback_target_model and not is_free_openrouter_model(fallback_target_model):
                 # Cannot fallback to a paid model when allow_paid_models is false
+                fallback_target_provider = None
+                fallback_target_model = None
+            elif fallback_target_provider == "gemini" and fallback_target_model and not is_free_gemini_model(fallback_target_model):
                 fallback_target_provider = None
                 fallback_target_model = None
 
@@ -322,6 +380,10 @@ class AITaskRouter:
                 zdr=self.config.lightweight_zdr,
             )
         elif p_name == "gemini":
+            if not self.config.allow_paid_models and not is_free_gemini_model(model_name):
+                raise ValueError(
+                    f"Gemini model '{model_name}' is not recognized as Free Tier eligible when allow_paid_models is false"
+                )
             key = self.config.primary_api_key or resolve_gemini_key(raise_on_missing=False)
             return GeminiProvider(
                 api_key=key,
@@ -364,6 +426,7 @@ class AITaskRouter:
                 fallback_reason=None,
                 active_provider=decision.selected_provider,
                 active_model=decision.selected_model,
+                tokens=getattr(primary_provider, "last_tokens", None),
             )
         except Exception as e:
             # Check fallback eligibility
@@ -395,6 +458,7 @@ class AITaskRouter:
                     fallback_reason=f"Transient failure on {decision.selected_provider}: {safe_reason}",
                     active_provider=fallback_provider_name,
                     active_model=fallback_model_name,
+                    tokens=getattr(fallback_provider, "last_tokens", None),
                 )
             except Exception as fb_err:
                 # Fallback also failed or non-transient; re-raise fallback error (or original)

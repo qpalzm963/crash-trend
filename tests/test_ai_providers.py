@@ -475,7 +475,7 @@ class TestAIProviders(unittest.TestCase):
 
     @patch("crash_trend.ai_provider.requests.post")
     def test_gemini_3_x_generation_config_omits_hardcoded_temperature(self, mock_post: MagicMock) -> None:
-        """Issue #34 Test 2: Gemini 3.x / 2.5 models do not send old hardcoded temperature: 0.2."""
+        """Issue #34 / #38: Gemini 3.x / 3.8 models do not send old hardcoded temperature: 0.2."""
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = {
@@ -483,9 +483,9 @@ class TestAIProviders(unittest.TestCase):
         }
         mock_post.return_value = mock_resp
 
-        # 1. Default Gemini 3.x / 2.5 model should NOT send temperature: 0.2
-        provider_3x = GeminiProvider(api_key="test-key", model="gemini-2.5-flash")
-        provider_3x.analyze("Prompt")
+        # 1. Default Gemini 3.8 model should NOT send temperature: 0.2
+        provider_38 = GeminiProvider(api_key="test-key", model="gemini-3.8-flash")
+        provider_38.analyze("Prompt")
         gen_cfg = mock_post.call_args[1]["json"]["generationConfig"]
         self.assertNotIn("temperature", gen_cfg)
 
@@ -496,17 +496,17 @@ class TestAIProviders(unittest.TestCase):
         self.assertNotIn("temperature", gen_cfg_3_0)
 
         # 3. Explicit temperature override is respected
-        provider_override = GeminiProvider(api_key="test-key", model="gemini-2.5-flash", temperature=0.7)
+        provider_override = GeminiProvider(api_key="test-key", model="gemini-3.8-flash", temperature=0.7)
         provider_override.analyze("Prompt")
         gen_cfg_ov = mock_post.call_args[1]["json"]["generationConfig"]
         self.assertEqual(gen_cfg_ov.get("temperature"), 0.7)
 
     def test_global_and_per_app_model_override_gemini(self) -> None:
-        """Issue #34 Test 3: Global, per-app, and env model override regression test."""
-        # 1. Default model is stable gemini-2.5-flash
-        self.assertEqual(DEFAULT_GEMINI_MODEL, "gemini-2.5-flash")
+        """Issue #34 / #38: Global, per-app, and env model override regression test."""
+        # 1. Default model is stable gemini-3.8-flash
+        self.assertEqual(DEFAULT_GEMINI_MODEL, "gemini-3.8-flash")
         p_default = get_ai_provider()
-        self.assertEqual(p_default.model_name, "gemini-2.5-flash")
+        self.assertEqual(p_default.model_name, "gemini-3.8-flash")
 
         # 2. Global override
         global_cfg = {"ai": {"provider": "gemini", "model": "gemini-2.5-pro"}}
@@ -558,6 +558,64 @@ class TestAIProviders(unittest.TestCase):
         self.assertTrue(adapted["properties"]["limitations"]["nullable"])
         self.assertEqual(adapted["properties"]["tags"]["type"], "ARRAY")
         self.assertEqual(adapted["properties"]["tags"]["items"]["type"], "STRING")
+
+    @patch("crash_trend.ai_provider.requests.post")
+    def test_gemini_native_response_json_schema(self, mock_post: MagicMock) -> None:
+        """Issue #39 Test 1: GeminiProvider uses native responseJsonSchema directly without rewrite."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "candidates": [{"content": {"parts": [{"text": '{"overview": "Native Schema OK", "items": []}'}]}}]
+        }
+        mock_post.return_value = mock_resp
+
+        # 1. Default uses responseJsonSchema with canonical schema directly
+        provider = GeminiProvider(api_key="test-key", model="gemini-3.8-flash")
+        provider.analyze("Analyze Prompt")
+        gen_cfg = mock_post.call_args[1]["json"]["generationConfig"]
+        self.assertIn("responseJsonSchema", gen_cfg)
+        self.assertNotIn("responseSchema", gen_cfg)
+        self.assertEqual(gen_cfg["responseJsonSchema"], CANONICAL_AI_RESPONSE_SCHEMA)
+        self.assertFalse(gen_cfg["responseJsonSchema"]["additionalProperties"])
+
+        # 2. Legacy fallback mode (use_legacy_schema=True) uses responseSchema
+        provider_legacy = GeminiProvider(api_key="test-key", model="gemini-3.8-flash", use_legacy_schema=True)
+        provider_legacy.analyze("Analyze Prompt Legacy")
+        gen_cfg_leg = mock_post.call_args[1]["json"]["generationConfig"]
+        self.assertIn("responseSchema", gen_cfg_leg)
+        self.assertNotIn("responseJsonSchema", gen_cfg_leg)
+        self.assertNotIn("additionalProperties", gen_cfg_leg["responseSchema"])
+
+    @patch("crash_trend.ai_provider.requests.post")
+    def test_provider_canonical_schema_parity(self, mock_post: MagicMock) -> None:
+        """Issue #39 Test 2: Gemini and OpenRouter share the exact same CANONICAL_AI_RESPONSE_SCHEMA."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "choices": [{"message": {"content": '{"overview": "OR OK", "items": []}'}}]
+        }
+        mock_post.return_value = mock_resp
+
+        # OpenRouter sends CANONICAL_AI_RESPONSE_SCHEMA in response_format
+        or_provider = OpenRouterProvider(api_key="sk-or-test", model="openrouter/free")
+        or_provider.analyze("OR Prompt")
+        or_body = mock_post.call_args[1]["json"]
+        or_schema = or_body["response_format"]["json_schema"]["schema"]
+        self.assertEqual(or_schema, CANONICAL_AI_RESPONSE_SCHEMA)
+
+        # Gemini sends the exact same schema object in responseJsonSchema
+        gem_provider = GeminiProvider(api_key="test-key", model="gemini-3.8-flash")
+        gem_resp = MagicMock()
+        gem_resp.status_code = 200
+        gem_resp.json.return_value = {
+            "candidates": [{"content": {"parts": [{"text": '{"overview": "Gemini OK", "items": []}'}]}}]
+        }
+        mock_post.return_value = gem_resp
+        gem_provider.analyze("Gemini Prompt")
+        gem_body = mock_post.call_args[1]["json"]
+        gem_schema = gem_body["generationConfig"]["responseJsonSchema"]
+        self.assertEqual(gem_schema, or_schema)
+        self.assertEqual(gem_schema, CANONICAL_AI_RESPONSE_SCHEMA)
 
     @patch("crash_trend.ai_provider.requests.post")
     def test_production_lifecycle_gemini_e2e_bundle(self, mock_post: MagicMock) -> None:

@@ -11,7 +11,7 @@ ai:
   mode: auto                                  # auto（預設）| gemini_only | openrouter_only
   primary:
     provider: gemini                          # 主力 provider（預設 gemini）
-    model: gemini-2.5-flash                   # 主力模型
+    model: gemini-3.8-flash                   # 主力模型
     # api_key: "..."                          # 選填；未填則讀取 GEMINI_API_KEY 或 GEMINI_KEY_URL
   lightweight:
     provider: openrouter                      # 輕量 worker（預設 openrouter）

@@ -105,6 +105,22 @@ def assemble_bundle_from_apps(cfg: Optional[dict] = None) -> Optional[dict]:
         except Exception:
             pass
 
+    # Enrich AI Policy and AI Usage Observability (Dashboard V2.5 - Issues #41, #42)
+    try:
+        from crash_trend.ai_config_service import get_effective_ai_policy
+        bundle["global_ai_policy"] = get_effective_ai_policy(None, cfg)
+        for app_id, a_data in collected_apps.items():
+            if isinstance(a_data, dict):
+                a_data["ai_policy"] = get_effective_ai_policy(app_id, cfg)
+    except Exception:
+        pass
+
+    try:
+        from crash_trend.ai_telemetry import aggregate_ai_usage
+        bundle["ai_usage"] = aggregate_ai_usage(days=7)
+    except Exception:
+        pass
+
     # Ensure all collected apps have lifecycle enriched before strict Schema V2.3 validation
     for app_id, a_data in collected_apps.items():
         if isinstance(a_data, dict) and isinstance(a_data.get("top_issues"), list):
@@ -1862,16 +1878,44 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       </div>
     </section>
 
-    <!-- VIEW: SETTINGS (設定) -->
+    <!-- VIEW: SETTINGS (設定與 AI 治理) -->
     <section class="view-container" id="view-settings">
       <div class="section-header">
         <div>
-          <h2 class="section-title">應用程式設定 (Settings)</h2>
-          <div class="section-subtitle">當前 App Metadata、監控自訂鍵值與系統資訊</div>
+          <h2 class="section-title">應用程式設定與 AI 治理 (Settings & AI Governance)</h2>
+          <div class="section-subtitle">當前 App Metadata、AI Routing Policy 治理控制與全域使用量觀測</div>
         </div>
       </div>
 
+      <!-- Card 1: AI Policy & Admin Controls (#41) -->
+      <div class="data-sources-card" id="aiPolicyCard" style="margin-bottom:8px">
+        <div class="data-sources-header">
+          <div class="data-sources-title">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+            AI Policy & Routing 治理設定 (Admin Controls)
+          </div>
+          <div id="aiPolicyHeaderBadge"></div>
+        </div>
+        <div id="aiPolicyContent" style="padding:16px 20px"></div>
+      </div>
+
+      <!-- Card 2: AI Observability & Quota Usage (#42) -->
+      <div class="data-sources-card" id="aiObservabilityCard" style="margin-bottom:8px">
+        <div class="data-sources-header">
+          <div class="data-sources-title">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></svg>
+            AI Usage & Quota Observability 使用量與配額觀測 (近 7 天)
+          </div>
+          <div id="aiUsageHeaderBadge"></div>
+        </div>
+        <div id="aiUsageContent" style="padding:16px 20px"></div>
+      </div>
+
+      <!-- Card 3: App Metadata -->
       <div class="table-container">
+        <div class="table-toolbar">
+          <div class="section-title" style="font-size:14px">App 系統組態與 Metadata</div>
+        </div>
         <table class="data-table">
           <tbody id="settingsTableBody"></tbody>
         </table>
@@ -3337,7 +3381,7 @@ function renderPipelines() {
   }
 }
 
-// Render Settings
+// Render Settings & AI Governance
 function renderSettings() {
   const app = getCurAppData();
   if (!app) return;
@@ -3357,6 +3401,438 @@ function renderSettings() {
     <tr><th>Schema 版本</th><td><code>${esc(DATA.schema_version || "2.0")}</code></td></tr>
     <tr><th>報表產生時間</th><td><code>${esc(DATA.generated_at || "")}</code></td></tr>
   `;
+
+  // Render AI Policy & Admin Controls (Issue #41)
+  const pol = app.ai_policy || DATA.global_ai_policy || {
+    mode: "auto",
+    primary_provider: "gemini",
+    primary_model: "gemini-3.8-flash",
+    lightweight_provider: "openrouter",
+    lightweight_model: "openrouter/free",
+    allow_paid_models: false,
+    include_source_snippet: true,
+    fallback_enabled: false,
+    has_per_app_override: false,
+  };
+
+  const badgeEl = $("aiPolicyHeaderBadge");
+  if (badgeEl) {
+    if (pol.has_per_app_override) {
+      badgeEl.innerHTML = `<span class="badge badge-maintenance">Per-App Override (${esc(curAppId)})</span>`;
+    } else {
+      badgeEl.innerHTML = `<span class="badge" style="background:var(--bg-subtle)">Global Policy</span>`;
+    }
+  }
+
+  const polEl = $("aiPolicyContent");
+  if (polEl) {
+    const costGuardBadge = pol.allow_paid_models
+      ? `<span class="badge badge-fatal" style="font-weight:600">⚠ 已允許付費模型 (Paid Permitted)</span>`
+      : `<span class="badge badge-active" style="background:#e6f4ea;color:#137333;font-weight:600">✓ Free Tier Guard 啟動 (免費防護)</span>`;
+
+    polEl.innerHTML = `
+      <!-- Effective Policy Summary Cards -->
+      <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(220px, 1fr));gap:12px;margin-bottom:16px">
+        <div style="background:var(--bg-surface);padding:10px 12px;border:1px solid var(--border);border-radius:var(--radius-md)">
+          <div style="font-size:11px;color:var(--text-muted)">當前模式 (Effective Mode)</div>
+          <div style="font-size:14px;font-weight:700;margin-top:2px"><code>${esc(pol.mode)}</code></div>
+          <div style="font-size:11px;color:var(--text-muted);margin-top:2px">${esc(pol.mode_source || "default")}</div>
+        </div>
+        <div style="background:var(--bg-surface);padding:10px 12px;border:1px solid var(--border);border-radius:var(--radius-md)">
+          <div style="font-size:11px;color:var(--text-muted)">深度分析 (Primary Worker)</div>
+          <div style="font-size:14px;font-weight:700;margin-top:2px"><code>${esc(pol.primary_provider)}</code>: ${esc(pol.primary_model)}</div>
+          <div style="font-size:11px;color:var(--text-muted);margin-top:2px">核心根因推理</div>
+        </div>
+        <div style="background:var(--bg-surface);padding:10px 12px;border:1px solid var(--border);border-radius:var(--radius-md)">
+          <div style="font-size:11px;color:var(--text-muted)">輕量任務 (Lightweight Worker)</div>
+          <div style="font-size:14px;font-weight:700;margin-top:2px"><code>${esc(pol.lightweight_provider)}</code>: ${esc(pol.lightweight_model)}</div>
+          <div style="font-size:11px;color:var(--text-muted);margin-top:2px">Triage, 分類標籤</div>
+        </div>
+        <div style="background:var(--bg-surface);padding:10px 12px;border:1px solid var(--border);border-radius:var(--radius-md)">
+          <div style="font-size:11px;color:var(--text-muted)">Cost Guard 狀態</div>
+          <div style="margin-top:4px">${costGuardBadge}</div>
+        </div>
+      </div>
+
+      <!-- Interactive Policy Control Form (Issue #41) -->
+      <div style="background:var(--bg-subtle);border:1px solid var(--border);border-radius:var(--radius-md);padding:16px 18px">
+        <div style="font-weight:700;font-size:14px;margin-bottom:12px;display:flex;align-items:center;gap:6px">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+          政策調整控制台 (Interactive Policy Controls)
+        </div>
+
+        <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(200px, 1fr));gap:12px;margin-bottom:14px">
+          <div>
+            <label style="display:block;font-size:12px;font-weight:600;margin-bottom:4px">路由模式 (Routing Mode)</label>
+            <select id="adminModeSelect" style="width:100%;padding:6px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-surface);font-size:13px">
+              <option value="auto" ${pol.mode === 'auto' ? 'selected' : ''}>auto (雙工：輕量 OpenRouter Free, 深度 Gemini)</option>
+              <option value="gemini_only" ${pol.mode === 'gemini_only' ? 'selected' : ''}>gemini_only (全量 Gemini Direct)</option>
+              <option value="openrouter_only" ${pol.mode === 'openrouter_only' ? 'selected' : ''}>openrouter_only (全量 OpenRouter)</option>
+            </select>
+          </div>
+          <div>
+            <label style="display:block;font-size:12px;font-weight:600;margin-bottom:4px">深度 Provider</label>
+            <select id="adminPrimaryProvider" style="width:100%;padding:6px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-surface);font-size:13px">
+              <option value="gemini" ${pol.primary_provider === 'gemini' ? 'selected' : ''}>gemini (Google Direct)</option>
+              <option value="openrouter" ${pol.primary_provider === 'openrouter' ? 'selected' : ''}>openrouter (OpenRouter)</option>
+            </select>
+          </div>
+          <div>
+            <label style="display:block;font-size:12px;font-weight:600;margin-bottom:4px">深度 Model</label>
+            <input type="text" id="adminPrimaryModel" value="${esc(pol.primary_model)}" style="width:100%;padding:6px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-surface);font-size:13px">
+          </div>
+          <div>
+            <label style="display:block;font-size:12px;font-weight:600;margin-bottom:4px">輕量 Provider</label>
+            <select id="adminLightweightProvider" style="width:100%;padding:6px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-surface);font-size:13px">
+              <option value="openrouter" ${pol.lightweight_provider === 'openrouter' ? 'selected' : ''}>openrouter (OpenRouter)</option>
+              <option value="gemini" ${pol.lightweight_provider === 'gemini' ? 'selected' : ''}>gemini (Google Direct)</option>
+            </select>
+          </div>
+          <div>
+            <label style="display:block;font-size:12px;font-weight:600;margin-bottom:4px">輕量 Model</label>
+            <input type="text" id="adminLightweightModel" value="${esc(pol.lightweight_model)}" style="width:100%;padding:6px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-surface);font-size:13px">
+          </div>
+        </div>
+
+        <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
+          <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
+            <input type="checkbox" id="adminPrivacySnippet" ${pol.include_source_snippet ? 'checked' : ''}>
+            <span>包含本地程式碼片段 (Privacy Guard)</span>
+          </label>
+          <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
+            <input type="checkbox" id="adminFallback" ${pol.fallback_enabled ? 'checked' : ''}>
+            <span>啟用瞬時錯誤自動備援 (Transient Fallback)</span>
+          </label>
+          <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;color:var(--danger-text);font-weight:600">
+            <input type="checkbox" id="adminAllowPaid" ${pol.allow_paid_models ? 'checked' : ''} onchange="handlePaidModelToggle(this.checked)">
+            <span>允許付費模型 (Cost Guard Opt-in)</span>
+          </label>
+        </div>
+
+        <div id="adminCostGuardAlert" style="display:${pol.allow_paid_models ? 'block' : 'none'};margin-bottom:12px;padding:8px 12px;background:#fce8e6;border:1px solid #fad2cf;border-radius:var(--radius-sm);color:#c5221f;font-size:12px">
+          ⚠ <b>Cost Guard 警示：</b>開啟允許付費模型後，OpenRouter 調用可能產生實際 API 帳單費用，不再保證零成本。
+        </div>
+
+        <div id="adminValidationError" style="display:none;margin-bottom:12px;padding:8px 12px;background:#fce8e6;border:1px solid #fad2cf;border-radius:var(--radius-sm);color:#c5221f;font-size:12px"></div>
+
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+          <input type="password" id="adminApiToken" placeholder="Admin Token (本機服務安全金鑰)" value="" style="padding:6px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-surface);font-size:12px;width:180px" title="本機服務啟動時終端機顯示的 Token，或存於 out/.admin_token">
+          <button class="export-btn" style="background:var(--accent);color:#fff;border-color:var(--accent);font-weight:600" onclick="saveAiPolicyFromUI()">
+            儲存變更 (Save Policy)
+          </button>
+          <button class="export-btn" onclick="copyAiPolicyCliFromUI()">
+            複製 CLI 指令
+          </button>
+          ${pol.has_per_app_override ? `<button class="export-btn" style="color:var(--danger-text);border-color:var(--danger-text)" onclick="resetAiPolicyFromUI()">重置為全域 Policy</button>` : ''}
+          <span style="font-size:11px;color:var(--text-muted);margin-left:auto">本機寫回端點：<code>http://127.0.0.1:8080/api/ai_policy</code></span>
+        </div>
+      </div>
+    `;
+  }
+
+  // Render AI Usage & Quota Observability (Issue #42)
+  const usage = DATA.ai_usage || {
+    total_requests: 0,
+    success_count: 0,
+    error_count: 0,
+    fallback_count: 0,
+    rate_limit_count: 0,
+    free_tier_ratio: null,
+    by_task_type: {},
+    by_provider: {},
+    by_model: {},
+    by_app: {},
+    daily_trend: [],
+    tokens: { status: "unavailable" },
+    cost_guard: { paid_models_ever_allowed: false },
+  };
+
+  const usageBadge = $("aiUsageHeaderBadge");
+  if (usageBadge) {
+    const cg = usage.cost_guard || {};
+    if (usage.total_requests === 0) {
+      usageBadge.innerHTML = `<span class="badge" style="background:var(--bg-subtle)">無調用數據 (No Data)</span>`;
+    } else {
+      usageBadge.innerHTML = cg.paid_models_ever_allowed
+        ? `<span class="badge badge-fatal">曾允許付費模型 (Paid Permitted)</span>`
+        : `<span class="badge badge-active" style="background:#e6f4ea;color:#137333">Free Tier Eligible (免費額度適用)</span>`;
+    }
+  }
+
+  const usageEl = $("aiUsageContent");
+  if (usageEl) {
+    const tok = usage.tokens || {};
+    const tokText = tok.status === "available"
+      ? `Prompt: <b>${fmt(tok.prompt_tokens)}</b> · Output: <b>${fmt(tok.completion_tokens)}</b> · Total: <b>${fmt(tok.total_tokens)}</b> tokens`
+      : `<span style="color:var(--text-muted)">無 Token Metadata（Provider 未回傳，不做虛假估算）</span>`;
+
+    const freePctText = (usage.total_requests > 0 && usage.free_tier_ratio !== null && usage.free_tier_ratio !== undefined)
+      ? `${Math.round(usage.free_tier_ratio * 100)}%`
+      : "—";
+
+    const taskBadges = Object.entries(usage.by_task_type || {}).map(([t, c]) =>
+      `<span class="badge" style="background:var(--bg-surface);border:1px solid var(--border)"><code>${esc(t)}</code>: <b>${c}</b></span>`
+    ).join(" ") || "—";
+
+    const providerBadges = Object.entries(usage.by_provider || {}).map(([p, c]) =>
+      `<span class="badge" style="background:var(--bg-surface);border:1px solid var(--border)"><code>${esc(p)}</code>: <b>${c}</b></span>`
+    ).join(" ") || "—";
+
+    const modelBadges = Object.entries(usage.by_model || {}).map(([m, c]) =>
+      `<span class="badge" style="background:var(--bg-surface);border:1px solid var(--border)"><code>${esc(m)}</code>: <b>${c}</b></span>`
+    ).join(" ") || "—";
+
+    const appBadges = Object.entries(usage.by_app || {}).map(([a, c]) =>
+      `<span class="badge" style="background:var(--bg-surface);border:1px solid var(--border)"><b>${esc(a)}</b>: ${c}</span>`
+    ).join(" ") || "—";
+
+    // Mini Daily Trend Table
+    const dailyRows = (usage.daily_trend || []).map(d => `
+      <tr>
+        <td><code>${esc(d.date)}</code></td>
+        <td><b>${fmt(d.total)}</b></td>
+        <td style="color:var(--good-text)">${fmt(d.success)}</td>
+        <td style="${d.rate_limit > 0 ? 'color:var(--warning-text);font-weight:700' : ''}">${fmt(d.rate_limit)}</td>
+        <td>${fmt(d.fallback)}</td>
+        <td style="${d.error > 0 ? 'color:var(--danger-text)' : ''}">${fmt(d.error)}</td>
+      </tr>
+    `).join("");
+
+    usageEl.innerHTML = `
+      <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(150px, 1fr));gap:12px;margin-bottom:16px">
+        <div style="background:var(--bg-surface);padding:10px 12px;border:1px solid var(--border);border-radius:var(--radius-md)">
+          <div style="font-size:11px;color:var(--text-muted)">總 AI 請求量 (7d)</div>
+          <div style="font-size:20px;font-weight:700;color:var(--text-main);margin-top:2px">${fmt(usage.total_requests)}</div>
+        </div>
+        <div style="background:var(--bg-surface);padding:10px 12px;border:1px solid var(--border);border-radius:var(--radius-md)">
+          <div style="font-size:11px;color:var(--text-muted)">成功請求數</div>
+          <div style="font-size:20px;font-weight:700;color:var(--good-text);margin-top:2px">${fmt(usage.success_count)}</div>
+        </div>
+        <div style="background:var(--bg-surface);padding:10px 12px;border:1px solid var(--border);border-radius:var(--radius-md)">
+          <div style="font-size:11px;color:var(--text-muted)">429 Rate Limit (超額限速)</div>
+          <div style="font-size:20px;font-weight:700;color:${usage.rate_limit_count > 0 ? 'var(--warning-text)' : 'var(--text-main)'};margin-top:2px">${fmt(usage.rate_limit_count)}</div>
+        </div>
+        <div style="background:var(--bg-surface);padding:10px 12px;border:1px solid var(--border);border-radius:var(--radius-md)">
+          <div style="font-size:11px;color:var(--text-muted)">Fallback 備援切換次數</div>
+          <div style="font-size:20px;font-weight:700;color:${usage.fallback_count > 0 ? 'var(--accent)' : 'var(--text-main)'};margin-top:2px">${fmt(usage.fallback_count)}</div>
+        </div>
+        <div style="background:var(--bg-surface);padding:10px 12px;border:1px solid var(--border);border-radius:var(--radius-md)">
+          <div style="font-size:11px;color:var(--text-muted)">失敗請求數 (Error)</div>
+          <div style="font-size:20px;font-weight:700;color:${usage.error_count > 0 ? 'var(--danger-text)' : 'var(--text-main)'};margin-top:2px">${fmt(usage.error_count)}</div>
+        </div>
+        <div style="background:var(--bg-surface);padding:10px 12px;border:1px solid var(--border);border-radius:var(--radius-md)">
+          <div style="font-size:11px;color:var(--text-muted)">Free Tier 適用比例</div>
+          <div style="font-size:20px;font-weight:700;color:var(--good-text);margin-top:2px">${freePctText}</div>
+        </div>
+      </div>
+
+      <div style="font-size:12px;background:var(--bg-surface);border:1px solid var(--border);border-radius:var(--radius-md);padding:12px 14px;margin-bottom:14px">
+        <div style="margin-bottom:8px"><b>Token 消耗量審計：</b> ${tokText}</div>
+        <div style="margin-bottom:8px"><b>任務分佈 (Task Distribution)：</b> ${taskBadges}</div>
+        <div style="margin-bottom:8px"><b>Provider 分佈：</b> ${providerBadges}</div>
+        <div style="margin-bottom:8px"><b>模型分佈 (Model Distribution)：</b> ${modelBadges}</div>
+        <div><b>應用程式分佈 (By App)：</b> ${appBadges}</div>
+      </div>
+
+      ${dailyRows ? `
+      <div style="margin-bottom:10px">
+        <div style="font-size:12px;font-weight:700;margin-bottom:6px">每日呼叫趨勢明細 (Daily Trend)</div>
+        <table class="data-table" style="font-size:12px">
+          <thead>
+            <tr><th>日期</th><th>總請求</th><th>成功</th><th>429 限速</th><th>備援</th><th>錯誤</th></tr>
+          </thead>
+          <tbody>${dailyRows}</tbody>
+        </table>
+      </div>
+      ` : ''}
+
+      <div style="font-size:11px;color:var(--text-muted);background:var(--bg-subtle);padding:8px 12px;border-radius:var(--radius-sm);border:1px solid var(--border);line-height:1.5">
+        ℹ <b>計費聲明：</b>OpenRouter 輕量任務鎖定 Free Worker（如 <code>openrouter/free</code>）；Gemini 深度分析使用 Gemini 3.8 Flash 之 Google Free Tier 配額，超出每日配額或綁定計費帳號可能產生費用，實際以 Google Cloud Console 帳單為準。
+      </div>
+    `;
+  }
+}
+
+// Interactive Policy Action Helpers (Issue #41)
+function handlePaidModelToggle(checked) {
+  const alertEl = $("adminCostGuardAlert");
+  if (alertEl) {
+    alertEl.style.display = checked ? "block" : "none";
+  }
+}
+
+function getAiPolicyFormValues() {
+  const tokenInput = $("adminApiToken");
+  const inputVal = tokenInput ? tokenInput.value.trim() : "";
+  const token = inputVal || localStorage.getItem("ai_admin_token") || "";
+  if (inputVal) {
+    localStorage.setItem("ai_admin_token", inputVal);
+  }
+  return {
+    mode: $("adminModeSelect") ? $("adminModeSelect").value : "auto",
+    primary_provider: $("adminPrimaryProvider") ? $("adminPrimaryProvider").value : "gemini",
+    primary_model: $("adminPrimaryModel") ? $("adminPrimaryModel").value.trim() : "",
+    lightweight_provider: $("adminLightweightProvider") ? $("adminLightweightProvider").value : "openrouter",
+    lightweight_model: $("adminLightweightModel") ? $("adminLightweightModel").value.trim() : "",
+    include_source_snippet: $("adminPrivacySnippet") ? $("adminPrivacySnippet").checked : true,
+    fallback_enabled: $("adminFallback") ? $("adminFallback").checked : false,
+    allow_paid_models: $("adminAllowPaid") ? $("adminAllowPaid").checked : false,
+    admin_token: token,
+  };
+}
+
+async function saveAiPolicyFromUI() {
+  const vals = getAiPolicyFormValues();
+  const errEl = $("adminValidationError");
+  if (errEl) errEl.style.display = "none";
+
+  // Client-side Free Guard check (both OpenRouter and Gemini)
+  if (!vals.allow_paid_models) {
+    const isFreeOR = (m) => !m || m === "openrouter/free" || m.endsWith(":free");
+    const verifiedFreeGemini = new Set([
+      "gemini-3.8-flash",
+      "gemini-3.7-flash",
+      "gemini-3.6-flash",
+      "gemini-3.5-flash",
+      "gemini-3.1-flash-lite",
+      "gemini-2.5-flash",
+      "gemini-2.5-flash-lite",
+      "gemini-2.0-flash",
+      "gemini-2.0-flash-001",
+      "gemini-2.0-flash-lite",
+      "gemini-2.0-flash-lite-preview-02-05",
+      "gemini-1.5-flash",
+      "gemini-1.5-flash-8b",
+    ]);
+    const isFreeGemini = (m) => {
+      if (!m) return false;
+      const s = m.toLowerCase().replace(/^models\//, "");
+      return verifiedFreeGemini.has(s);
+    };
+
+    if (vals.primary_provider === "openrouter" && !isFreeOR(vals.primary_model)) {
+      if (errEl) {
+        errEl.textContent = `Cost Guard 攔截：未勾選允許付費模型時，主力模型不得設定為付費 OpenRouter 模型 '${vals.primary_model}'！`;
+        errEl.style.display = "block";
+      }
+      return;
+    }
+    if (vals.primary_provider === "gemini" && !isFreeGemini(vals.primary_model)) {
+      if (errEl) {
+        errEl.textContent = `Cost Guard 攔截：未勾選允許付費模型時，Gemini 主力模型不得設定為非 Free Tier 模型 '${vals.primary_model}'！Google Standard Free Tier 僅適用 Flash 系列模型（如 gemini-3.8-flash），Pro / Preview 模型需勾選允許付費。`;
+        errEl.style.display = "block";
+      }
+      return;
+    }
+    if (vals.lightweight_provider === "openrouter" && !isFreeOR(vals.lightweight_model)) {
+      if (errEl) {
+        errEl.textContent = `Cost Guard 攔截：未勾選允許付費模型時，輕量任務模型不得設定為 '${vals.lightweight_model}'！請改為 openrouter/free 或勾選允許付費模型。`;
+        errEl.style.display = "block";
+      }
+      return;
+    }
+    if (vals.lightweight_provider === "gemini" && !isFreeGemini(vals.lightweight_model)) {
+      if (errEl) {
+        errEl.textContent = `Cost Guard 攔截：未勾選允許付費模型時，Gemini 輕量模型不得設定為非 Free Tier 模型 '${vals.lightweight_model}'！請改用 Flash 系列模型或勾選允許付費模型。`;
+        errEl.style.display = "block";
+      }
+      return;
+    }
+  }
+
+  if (vals.allow_paid_models) {
+    const ok = window.confirm("【Cost Guard 安全確認】\n您正在啟用付費模型支援，這可能導致 AI 呼叫產生額外費用。\n確定要儲存此設定嗎？");
+    if (!ok) return;
+  }
+
+  try {
+    const headers = { "Content-Type": "application/json" };
+    if (vals.admin_token) {
+      headers["X-Admin-Token"] = vals.admin_token;
+    }
+    const res = await fetch("http://127.0.0.1:8080/api/ai_policy", {
+      method: "POST",
+      headers: headers,
+      body: JSON.stringify({
+        app_name: curAppId,
+        updates: {
+          mode: vals.mode,
+          primary_provider: vals.primary_provider,
+          primary_model: vals.primary_model,
+          lightweight_provider: vals.lightweight_provider,
+          lightweight_model: vals.lightweight_model,
+          include_source_snippet: vals.include_source_snippet,
+          fallback_enabled: vals.fallback_enabled,
+          allow_paid_models: vals.allow_paid_models,
+        },
+        explicit_paid_opt_in: vals.allow_paid_models,
+      }),
+    });
+    if (res.status === 401) {
+      alert("【認證失敗 (401)】Admin Token 無效或未提供。\n請於控制台「Admin Token」欄位輸入服務啟動時終端機顯示的金鑰（或查看 out/.admin_token 檔案）。");
+      return;
+    }
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.error || `HTTP ${res.status}`);
+    }
+    const updated = await res.json();
+    if (DATA.apps[curAppId]) {
+      DATA.apps[curAppId].ai_policy = updated;
+    }
+    renderSettings();
+    showToast("✓ AI Policy 已成功儲存至 apps.yaml，將於下次管線執行生效！");
+  } catch (err) {
+    const cliCmd = `python3 -m crash_trend.ai_config_service --app ${curAppId} --mode ${vals.mode} --primary-provider ${vals.primary_provider} --primary-model ${vals.primary_model} --lightweight-provider ${vals.lightweight_provider} --lightweight-model ${vals.lightweight_model} ${vals.allow_paid_models ? '--allow-paid-models true --confirm-paid-opt-in' : '--allow-paid-models false'}`;
+    navigator.clipboard.writeText(cliCmd).catch(() => {});
+    alert(`本地 Admin API 服務尚未啟動 (http://127.0.0.1:8080)。\n您可執行「python3 -m crash_trend.ai_config_service --serve 8080」開啟一鍵即時寫回。\n\n已為您複製對應 CLI 指令到剪貼簿：\n${cliCmd}`);
+  }
+}
+
+function copyAiPolicyCliFromUI() {
+  const vals = getAiPolicyFormValues();
+  const cliCmd = `python3 -m crash_trend.ai_config_service --app ${curAppId} --mode ${vals.mode} --primary-provider ${vals.primary_provider} --primary-model ${vals.primary_model} --lightweight-provider ${vals.lightweight_provider} --lightweight-model ${vals.lightweight_model} ${vals.allow_paid_models ? '--allow-paid-models true --confirm-paid-opt-in' : '--allow-paid-models false'}`;
+  navigator.clipboard.writeText(cliCmd).then(() => {
+    showToast("已複製 CLI 管理指令到剪貼簿");
+  }).catch(() => {
+    alert("CLI 指令：\n" + cliCmd);
+  });
+}
+
+async function resetAiPolicyFromUI() {
+  const ok = window.confirm(`確定要清除 App「${curAppId}」的專屬 AI 設定，並回復至 Global Policy 嗎？`);
+  if (!ok) return;
+
+  const vals = getAiPolicyFormValues();
+  try {
+    const headers = { "Content-Type": "application/json" };
+    if (vals.admin_token) {
+      headers["X-Admin-Token"] = vals.admin_token;
+    }
+    const res = await fetch("http://127.0.0.1:8080/api/ai_policy/reset", {
+      method: "POST",
+      headers: headers,
+      body: JSON.stringify({ app_name: curAppId }),
+    });
+    if (res.status === 401) {
+      alert("【認證失敗 (401)】Admin Token 無效或未提供。\n請於控制台「Admin Token」欄位輸入服務啟動時終端機顯示的金鑰。");
+      return;
+    }
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.error || `HTTP ${res.status}`);
+    }
+    const updated = await res.json();
+    if (DATA.apps[curAppId]) {
+      DATA.apps[curAppId].ai_policy = updated;
+    }
+    renderSettings();
+    showToast(`✓ 已重置 App「${curAppId}」為 Global Policy`);
+  } catch (err) {
+    const cliCmd = `python3 -m crash_trend.ai_config_service --app ${curAppId} --reset`;
+    navigator.clipboard.writeText(cliCmd).catch(() => {});
+    alert(`本地 Admin API 服務未啟動，已複製重置指令：\n${cliCmd}`);
+  }
 }
 
 // Full Render
