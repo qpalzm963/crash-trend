@@ -183,6 +183,23 @@ SQLS: Dict[str, str] = {
         GROUP BY 1, 2
         ORDER BY events DESC
         LIMIT 3000""",
+    # 5.6. 版本生命週期與歷史目錄（以權威 COUNT(DISTINCT installation_uuid) 提取版本 Lifetime 統計）
+    "version_catalog": """
+        SELECT
+            application.display_version AS app_version,
+            MIN(event_timestamp) AS first_seen,
+            MAX(event_timestamp) AS last_seen,
+            COUNT(*) AS crash_events,
+            COUNT(DISTINCT installation_uuid) AS affected_users,
+            COUNTIF(error_type = 'FATAL' OR (error_type IS NULL AND is_fatal IS TRUE)) AS fatal_events,
+            COUNTIF(error_type = 'ANR') AS anr_events,
+            COUNT(DISTINCT issue_id) AS issues_count
+        FROM `{table}`
+        WHERE event_timestamp >= TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL {catalog_days} DAY))
+          AND event_timestamp < TIMESTAMP_ADD(TIMESTAMP(CURRENT_DATE()), INTERVAL 1 DAY)
+        GROUP BY 1
+        ORDER BY crash_events DESC
+        LIMIT 100""",
     # 6. 維度分布：機型
     "by_device": """
         SELECT
@@ -877,6 +894,7 @@ def transform_bq_to_v2(
     }
 
     raw_catalog_rows: List[dict] = []
+    raw_version_catalog_rows: List[dict] = []
     tables_map = (bq_result or {}).get("tables") or {}
     for table_name, t_data in tables_map.items():
         if isinstance(t_data, dict):
@@ -894,14 +912,28 @@ def transform_bq_to_v2(
                         "users": iv.get("users", 0),
                         "platform": pf,
                     })
+            vc_rows = t_data.get("version_catalog")
+            if vc_rows:
+                for vr in vc_rows:
+                    raw_version_catalog_rows.append({**vr, "platform": pf})
 
     try:
         from crash_trend.lifecycle import enrich_app_data_with_lifecycle
-        enrich_app_data_with_lifecycle(result_data, app_name=app_id, catalog_rows=raw_catalog_rows)
+        enrich_app_data_with_lifecycle(
+            result_data,
+            app_name=app_id,
+            catalog_rows=raw_catalog_rows,
+            version_catalog_rows=raw_version_catalog_rows,
+        )
     except ImportError:
         try:
             from lifecycle import enrich_app_data_with_lifecycle
-            enrich_app_data_with_lifecycle(result_data, app_name=app_id, catalog_rows=raw_catalog_rows)
+            enrich_app_data_with_lifecycle(
+                result_data,
+                app_name=app_id,
+                catalog_rows=raw_catalog_rows,
+                version_catalog_rows=raw_version_catalog_rows,
+            )
         except ImportError:
             pass
 
@@ -992,6 +1024,9 @@ def main() -> None:
                     continue
                 if name == "lifecycle_catalog" and p_days != max_period:
                     # lifecycle_catalog queries full 90-day retention and only needs to be queried once per table
+                    continue
+                if name == "version_catalog" and p_days != max_period:
+                    # version_catalog queries full 90-day retention and only needs to be queried once per table
                     continue
                 tasks.append((p_days, table, name, sql))
 

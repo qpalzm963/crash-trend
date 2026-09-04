@@ -16,6 +16,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 try:
     from crash_trend.ai_provider import get_ai_provider, get_ai_router
@@ -59,6 +61,11 @@ def run_stage_process(
     current_env = dict(os.environ)
     if env:
         current_env.update(env)
+    if "PYTHONPATH" in current_env and current_env["PYTHONPATH"]:
+        if str(ROOT) not in current_env["PYTHONPATH"].split(os.pathsep):
+            current_env["PYTHONPATH"] = f"{ROOT}{os.pathsep}{current_env['PYTHONPATH']}"
+    else:
+        current_env["PYTHONPATH"] = str(ROOT)
 
     proc = subprocess.run(
         cmd,

@@ -182,8 +182,23 @@ def main() -> None:
                     "top_os": None,
                 }
 
+    has_existing_v2_analysis = (
+        "enriched_v2" in locals()
+        and isinstance(enriched_v2, dict)
+        and enriched_v2.get("ai_summary", {}).get("status") == "available"
+    )
+
     decision = router.route("deep_analysis")
-    if router.is_configured(task_type="deep_analysis"):
+    if has_existing_v2_analysis:
+        ai_summary = enriched_v2["ai_summary"]
+        analysis_map = {
+            str(it.get("issue_id", "")): it.get("ai_analysis")
+            for it in enriched_v2.get("top_issues", [])
+            if it.get("ai_analysis")
+        }
+        for i in scored:
+            i["ai_analysis"] = analysis_map.get(str(i.get("issue_id", "")), generate_disabled_issue_analysis())
+    elif router.is_configured(task_type="deep_analysis"):
         snippets = []
         if router.config.include_source_snippet:
             for i in scored[:args.top]:

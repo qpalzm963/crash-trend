@@ -19,7 +19,7 @@ except ImportError:
     from typing_extensions import NotRequired  # type: ignore
 
 SCHEMA_VERSION = "2.3.0"
-SUPPORTED_SCHEMA_VERSIONS = {"2.0", "2.3", "2.3.0"}
+SUPPORTED_SCHEMA_VERSIONS = {"2.0", "2.3", "2.3.0", "2.6", "2.6.0"}
 
 # ---------------------------------------------------------------------------
 # TypedDict Definitions (Required by default)
@@ -297,15 +297,86 @@ class CatalogIssueHistory(TypedDict):
     last_updated: str
 
 
+ReleaseStatus = Literal["latest", "active", "legacy"]
+
+
+class ReleaseRecentHealth(TypedDict):
+    crash_events: int
+    affected_users: int
+    sessions_total: Optional[int]
+    crash_free_users_rate: Optional[float]
+    crash_free_sessions_rate: Optional[float]
+    adoption_rate: Optional[float]
+    fatal_events: int
+    anr_events: int
+    new_issues_count: int
+    sample_sufficient: bool
+    status: str
+    trend: str
+    crash_rate: NotRequired[Optional[float]]
+
+
+class PreviousReleaseComparison(TypedDict):
+    previous_version: Optional[str]
+    crash_rate_change_pct: Optional[float]
+    crash_free_users_diff: Optional[float]
+    fatal_change_pct: Optional[float]
+    anr_change_pct: Optional[float]
+    new_issues_diff: Optional[int]
+    stability: Literal["improving", "stable", "degrading", "baseline"]
+    fatal_rate_change_pct: NotRequired[Optional[float]]
+    anr_rate_change_pct: NotRequired[Optional[float]]
+    new_issues_count: NotRequired[Optional[int]]
+    stability_status: NotRequired[Optional[str]]
+
+
+class ReleaseIssueLifecycle(TypedDict):
+    introduced_count: int
+    persistent_count: int
+    regressed_count: int
+    resolved_count: int
+    introduced: List[str]
+    persistent: List[str]
+    regressed: List[str]
+    resolved: List[str]
+
+
+class ReleaseCatalogItem(TypedDict):
+    version: str
+    platform: Literal["ios", "android"]
+    first_seen: Optional[str]
+    last_seen: Optional[str]
+    release_date: Optional[str]
+    status: ReleaseStatus
+    lifetime_crashes: int
+    lifetime_issues: int
+    lifetime_affected_users: int
+    lifetime_fatal: int
+    lifetime_anr: int
+    recent_health: Dict[str, ReleaseRecentHealth]
+    stability_status: NotRequired[Optional[str]]
+    issue_lifecycle: NotRequired[ReleaseIssueLifecycle]
+    vs_previous: NotRequired[Optional[PreviousReleaseComparison]]
+
+
 class CatalogVersionHistory(TypedDict):
     version: str
     platform: Literal["ios", "android"]
-    status: Literal["latest", "active", "maintenance", "deprecated"]
+    status: Literal["latest", "active", "maintenance", "deprecated", "legacy"]
     adoption_rate: Optional[float]
     sessions_total: Optional[int]
     crash_events: int
     sample_sufficient: bool
     last_updated: str
+    first_seen: NotRequired[Optional[str]]
+    last_seen: NotRequired[Optional[str]]
+    release_date: NotRequired[Optional[str]]
+    lifetime_crashes: NotRequired[int]
+    lifetime_issues: NotRequired[int]
+    lifetime_affected_users: NotRequired[int]
+    lifetime_fatal: NotRequired[int]
+    lifetime_anr: NotRequired[int]
+    recent_health: NotRequired[Dict[str, Any]]
 
 
 class HistoricalCatalogData(TypedDict):
@@ -365,6 +436,7 @@ class AppPeriodSnapshot(TypedDict):
     ai_summary: NotRequired[Optional[AISummary]]
     status: NotRequired[SnapshotStatus]
     error_message: NotRequired[Optional[str]]
+    release_catalog: NotRequired[Optional[List[ReleaseCatalogItem]]]
 
 
 class AppDashboardV2Data(TypedDict):
@@ -380,6 +452,7 @@ class AppDashboardV2Data(TypedDict):
     limitations: List[str]
     periods: NotRequired[Dict[str, AppPeriodSnapshot]]
     ai_policy: NotRequired[Optional[Dict[str, Any]]]
+    release_catalog: NotRequired[Optional[List[ReleaseCatalogItem]]]
 
 
 class DashboardV2Bundle(TypedDict):
@@ -508,6 +581,83 @@ def validate_issue_lifecycle(lc: Any, errors: List[str], p: str = "") -> None:
                 errors.append(f"{p}lifecycle.confidence must be high, medium, or low")
             if "versions_seen" in lc and (not isinstance(lc["versions_seen"], int) or lc["versions_seen"] < 0):
                 errors.append(f"{p}lifecycle.versions_seen must be a non-negative integer")
+
+
+def validate_release_catalog(catalog: Any, errors: List[str], p: str = "") -> None:
+    """Validates a list of ReleaseCatalogItem objects against Schema V2.6 rules."""
+    if catalog is None:
+        return
+    if not isinstance(catalog, list):
+        errors.append(f"{p}release_catalog must be a list")
+        return
+
+    valid_statuses = {"latest", "active", "legacy"}
+    valid_stabilities = {"improving", "stable", "degrading", "baseline"}
+
+    for idx, item in enumerate(catalog):
+        cp = f"{p}release_catalog[{idx}]."
+        if not isinstance(item, dict):
+            errors.append(f"{p}release_catalog[{idx}] must be an object")
+            continue
+
+        for req_f in (
+            "version", "platform", "status", "lifetime_crashes", "lifetime_issues",
+            "lifetime_affected_users", "lifetime_fatal", "lifetime_anr", "recent_health"
+        ):
+            if req_f not in item:
+                errors.append(f"{cp}{req_f} is required")
+
+        if "version" in item and (not isinstance(item["version"], str) or not item["version"]):
+            errors.append(f"{cp}version must be a non-empty string")
+
+        if "platform" in item and item["platform"] not in {"ios", "android"}:
+            errors.append(f"{cp}platform must be 'ios' or 'android'")
+
+        if "status" in item and item["status"] not in valid_statuses:
+            errors.append(f"{cp}status must be one of {valid_statuses}")
+
+        for ts_f in ("first_seen", "last_seen"):
+            if ts_f in item and item[ts_f] is not None:
+                if not is_valid_iso8601_utc(item[ts_f]):
+                    errors.append(f"{cp}{ts_f} must be an ISO 8601 UTC timestamp or null")
+
+        if "release_date" in item and item["release_date"] is not None:
+            if not is_valid_date(item["release_date"]):
+                errors.append(f"{cp}release_date must be YYYY-MM-DD or null")
+
+        for int_f in ("lifetime_crashes", "lifetime_issues", "lifetime_affected_users", "lifetime_fatal", "lifetime_anr"):
+            if int_f in item and (not isinstance(item[int_f], int) or item[int_f] < 0):
+                errors.append(f"{cp}{int_f} must be a non-negative integer")
+
+        if "recent_health" in item:
+            if not isinstance(item["recent_health"], dict):
+                errors.append(f"{cp}recent_health must be an object")
+            else:
+                for w_k, w_val in item["recent_health"].items():
+                    wp = f"{cp}recent_health['{w_k}']."
+                    if not isinstance(w_val, dict):
+                        errors.append(f"{wp}must be an object")
+                        continue
+                    for r_f in ("crash_events", "affected_users", "sample_sufficient"):
+                        if r_f not in w_val:
+                            errors.append(f"{wp}{r_f} is required")
+
+        if "vs_previous" in item and item["vs_previous"] is not None:
+            vp = item["vs_previous"]
+            if not isinstance(vp, dict):
+                errors.append(f"{cp}vs_previous must be an object or null")
+            else:
+                if "stability" in vp and vp["stability"] not in valid_stabilities:
+                    errors.append(f"{cp}vs_previous.stability must be one of {valid_stabilities}")
+
+        if "issue_lifecycle" in item and item["issue_lifecycle"] is not None:
+            il = item["issue_lifecycle"]
+            if not isinstance(il, dict):
+                errors.append(f"{cp}issue_lifecycle must be an object")
+            else:
+                for cnt_f in ("introduced_count", "persistent_count", "regressed_count", "resolved_count"):
+                    if cnt_f in il and (not isinstance(il[cnt_f], int) or il[cnt_f] < 0):
+                        errors.append(f"{cp}issue_lifecycle.{cnt_f} must be a non-negative integer")
 
 
 def validate_historical_catalog(data: dict) -> List[str]:
@@ -1058,6 +1208,12 @@ def validate_app_dashboard_v2(data: dict, prefix: str = "", require_lifecycle: b
                 if "status" in p_val and p_val["status"] is not None:
                     if p_val["status"] not in ("available", "unavailable", "error", "disabled", "insufficient_data", "stale"):
                         errors.append(f"{p}periods['{p_key}'].status '{p_val['status']}' is invalid")
+                if "release_catalog" in p_val:
+                    validate_release_catalog(p_val.get("release_catalog"), errors, f"{p}periods['{p_key}'].")
+
+    # 12. Release Catalog (Persistent version catalog in V2.6)
+    if "release_catalog" in data:
+        validate_release_catalog(data.get("release_catalog"), errors, p)
 
     return errors
 
