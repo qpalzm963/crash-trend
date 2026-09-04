@@ -583,10 +583,10 @@ class TestAIProviders(unittest.TestCase):
                     ],
                 }
             ],
-            "usage_metadata": {
-                "prompt_token_count": 150,
-                "candidates_token_count": 55,
-                "total_token_count": 205,
+            "usage": {
+                "total_input_tokens": 150,
+                "total_output_tokens": 55,
+                "total_tokens": 205,
             },
         }
         mock_post.return_value = mock_resp
@@ -631,7 +631,12 @@ class TestAIProviders(unittest.TestCase):
         mock_resp_legacy = MagicMock()
         mock_resp_legacy.status_code = 200
         mock_resp_legacy.json.return_value = {
-            "candidates": [{"content": {"parts": [{"text": '{"overview": "Legacy OK", "items": []}'}]}}]
+            "candidates": [{"content": {"parts": [{"text": '{"overview": "Legacy OK", "items": []}'}]}}],
+            "usageMetadata": {
+                "promptTokenCount": 90,
+                "candidatesTokenCount": 30,
+                "totalTokenCount": 120,
+            },
         }
         mock_post.return_value = mock_resp_legacy
         provider_legacy.analyze("Legacy Prompt")
@@ -641,6 +646,27 @@ class TestAIProviders(unittest.TestCase):
         gen_cfg_leg = mock_post.call_args[1]["json"]["generationConfig"]
         self.assertIn("responseSchema", gen_cfg_leg)
         self.assertNotIn("response_format", mock_post.call_args[1]["json"])
+        self.assertEqual(
+            provider_legacy.last_tokens,
+            {"prompt_tokens": 90, "completion_tokens": 30, "total_tokens": 120},
+        )
+
+    def test_gemini_provider_api_type_validation_rejects_typo(self) -> None:
+        """Issue #39: api_type must strictly validate supported types and reject typos with ValueError."""
+        # 1. Valid types succeed
+        p1 = GeminiProvider(api_key="test", api_type="interactions")
+        self.assertEqual(p1._api_type, "interactions")
+        p2 = GeminiProvider(api_key="test", api_type="generate_content")
+        self.assertEqual(p2._api_type, "generate_content")
+
+        # 2. Invalid types or typos raise ValueError
+        with self.assertRaises(ValueError) as ctx:
+            GeminiProvider(api_key="test", api_type="interaction")
+        self.assertIn("Unsupported Gemini api_type", str(ctx.exception))
+
+        with self.assertRaises(ValueError) as ctx2:
+            GeminiProvider(api_key="test", api_type="v1_generate")
+        self.assertIn("Unsupported Gemini api_type", str(ctx2.exception))
 
     @patch("crash_trend.ai_provider.requests.post")
     def test_provider_canonical_schema_parity(self, mock_post: MagicMock) -> None:

@@ -248,6 +248,9 @@ class AIProvider(ABC):
         pass
 
 
+SUPPORTED_GEMINI_API_TYPES = {"interactions", "generate_content"}
+
+
 class GeminiProvider(AIProvider):
     """Google Gemini AI Provider implementation."""
 
@@ -263,7 +266,13 @@ class GeminiProvider(AIProvider):
         self._model = model or os.environ.get("GEMINI_MODEL") or DEFAULT_GEMINI_MODEL
         self._temperature = temperature
         self._use_legacy_schema = use_legacy_schema
-        self._api_type = api_type
+
+        norm_api_type = str(api_type).strip().lower()
+        if norm_api_type not in SUPPORTED_GEMINI_API_TYPES:
+            raise ValueError(
+                f"Unsupported Gemini api_type '{api_type}'. Supported: {sorted(SUPPORTED_GEMINI_API_TYPES)}"
+            )
+        self._api_type = norm_api_type
 
     @property
     def provider_name(self) -> str:
@@ -373,13 +382,33 @@ class GeminiProvider(AIProvider):
 
                 data = r.json()
 
-                # Extract tokens from usage_metadata (Interactions API) or usageMetadata (legacy)
-                usage = data.get("usage_metadata") or data.get("usageMetadata")
+                # Extract tokens from usage (Interactions API: total_input_tokens, total_output_tokens, total_tokens)
+                # or fallback to legacy usage_metadata / usageMetadata (prompt_token_count, etc.)
+                usage = (
+                    data.get("usage")
+                    or data.get("usage_metadata")
+                    or data.get("usageMetadata")
+                )
                 if usage and isinstance(usage, dict):
+                    prompt_tokens = (
+                        usage.get("total_input_tokens")
+                        or usage.get("prompt_token_count")
+                        or usage.get("promptTokenCount")
+                    )
+                    completion_tokens = (
+                        usage.get("total_output_tokens")
+                        or usage.get("candidates_token_count")
+                        or usage.get("candidatesTokenCount")
+                    )
+                    total_tokens = (
+                        usage.get("total_tokens")
+                        or usage.get("total_token_count")
+                        or usage.get("totalTokenCount")
+                    )
                     self.last_tokens = {
-                        "prompt_tokens": usage.get("prompt_token_count") or usage.get("promptTokenCount"),
-                        "completion_tokens": usage.get("candidates_token_count") or usage.get("candidatesTokenCount"),
-                        "total_tokens": usage.get("total_token_count") or usage.get("totalTokenCount"),
+                        "prompt_tokens": prompt_tokens,
+                        "completion_tokens": completion_tokens,
+                        "total_tokens": total_tokens,
                     }
                 else:
                     self.last_tokens = None
