@@ -55,37 +55,38 @@ def is_free_openrouter_model(model: str) -> bool:
     return m == "openrouter/free" or m.endswith(":free")
 
 
-# Gemini models known to offer Standard Free Tier (Gemini Flash family)
+# Gemini models verified to offer Standard Free Tier on Google AI Studio
 FREE_TIER_GEMINI_MODELS = {
     "gemini-3.8-flash",
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-3.1-flash-lite",
     "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
     "gemini-2.0-flash",
     "gemini-2.0-flash-001",
     "gemini-2.0-flash-lite",
+    "gemini-2.0-flash-lite-preview-02-05",
     "gemini-1.5-flash",
     "gemini-1.5-flash-8b",
 }
 
 
 def is_free_gemini_model(model: str) -> bool:
-    """Returns True if the Gemini model is recognized as Standard Free Tier eligible.
+    """Returns True if the Gemini model is explicitly recognized as Standard Free Tier eligible.
 
-    Pro models (e.g. gemini-3.1-pro-preview, gemini-1.5-pro, gemini-2.5-pro) or custom/unknown
-    models require allow_paid_models=True.
+    Unknown models, Pro models (e.g. gemini-3.1-pro-preview, gemini-1.5-pro), and paid-only Flash
+    models (e.g. gemini-2.5-flash-image, gemini-3.1-flash-image) strictly return False and require
+    allow_paid_models=True.
     """
     if not model or not isinstance(model, str):
         return False
     m = model.strip().lower()
     if m.startswith("models/"):
         m = m[len("models/"):]
-    # Pro or preview models strictly require paid opt-in
-    if "pro" in m or "preview" in m:
-        return False
-    if m in FREE_TIER_GEMINI_MODELS:
-        return True
-    if "flash" in m:
-        return True
-    return False
+    # Strict allowlist matching: no fuzzy fallback
+    return m in FREE_TIER_GEMINI_MODELS
 
 
 def is_transient_error(e: Exception) -> bool:

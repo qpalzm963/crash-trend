@@ -116,9 +116,13 @@ def get_effective_ai_policy(
         "primary_model": router_cfg.primary_model,
         "lightweight_provider": router_cfg.lightweight_provider,
         "lightweight_model": router_cfg.lightweight_model,
-        "lightweight_is_free": is_free_openrouter_model(router_cfg.lightweight_model)
-        if router_cfg.lightweight_provider == "openrouter"
-        else True,
+        "lightweight_is_free": (
+            is_free_openrouter_model(router_cfg.lightweight_model)
+            if router_cfg.lightweight_provider == "openrouter"
+            else is_free_gemini_model(router_cfg.lightweight_model)
+            if router_cfg.lightweight_provider == "gemini"
+            else False
+        ),
         "allow_paid_models": router_cfg.allow_paid_models,
         "allow_paid_models_source": paid_source,
         "include_source_snippet": router_cfg.include_source_snippet,

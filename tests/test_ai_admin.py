@@ -247,8 +247,21 @@ class TestAIAdmin(unittest.TestCase):
         self.assertEqual(policy["lightweight_provider"], "openrouter")
 
     def test_8_gemini_cost_guard_blocks_pro_and_unknown_models(self) -> None:
-        """Test 8: Cost Guard strictly blocks Gemini Pro and preview models unless allow_paid_models is explicitly opted in."""
-        # 1. Reject gemini-3.1-pro-preview when allow_paid_models is false
+        """Test 8: Cost Guard strictly blocks Gemini Pro, paid Flash-image, and unknown models unless allow_paid_models is explicitly opted in."""
+        from crash_trend.ai_router import is_free_gemini_model
+
+        # 1. Exact allowlist verification
+        self.assertTrue(is_free_gemini_model("gemini-3.8-flash"))
+        self.assertTrue(is_free_gemini_model("gemini-2.5-flash"))
+        self.assertTrue(is_free_gemini_model("models/gemini-3.8-flash"))
+        # Crucial regression: paid-only Flash image models must be False
+        self.assertFalse(is_free_gemini_model("gemini-2.5-flash-image"))
+        self.assertFalse(is_free_gemini_model("gemini-3.1-flash-image"))
+        self.assertFalse(is_free_gemini_model("gemini-3.1-pro-preview"))
+        self.assertFalse(is_free_gemini_model("gemini-1.5-pro"))
+        self.assertFalse(is_free_gemini_model("gemini-unknown-enterprise"))
+
+        # 2. Reject gemini-3.1-pro-preview when allow_paid_models is false
         with self.assertRaises(ValueError) as ctx1:
             update_ai_policy(
                 app_name="shop_app",
@@ -259,7 +272,18 @@ class TestAIAdmin(unittest.TestCase):
         self.assertIn("Cost Guard Violation", str(ctx1.exception))
         self.assertIn("gemini-3.1-pro-preview", str(ctx1.exception))
 
-        # 2. Reject gemini-1.5-pro for lightweight when allow_paid_models is false
+        # 3. Reject gemini-2.5-flash-image (paid flash image) when allow_paid_models is false
+        with self.assertRaises(ValueError) as ctx_img:
+            update_ai_policy(
+                app_name="shop_app",
+                updates={"primary_provider": "gemini", "primary_model": "gemini-2.5-flash-image"},
+                config_path=self.cfg_path,
+                explicit_paid_opt_in=False,
+            )
+        self.assertIn("Cost Guard Violation", str(ctx_img.exception))
+        self.assertIn("gemini-2.5-flash-image", str(ctx_img.exception))
+
+        # 4. Reject gemini-1.5-pro for lightweight when allow_paid_models is false
         with self.assertRaises(ValueError) as ctx2:
             update_ai_policy(
                 app_name="shop_app",
@@ -270,15 +294,32 @@ class TestAIAdmin(unittest.TestCase):
         self.assertIn("Cost Guard Violation", str(ctx2.exception))
         self.assertIn("gemini-1.5-pro", str(ctx2.exception))
 
-        # 3. Allow when explicit_paid_opt_in=True and allow_paid_models=True
+        # 5. Allow when explicit_paid_opt_in=True and allow_paid_models=True
         policy = update_ai_policy(
             app_name="shop_app",
-            updates={"primary_provider": "gemini", "primary_model": "gemini-3.1-pro-preview", "allow_paid_models": True},
+            updates={"primary_provider": "gemini", "primary_model": "gemini-2.5-flash-image", "allow_paid_models": True},
             config_path=self.cfg_path,
             explicit_paid_opt_in=True,
         )
-        self.assertEqual(policy["primary_model"], "gemini-3.1-pro-preview")
+        self.assertEqual(policy["primary_model"], "gemini-2.5-flash-image")
         self.assertTrue(policy["allow_paid_models"])
+
+        # 6. Provider-aware lightweight_is_free verification
+        pol_paid_gemini = update_ai_policy(
+            app_name="shop_app",
+            updates={"lightweight_provider": "gemini", "lightweight_model": "gemini-2.5-flash-image", "allow_paid_models": True},
+            config_path=self.cfg_path,
+            explicit_paid_opt_in=True,
+        )
+        self.assertFalse(pol_paid_gemini["lightweight_is_free"])
+
+        pol_free_gemini = update_ai_policy(
+            app_name="shop_app",
+            updates={"lightweight_provider": "gemini", "lightweight_model": "gemini-3.8-flash", "allow_paid_models": True},
+            config_path=self.cfg_path,
+            explicit_paid_opt_in=True,
+        )
+        self.assertTrue(pol_free_gemini["lightweight_is_free"])
 
     def test_9_http_post_origin_early_rejection_prevents_side_effects(self) -> None:
         """Test 9: Untrusted Origin is rejected at line 1 of do_POST with 403, preventing any disk write."""

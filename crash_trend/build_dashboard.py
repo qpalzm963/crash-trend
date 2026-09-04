@@ -3689,12 +3689,25 @@ async function saveAiPolicyFromUI() {
   // Client-side Free Guard check (both OpenRouter and Gemini)
   if (!vals.allow_paid_models) {
     const isFreeOR = (m) => !m || m === "openrouter/free" || m.endsWith(":free");
+    const verifiedFreeGemini = new Set([
+      "gemini-3.8-flash",
+      "gemini-3.7-flash",
+      "gemini-3.6-flash",
+      "gemini-3.5-flash",
+      "gemini-3.1-flash-lite",
+      "gemini-2.5-flash",
+      "gemini-2.5-flash-lite",
+      "gemini-2.0-flash",
+      "gemini-2.0-flash-001",
+      "gemini-2.0-flash-lite",
+      "gemini-2.0-flash-lite-preview-02-05",
+      "gemini-1.5-flash",
+      "gemini-1.5-flash-8b",
+    ]);
     const isFreeGemini = (m) => {
       if (!m) return false;
       const s = m.toLowerCase().replace(/^models\//, "");
-      if (s.includes("pro") || s.includes("preview")) return false;
-      const freeList = ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.0-flash-001", "gemini-2.0-flash-lite", "gemini-1.5-flash", "gemini-1.5-flash-8b"];
-      return freeList.includes(s) || s.includes("flash");
+      return verifiedFreeGemini.has(s);
     };
 
     if (vals.primary_provider === "openrouter" && !isFreeOR(vals.primary_model)) {
