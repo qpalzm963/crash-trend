@@ -393,7 +393,8 @@ class IssueHistoricalCatalog:
             recent_health = dict(existing.get("recent_health") or {})
             if window is not None:
                 w_key = str(window)
-                recent_health[w_key] = {
+                clean_w = w_key.rstrip("d")
+                w_data = {
                     "crash_events": int(events),
                     "affected_users": int(users),
                     "sessions_total": sessions,
@@ -401,12 +402,17 @@ class IssueHistoricalCatalog:
                     "crash_free_sessions_rate": v.get("crash_free_sessions_rate"),
                     "adoption_rate": adoption,
                     "fatal_events": int(v.get("fatal_events", 0)),
+                    "fatal_count": int(v.get("fatal_events", 0)),
                     "anr_events": int(v.get("anr_events", 0)),
+                    "anr_count": int(v.get("anr_events", 0)),
                     "new_issues_count": int(v.get("new_issues_count", 0)),
+                    "active_issues_count": int(v.get("new_issues_count", 0)),
                     "sample_sufficient": is_suff,
                     "status": status,
                     "trend": v.get("trend") or "stable",
                 }
+                recent_health[clean_w] = w_data
+                recent_health[f"{clean_w}d"] = w_data
 
             self.app_versions[pf][ver] = {
                 "version": ver,
@@ -561,19 +567,22 @@ class IssueHistoricalCatalog:
             if ts_last:
                 v_obj["last_seen"] = max(v_obj["last_seen"], ts_last) if v_obj.get("last_seen") else ts_last
 
-            ev_count = row.get("crash_events") if row.get("crash_events") is not None else row.get("events")
+            ev_count = row.get("crash_events") if row.get("crash_events") is not None else (row.get("lifetime_crashes") if row.get("lifetime_crashes") is not None else row.get("events"))
             if ev_count is not None:
                 v_obj["lifetime_crashes"] = max(v_obj.get("lifetime_crashes", 0), int(ev_count))
                 v_obj["crash_events"] = v_obj["lifetime_crashes"]
-            usr_count = row.get("affected_users") if row.get("affected_users") is not None else row.get("users")
+            usr_count = row.get("affected_users") if row.get("affected_users") is not None else (row.get("lifetime_affected_users") if row.get("lifetime_affected_users") is not None else (row.get("lifetime_users") if row.get("lifetime_users") is not None else row.get("users")))
             if usr_count is not None:
                 v_obj["lifetime_affected_users"] = max(v_obj.get("lifetime_affected_users", 0), int(usr_count))
-            if row.get("fatal_events") is not None:
-                v_obj["lifetime_fatal"] = max(v_obj.get("lifetime_fatal", 0), int(row["fatal_events"]))
-            if row.get("anr_events") is not None:
-                v_obj["lifetime_anr"] = max(v_obj.get("lifetime_anr", 0), int(row["anr_events"]))
-            if row.get("issues_count") is not None:
-                v_obj["lifetime_issues"] = max(v_obj.get("lifetime_issues", 0), int(row["issues_count"]))
+            fat_count = row.get("fatal_events") if row.get("fatal_events") is not None else row.get("lifetime_fatal")
+            if fat_count is not None:
+                v_obj["lifetime_fatal"] = max(v_obj.get("lifetime_fatal", 0), int(fat_count))
+            anr_count = row.get("anr_events") if row.get("anr_events") is not None else row.get("lifetime_anr")
+            if anr_count is not None:
+                v_obj["lifetime_anr"] = max(v_obj.get("lifetime_anr", 0), int(anr_count))
+            iss_count = row.get("issues_count") if row.get("issues_count") is not None else row.get("lifetime_issues")
+            if iss_count is not None:
+                v_obj["lifetime_issues"] = max(v_obj.get("lifetime_issues", 0), int(iss_count))
 
             if iid:
                 canonical_key = self._canonical_key(pf, iid)
@@ -743,12 +752,15 @@ class IssueHistoricalCatalog:
                     if iss_f_ver == ver:
                         introduced_ids.append(iid)
                     elif ver in iss_vers:
-                        if iss.get("reappeared_version") == ver:
+                        if v_prev and v_prev in iss_vers:
+                            persistent_ids.append(iid)
+                        elif iss.get("reappeared_version") == ver or (iss_f_ver and version_key(iss_f_ver) < ver_key_val):
                             regressed_ids.append(iid)
                         else:
                             persistent_ids.append(iid)
-                    elif iss_f_ver and version_key(iss_f_ver) < ver_key_val:
-                        if is_ver_sufficient:
+                    else:
+                        # ver not in iss_vers: only count as resolved if it was active in immediate previous version
+                        if v_prev and v_prev in iss_vers and is_ver_sufficient:
                             resolved_ids.append(iid)
 
                 issue_lifecycle: ReleaseIssueLifecycle = {
@@ -760,6 +772,10 @@ class IssueHistoricalCatalog:
                     "persistent": persistent_ids,
                     "regressed": regressed_ids,
                     "resolved": resolved_ids,
+                    "introduced_issues": introduced_ids,
+                    "persistent_issues": persistent_ids,
+                    "regressed_issues": regressed_ids,
+                    "resolved_issues": resolved_ids,
                 }
 
                 recent_health: Dict[str, ReleaseRecentHealth] = {}
@@ -772,7 +788,7 @@ class IssueHistoricalCatalog:
                         (item for item in snap_vh if str(item.get("version", "")).strip() == ver and item.get("platform") in (pf, "all")),
                         None,
                     )
-                    cached_recent = v_info.get("recent_health", {}).get(w_key)
+                    cached_recent = v_info.get("recent_health", {}).get(w_key) or v_info.get("recent_health", {}).get(f"{w_key}d")
 
                     if match_item:
                         ev = int(match_item.get("crash_events") or 0)
@@ -787,16 +803,18 @@ class IssueHistoricalCatalog:
 
                         snap_fatal = 0
                         snap_anr = 0
-                        for s_iss in (snap.get("top_issues") or []):
-                            if s_iss.get("platform") == pf:
-                                for v_dist in s_iss.get("version_distribution") or []:
-                                    if v_dist.get("version") == ver:
-                                        if s_iss.get("error_type") == "FATAL":
-                                            snap_fatal += int(v_dist.get("events") or 0)
-                                        elif s_iss.get("error_type") == "ANR":
-                                            snap_anr += int(v_dist.get("events") or 0)
+                        snap_pf_issues = [s_iss for s_iss in (snap.get("top_issues") or []) if s_iss.get("platform") in (pf, "all", None)]
+                        for s_iss in snap_pf_issues:
+                            for v_dist in s_iss.get("version_distribution") or []:
+                                if v_dist.get("version") == ver:
+                                    if s_iss.get("error_type") == "FATAL":
+                                        snap_fatal += int(v_dist.get("events") or 0)
+                                    elif s_iss.get("error_type") == "ANR":
+                                        snap_anr += int(v_dist.get("events") or 0)
 
-                        recent_health[w_key] = {
+                        new_iss_cnt = len([i for i in snap_pf_issues if i.get("first_seen_version") == ver])
+
+                        w_entry = {
                             "crash_events": ev,
                             "affected_users": usr,
                             "sessions_total": sess,
@@ -804,16 +822,32 @@ class IssueHistoricalCatalog:
                             "crash_free_sessions_rate": cfs,
                             "adoption_rate": adopt,
                             "fatal_events": snap_fatal,
+                            "fatal_count": snap_fatal,
                             "anr_events": snap_anr,
-                            "new_issues_count": len([i for i in (snap.get("top_issues") or []) if i.get("first_seen_version") == ver]),
+                            "anr_count": snap_anr,
+                            "new_issues_count": new_iss_cnt,
+                            "active_issues_count": new_iss_cnt,
                             "sample_sufficient": suff,
                             "status": st,
                             "trend": tr,
                         }
+                        recent_health[w_key] = w_entry
+                        recent_health[f"{w_key}d"] = w_entry
                     elif cached_recent:
-                        recent_health[w_key] = cached_recent
+                        c_copy = dict(cached_recent)
+                        f_cnt = c_copy.get("fatal_count") if c_copy.get("fatal_count") is not None else c_copy.get("fatal_events", 0)
+                        a_cnt = c_copy.get("anr_count") if c_copy.get("anr_count") is not None else c_copy.get("anr_events", 0)
+                        i_cnt = c_copy.get("active_issues_count") if c_copy.get("active_issues_count") is not None else c_copy.get("new_issues_count", 0)
+                        c_copy["fatal_count"] = f_cnt
+                        c_copy["fatal_events"] = f_cnt
+                        c_copy["anr_count"] = a_cnt
+                        c_copy["anr_events"] = a_cnt
+                        c_copy["active_issues_count"] = i_cnt
+                        c_copy["new_issues_count"] = i_cnt
+                        recent_health[w_key] = c_copy
+                        recent_health[f"{w_key}d"] = c_copy
                     else:
-                        recent_health[w_key] = {
+                        empty_entry = {
                             "crash_events": 0,
                             "affected_users": 0,
                             "sessions_total": None,
@@ -821,32 +855,67 @@ class IssueHistoricalCatalog:
                             "crash_free_sessions_rate": None,
                             "adoption_rate": None,
                             "fatal_events": 0,
+                            "fatal_count": 0,
                             "anr_events": 0,
+                            "anr_count": 0,
                             "new_issues_count": 0,
+                            "active_issues_count": 0,
                             "sample_sufficient": False,
                             "status": "inactive" if status == "legacy" else status,
                             "trend": "stable",
                         }
+                        recent_health[w_key] = empty_entry
+                        recent_health[f"{w_key}d"] = empty_entry
 
                 vs_previous: Optional[PreviousReleaseComparison] = None
                 if v_prev:
                     prev_info = self.app_versions.get(pf, {}).get(v_prev, {})
-                    prev_crashes = max(int(prev_info.get("lifetime_crashes") or 0), int(prev_info.get("crash_events") or 0))
-                    prev_sessions = prev_info.get("sessions_total")
-                    curr_sessions = v_info.get("sessions_total")
+                    prev_recent = prev_info.get("recent_health", {})
 
+                    # Find matching window for normalized exposure comparison
                     crash_rate_diff: Optional[float] = None
-                    if curr_sessions and prev_sessions and curr_sessions > 0 and prev_sessions > 0:
-                        rate_curr = lt_crashes / curr_sessions
-                        rate_prev = prev_crashes / prev_sessions
-                        crash_rate_diff = round((rate_curr - rate_prev) / rate_prev, 4) if rate_prev > 0 else 0.0
-                    elif lt_users > 0 and (prev_info.get("lifetime_affected_users") or 0) > 0:
-                        rate_curr = lt_crashes / lt_users
-                        rate_prev = prev_crashes / float(prev_info.get("lifetime_affected_users") or 1)
-                        crash_rate_diff = round((rate_curr - rate_prev) / rate_prev, 4) if rate_prev > 0 else 0.0
+                    comp_w = None
+                    for candidate_w in ("30", "90", "7"):
+                        c_w = recent_health.get(candidate_w)
+                        p_w = prev_recent.get(candidate_w)
+                        if c_w and p_w and c_w.get("sessions_total") and p_w.get("sessions_total"):
+                            comp_w = candidate_w
+                            break
+
+                    if comp_w:
+                        c_w = recent_health[comp_w]
+                        p_w = prev_recent[comp_w]
+                        c_ev = int(c_w.get("crash_events") or 0)
+                        c_se = int(c_w.get("sessions_total") or 0)
+                        p_ev = int(p_w.get("crash_events") or 0)
+                        p_se = int(p_w.get("sessions_total") or 0)
+                        if c_se > 0 and p_se > 0:
+                            rate_curr = c_ev / c_se
+                            rate_prev = p_ev / p_se
+                            crash_rate_diff = round((rate_curr - rate_prev) / rate_prev, 4) if rate_prev > 0 else 0.0
+                    else:
+                        c_sess = v_info.get("sessions_total")
+                        p_sess = prev_info.get("sessions_total")
+                        c_ev = v_info.get("crash_events")
+                        p_ev = prev_info.get("crash_events")
+                        if c_sess and p_sess and c_sess > 0 and p_sess > 0 and c_ev is not None and p_ev is not None:
+                            rate_curr = int(c_ev) / c_sess
+                            rate_prev = int(p_ev) / p_sess
+                            crash_rate_diff = round((rate_curr - rate_prev) / rate_prev, 4) if rate_prev > 0 else 0.0
 
                     cfu_curr = v_info.get("crash_free_users_rate")
+                    if cfu_curr is None:
+                        for rh in recent_health.values():
+                            if isinstance(rh, dict) and rh.get("crash_free_users_rate") is not None:
+                                cfu_curr = rh["crash_free_users_rate"]
+                                break
                     cfu_prev = prev_info.get("crash_free_users_rate")
+                    if cfu_prev is None:
+                        for rh in prev_recent.values():
+                            if isinstance(rh, dict) and rh.get("crash_free_users_rate") is not None:
+                                cfu_prev = rh["crash_free_users_rate"]
+                                break
+
                     cfu_diff: Optional[float] = None
                     if cfu_curr is not None and cfu_prev is not None:
                         cfu_diff = round(cfu_curr - cfu_prev, 4)

@@ -375,16 +375,7 @@ class GeminiProvider(AIProvider):
                     timeout=300,
                 )
                 if r.status_code in (429, 500, 503) and attempt < 3:
-                    wait_time = 2.0 * attempt
-                    if r.status_code == 429:
-                        import re
-                        text_val = r.text if isinstance(getattr(r, "text", None), str) else ""
-                        m = re.search(r"retry in ([0-9.]+)s", text_val) if text_val else None
-                        if m:
-                            wait_time = max(wait_time, float(m.group(1)) + 1.0)
-                        else:
-                            wait_time = 15.0 * attempt
-                    time.sleep(wait_time)
+                    time.sleep(2 * attempt)
                     continue
                 if r.status_code != 200:
                     raise RuntimeError(f"Gemini API 回傳狀態碼 {r.status_code}：{r.text[:300]}")
@@ -681,9 +672,6 @@ def get_ai_router(
     try:
         from .ai_router import get_ai_router as _get_ai_router
     except ImportError:
-        try:
-            from crash_trend.ai_router import get_ai_router as _get_ai_router
-        except ImportError:
-            from ai_router import get_ai_router as _get_ai_router
+        from crash_trend.ai_router import get_ai_router as _get_ai_router
     return _get_ai_router(app_cfg=app_cfg, global_cfg=global_cfg)
 

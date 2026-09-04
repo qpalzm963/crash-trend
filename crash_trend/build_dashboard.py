@@ -3480,9 +3480,9 @@ function renderReleasesTable() {
 
     tbody.innerHTML = filtered.map(v => {
       let stabBadge = "";
-      if (v.stability_status === "improved") {
+      if (v.stability_status === "improved" || v.stability_status === "improving") {
         stabBadge = '<span class="badge badge-stability-improving">改善 ↗</span>';
-      } else if (v.stability_status === "regressed") {
+      } else if (v.stability_status === "regressed" || v.stability_status === "degrading") {
         stabBadge = '<span class="badge badge-stability-degrading">惡化 ↘</span>';
       } else if (v.stability_status === "stable") {
         stabBadge = '<span class="badge badge-stability-stable">穩定 →</span>';
@@ -3493,8 +3493,9 @@ function renderReleasesTable() {
       let vsPrevHtml = '<span class="mono-num" style="color:var(--text-muted);font-size:11.5px">—</span>';
       if (v.vs_previous && v.vs_previous.previous_version) {
         const vp = v.vs_previous;
-        const rateVal = vp.crash_rate_change_pct != null ? `${vp.crash_rate_change_pct > 0 ? '+' : ''}${vp.crash_rate_change_pct.toFixed(1)}%` : '—';
-        const colorClass = (vp.crash_rate_change_pct != null && vp.crash_rate_change_pct > 0) ? 'color:var(--danger)' : ((vp.crash_rate_change_pct != null && vp.crash_rate_change_pct < 0) ? 'color:var(--success)' : 'color:var(--text-muted)');
+        const ratePct = vp.crash_rate_change_pct != null ? vp.crash_rate_change_pct * 100 : null;
+        const rateVal = ratePct != null ? `${ratePct > 0 ? '+' : ''}${ratePct.toFixed(1)}%` : '—';
+        const colorClass = (ratePct != null && ratePct > 0) ? 'color:var(--danger)' : ((ratePct != null && ratePct < 0) ? 'color:var(--success)' : 'color:var(--text-muted)');
         vsPrevHtml = `
           <div style="font-size:11.5px;line-height:1.2">
             <span style="color:var(--text-muted)">vs ${esc(vp.previous_version)}</span>
@@ -3593,9 +3594,9 @@ function openReleaseDetail(ver, pf) {
   curDetailWindow = (item.recent_health && item.recent_health[curPeriodDays + "d"]) ? (curPeriodDays + "d") : (winKeys.includes("30d") ? "30d" : (winKeys[0] || "30d"));
 
   let stabBadge = "";
-  if (item.stability_status === "improved") {
+  if (item.stability_status === "improved" || item.stability_status === "improving") {
     stabBadge = '<span class="badge badge-stability-improving">改善 ↗</span>';
-  } else if (item.stability_status === "regressed") {
+  } else if (item.stability_status === "regressed" || item.stability_status === "degrading") {
     stabBadge = '<span class="badge badge-stability-degrading">惡化 ↘</span>';
   } else if (item.stability_status === "stable") {
     stabBadge = '<span class="badge badge-stability-stable">穩定 →</span>';
@@ -3642,11 +3643,16 @@ function renderReleaseModalBody(item) {
   const vp = item.vs_previous;
   let vsPrevHtml = '<div style="font-size:12.5px;color:var(--text-muted)">此版本為該平台最早記錄版本或無可供比較的前版基準。</div>';
   if (vp && vp.previous_version) {
-    const rateChg = vp.crash_rate_change_pct != null ? `${vp.crash_rate_change_pct > 0 ? '+' : ''}${vp.crash_rate_change_pct.toFixed(2)}%` : '—';
+    const ratePct = vp.crash_rate_change_pct != null ? vp.crash_rate_change_pct * 100 : null;
+    const rateChg = ratePct != null ? `${ratePct > 0 ? '+' : ''}${ratePct.toFixed(2)}%` : '—';
     const cfuDiff = vp.crash_free_users_diff != null ? `${vp.crash_free_users_diff > 0 ? '+' : ''}${(vp.crash_free_users_diff * 100).toFixed(2)}%` : '—';
-    const fatalChg = vp.fatal_rate_change_pct != null ? `${vp.fatal_rate_change_pct > 0 ? '+' : ''}${vp.fatal_rate_change_pct.toFixed(2)}%` : '—';
-    const anrChg = vp.anr_rate_change_pct != null ? `${vp.anr_rate_change_pct > 0 ? '+' : ''}${vp.anr_rate_change_pct.toFixed(2)}%` : '—';
-    const newIss = vp.new_issues_count != null ? vp.new_issues_count : 0;
+    const fatalVal = vp.fatal_rate_change_pct != null ? vp.fatal_rate_change_pct : vp.fatal_change_pct;
+    const fatalPct = fatalVal != null ? fatalVal * 100 : null;
+    const fatalChg = fatalPct != null ? `${fatalPct > 0 ? '+' : ''}${fatalPct.toFixed(2)}%` : '—';
+    const anrVal = vp.anr_rate_change_pct != null ? vp.anr_rate_change_pct : vp.anr_change_pct;
+    const anrPct = anrVal != null ? anrVal * 100 : null;
+    const anrChg = anrPct != null ? `${anrPct > 0 ? '+' : ''}${anrPct.toFixed(2)}%` : '—';
+    const newIss = vp.new_issues_count != null ? vp.new_issues_count : (vp.new_issues_diff != null ? vp.new_issues_diff : 0);
 
     vsPrevHtml = `
       <div style="font-size:12.5px;color:var(--text-main);margin-bottom:8px">
@@ -3655,7 +3661,7 @@ function renderReleaseModalBody(item) {
       <div class="release-stat-grid">
         <div class="release-stat-box">
           <div class="release-stat-label">崩潰率變動 (Crash Rate)</div>
-          <div class="release-stat-value ${vp.crash_rate_change_pct > 0 ? 'text-danger' : (vp.crash_rate_change_pct < 0 ? 'text-success' : '')}">${rateChg}</div>
+          <div class="release-stat-value ${ratePct != null && ratePct > 0 ? 'text-danger' : (ratePct != null && ratePct < 0 ? 'text-success' : '')}">${rateChg}</div>
         </div>
         <div class="release-stat-box">
           <div class="release-stat-label">無崩潰用戶率差異 (CFU Diff)</div>
@@ -3680,18 +3686,25 @@ function renderReleaseModalBody(item) {
   // Recent Health Tab
   const recentHealthMap = item.recent_health || {};
   const availWindows = ["7d", "30d", "90d"];
-  const curWinData = recentHealthMap[curDetailWindow] || recentHealthMap["30d"] || recentHealthMap["7d"] || recentHealthMap["90d"] || {};
+  const curWinData = recentHealthMap[curDetailWindow] || recentHealthMap[curDetailWindow.replace("d", "")] || recentHealthMap["30d"] || recentHealthMap["30"] || recentHealthMap["7d"] || recentHealthMap["7"] || recentHealthMap["90d"] || recentHealthMap["90"] || {};
 
   const pillsHtml = availWindows.map(w => {
-    const isActive = w === curDetailWindow;
+    const isActive = w === curDetailWindow || w.replace("d", "") === curDetailWindow;
     return `<button class="sub-pill-btn ${isActive ? 'active' : ''}" onclick="switchReleaseRecentHealthTab('${w}')">${w.toUpperCase()} 近期指標</button>`;
   }).join(" ");
 
   const cfuRate = curWinData.crash_free_users_rate != null ? (curWinData.crash_free_users_rate * 100).toFixed(2) + "%" : "—";
   const cfsRate = curWinData.crash_free_sessions_rate != null ? (curWinData.crash_free_sessions_rate * 100).toFixed(2) + "%" : "—";
+  const fatalCnt = curWinData.fatal_events != null ? curWinData.fatal_events : (curWinData.fatal_count != null ? curWinData.fatal_count : 0);
+  const anrCnt = curWinData.anr_events != null ? curWinData.anr_events : (curWinData.anr_count != null ? curWinData.anr_count : 0);
+  const activeIss = curWinData.active_issues_count != null ? curWinData.active_issues_count : (curWinData.new_issues_count != null ? curWinData.new_issues_count : 0);
 
   // Issue Lifecycle
   const lc = item.issue_lifecycle || { introduced_issues: [], persistent_issues: [], regressed_issues: [], resolved_issues: [] };
+  const introducedList = lc.introduced_issues || lc.introduced || [];
+  const persistentList = lc.persistent_issues || lc.persistent || [];
+  const regressedList = lc.regressed_issues || lc.regressed || [];
+  const resolvedList = lc.resolved_issues || lc.resolved || [];
   const renderIssuePills = (arr, badgeClass) => {
     if (!arr || arr.length === 0) return '<span style="font-size:12px;color:var(--text-muted)">無</span>';
     return arr.map(id => `<span class="badge ${badgeClass}" style="font-family:var(--font-mono);font-size:11px;margin:2px" title="Issue ID: ${esc(id)}">${esc(id.slice(0, 10))}...</span>`).join(" ");
@@ -3766,11 +3779,11 @@ function renderReleaseModalBody(item) {
         </div>
         <div class="release-stat-box">
           <div class="release-stat-label">致命崩潰 / ANR</div>
-          <div class="release-stat-value" style="font-size:15px">${fmt(curWinData.fatal_count != null ? curWinData.fatal_count : 0)} / ${fmt(curWinData.anr_count != null ? curWinData.anr_count : 0)}</div>
+          <div class="release-stat-value" style="font-size:15px">${fmt(fatalCnt)} / ${fmt(anrCnt)}</div>
         </div>
         <div class="release-stat-box">
           <div class="release-stat-label">活躍問題數</div>
-          <div class="release-stat-value">${fmt(curWinData.active_issues_count != null ? curWinData.active_issues_count : 0)}</div>
+          <div class="release-stat-value">${fmt(activeIss)}</div>
         </div>
       </div>
     </div>
@@ -3781,34 +3794,34 @@ function renderReleaseModalBody(item) {
       <div style="display:flex;flex-direction:column;gap:10px">
         <div style="background:var(--bg-subtle);border-radius:var(--radius-sm);padding:10px 12px;border:1px solid var(--border)">
           <div style="font-size:12px;font-weight:600;margin-bottom:6px;display:flex;align-items:center;gap:6px">
-            <span class="badge badge-lifecycle-new">🆕 新引入問題 (${(lc.introduced_issues || []).length})</span>
+            <span class="badge badge-lifecycle-new">🆕 新引入問題 (${introducedList.length})</span>
             <span style="font-size:11px;color:var(--text-muted)">在此版本首度出現</span>
           </div>
-          <div style="display:flex;flex-wrap:wrap;gap:4px">${renderIssuePills(lc.introduced_issues, 'badge-lifecycle-new')}</div>
+          <div style="display:flex;flex-wrap:gap:4px">${renderIssuePills(introducedList, 'badge-lifecycle-new')}</div>
         </div>
 
         <div style="background:var(--bg-subtle);border-radius:var(--radius-sm);padding:10px 12px;border:1px solid var(--border)">
           <div style="font-size:12px;font-weight:600;margin-bottom:6px;display:flex;align-items:center;gap:6px">
-            <span class="badge badge-lifecycle-persistent">🔄 持續存在問題 (${(lc.persistent_issues || []).length})</span>
+            <span class="badge badge-lifecycle-persistent">🔄 持續存在問題 (${persistentList.length})</span>
             <span style="font-size:11px;color:var(--text-muted)">前版已有且此版仍持續發生</span>
           </div>
-          <div style="display:flex;flex-wrap:wrap;gap:4px">${renderIssuePills(lc.persistent_issues, 'badge-lifecycle-persistent')}</div>
+          <div style="display:flex;flex-wrap:wrap;gap:4px">${renderIssuePills(persistentList, 'badge-lifecycle-persistent')}</div>
         </div>
 
         <div style="background:var(--bg-subtle);border-radius:var(--radius-sm);padding:10px 12px;border:1px solid var(--border)">
           <div style="font-size:12px;font-weight:600;margin-bottom:6px;display:flex;align-items:center;gap:6px">
-            <span class="badge badge-lifecycle-regressed">⚡ 再次復發問題 (${(lc.regressed_issues || []).length})</span>
+            <span class="badge badge-lifecycle-regressed">⚡ 再次復發問題 (${regressedList.length})</span>
             <span style="font-size:11px;color:var(--text-muted)">前版曾解決但在此版再次發生</span>
           </div>
-          <div style="display:flex;flex-wrap:wrap;gap:4px">${renderIssuePills(lc.regressed_issues, 'badge-lifecycle-regressed')}</div>
+          <div style="display:flex;flex-wrap:wrap;gap:4px">${renderIssuePills(regressedList, 'badge-lifecycle-regressed')}</div>
         </div>
 
         <div style="background:var(--bg-subtle);border-radius:var(--radius-sm);padding:10px 12px;border:1px solid var(--border)">
           <div style="font-size:12px;font-weight:600;margin-bottom:6px;display:flex;align-items:center;gap:6px">
-            <span class="badge badge-lifecycle-resolved">✅ 已修復解決問題 (${(lc.resolved_issues || []).length})</span>
+            <span class="badge badge-lifecycle-resolved">✅ 已修復解決問題 (${resolvedList.length})</span>
             <span style="font-size:11px;color:var(--text-muted)">前版存在但在此版未再出現</span>
           </div>
-          <div style="display:flex;flex-wrap:wrap;gap:4px">${renderIssuePills(lc.resolved_issues, 'badge-lifecycle-resolved')}</div>
+          <div style="display:flex;flex-wrap:wrap;gap:4px">${renderIssuePills(resolvedList, 'badge-lifecycle-resolved')}</div>
         </div>
       </div>
     </div>

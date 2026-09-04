@@ -18,7 +18,7 @@ try:
 except ImportError:
     from typing_extensions import NotRequired  # type: ignore
 
-SCHEMA_VERSION = "2.3.0"
+SCHEMA_VERSION = "2.6.0"
 SUPPORTED_SCHEMA_VERSIONS = {"2.0", "2.3", "2.3.0", "2.6", "2.6.0"}
 
 # ---------------------------------------------------------------------------
@@ -314,6 +314,9 @@ class ReleaseRecentHealth(TypedDict):
     status: str
     trend: str
     crash_rate: NotRequired[Optional[float]]
+    fatal_count: NotRequired[int]
+    anr_count: NotRequired[int]
+    active_issues_count: NotRequired[int]
 
 
 class PreviousReleaseComparison(TypedDict):
@@ -339,6 +342,10 @@ class ReleaseIssueLifecycle(TypedDict):
     persistent: List[str]
     regressed: List[str]
     resolved: List[str]
+    introduced_issues: NotRequired[List[str]]
+    persistent_issues: NotRequired[List[str]]
+    regressed_issues: NotRequired[List[str]]
+    resolved_issues: NotRequired[List[str]]
 
 
 class ReleaseCatalogItem(TypedDict):
@@ -1244,8 +1251,8 @@ def validate_dashboard_v2(data: dict) -> List[str]:
     else:
         if default_app and default_app not in apps:
             errors.append(f"Root default_app '{default_app}' is not present in apps dict")
-        is_v2_3 = str(data.get("schema_version", "")).startswith("2.3")
+        is_modern = str(data.get("schema_version", "")).startswith("2.3") or str(data.get("schema_version", "")).startswith("2.6")
         for app_name, app_data in apps.items():
-            errors.extend(validate_app_dashboard_v2(app_data, prefix=f"apps['{app_name}']", require_lifecycle=is_v2_3))
+            errors.extend(validate_app_dashboard_v2(app_data, prefix=f"apps['{app_name}']", require_lifecycle=is_modern))
 
     return errors

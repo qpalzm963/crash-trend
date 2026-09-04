@@ -195,11 +195,10 @@ SQLS: Dict[str, str] = {
             COUNTIF(error_type = 'ANR') AS anr_events,
             COUNT(DISTINCT issue_id) AS issues_count
         FROM `{table}`
-        WHERE event_timestamp >= TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL {catalog_days} DAY))
-          AND event_timestamp < TIMESTAMP_ADD(TIMESTAMP(CURRENT_DATE()), INTERVAL 1 DAY)
+        WHERE event_timestamp IS NOT NULL
         GROUP BY 1
         ORDER BY crash_events DESC
-        LIMIT 100""",
+        LIMIT 500""",
     # 6. 維度分布：機型
     "by_device": """
         SELECT
@@ -895,27 +894,48 @@ def transform_bq_to_v2(
 
     raw_catalog_rows: List[dict] = []
     raw_version_catalog_rows: List[dict] = []
-    tables_map = (bq_result or {}).get("tables") or {}
-    for table_name, t_data in tables_map.items():
-        if isinstance(t_data, dict):
-            pf = extract_platform_from_table(table_name)
-            lc_rows = t_data.get("lifecycle_catalog")
-            if lc_rows:
-                for r in lc_rows:
-                    raw_catalog_rows.append({**r, "platform": pf})
-            else:
-                for iv in t_data.get("issue_versions") or []:
-                    raw_catalog_rows.append({
-                        "issue_id": iv.get("issue_id"),
-                        "app_version": iv.get("app_version"),
-                        "events": iv.get("events", 0),
-                        "users": iv.get("users", 0),
-                        "platform": pf,
-                    })
-            vc_rows = t_data.get("version_catalog")
-            if vc_rows:
-                for vr in vc_rows:
-                    raw_version_catalog_rows.append({**vr, "platform": pf})
+
+    candidate_tables: List[Dict[str, dict]] = []
+    if (bq_result or {}).get("tables"):
+        candidate_tables.append(bq_result["tables"])
+    if isinstance((bq_result or {}).get("periods"), dict):
+        for p_data in bq_result["periods"].values():
+            if isinstance(p_data, dict) and p_data.get("tables"):
+                candidate_tables.append(p_data["tables"])
+
+    seen_lc_keys = set()
+    seen_vc_keys = set()
+
+    for tables_map in candidate_tables:
+        for table_name, t_data in tables_map.items():
+            if isinstance(t_data, dict):
+                pf = extract_platform_from_table(table_name)
+                lc_rows = t_data.get("lifecycle_catalog")
+                if lc_rows:
+                    for r in lc_rows:
+                        k = (pf, str(r.get("issue_id")), str(r.get("app_version")))
+                        if k not in seen_lc_keys:
+                            seen_lc_keys.add(k)
+                            raw_catalog_rows.append({**r, "platform": pf})
+                else:
+                    for iv in t_data.get("issue_versions") or []:
+                        k = (pf, str(iv.get("issue_id")), str(iv.get("app_version")))
+                        if k not in seen_lc_keys:
+                            seen_lc_keys.add(k)
+                            raw_catalog_rows.append({
+                                "issue_id": iv.get("issue_id"),
+                                "app_version": iv.get("app_version"),
+                                "events": iv.get("events", 0),
+                                "users": iv.get("users", 0),
+                                "platform": pf,
+                            })
+                vc_rows = t_data.get("version_catalog")
+                if vc_rows:
+                    for vr in vc_rows:
+                        k = (pf, str(vr.get("app_version") or vr.get("version")))
+                        if k not in seen_vc_keys:
+                            seen_vc_keys.add(k)
+                            raw_version_catalog_rows.append({**vr, "platform": pf})
 
     try:
         from crash_trend.lifecycle import enrich_app_data_with_lifecycle

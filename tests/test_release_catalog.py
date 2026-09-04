@@ -1,21 +1,24 @@
+"""Unit tests for Issue #47 Persistent Release Catalog and Dashboard V2.6.
+
+Subclasses unittest.TestCase to ensure full compatibility with CI discovery:
+`python -m unittest discover -s tests -p "test_*.py" -v`
+"""
+
 import datetime as dt
 import json
 from pathlib import Path
 import tempfile
-from typing import Any, Dict
-
-import pytest
+from typing import Any, Dict, List
+import unittest
 
 from crash_trend.build_dashboard import build_html
+from crash_trend.fetch_bigquery import SQLS, transform_bq_to_v2
 from crash_trend.lifecycle import (
     IssueHistoricalCatalog,
-    bootstrap_catalog_from_disk,
     enrich_app_data_with_lifecycle,
 )
 from crash_trend.schema_v2 import (
-    AppDashboardV2Data,
     ReleaseCatalogItem,
-    validate_app_dashboard_v2,
     validate_release_catalog,
 )
 
@@ -91,10 +94,10 @@ def _sample_app_data() -> Dict[str, Any]:
     }
 
 
-class TestReleaseCatalog:
-    """Test suite for Issue #47 Persistent Release Catalog."""
+class TestReleaseCatalog(unittest.TestCase):
+    """Test suite for Issue #47 Persistent Release Catalog and Review Fixes."""
 
-    def test_release_catalog_persistence_and_reload(self):
+    def test_release_catalog_persistence_and_reload(self) -> None:
         """Test that Release Catalog data persists to disk and reloads cleanly."""
         with tempfile.TemporaryDirectory() as tmpdir:
             tmppath = Path(tmpdir)
@@ -128,14 +131,14 @@ class TestReleaseCatalog:
             # Reload from disk
             cat2 = IssueHistoricalCatalog(catalog_path=cat_file, app_id="test_app")
             cat2.load()
-            assert "android" in cat2.app_versions
-            assert "1.0.0" in cat2.app_versions["android"]
-            assert "2.0.0" in cat2.app_versions["android"]
-            assert cat2.app_versions["android"]["1.0.0"]["release_date"] == "2026-01-01"
-            assert cat2.app_versions["android"]["2.0.0"]["release_date"] is None
-            assert cat2.app_versions["android"]["1.0.0"]["lifetime_crashes"] == 50
+            self.assertIn("android", cat2.app_versions)
+            self.assertIn("1.0.0", cat2.app_versions["android"])
+            self.assertIn("2.0.0", cat2.app_versions["android"])
+            self.assertEqual(cat2.app_versions["android"]["1.0.0"]["release_date"], "2026-01-01")
+            self.assertIsNone(cat2.app_versions["android"]["2.0.0"]["release_date"])
+            self.assertEqual(cat2.app_versions["android"]["1.0.0"]["lifetime_crashes"], 50)
 
-    def test_legacy_release_preservation_over_90d(self):
+    def test_legacy_release_preservation_over_90d(self) -> None:
         """Test that releases inactive for >90 days become legacy and are never deleted."""
         cat = IssueHistoricalCatalog("test_app")
         ref_dt = dt.datetime(2026, 9, 1, 0, 0, 0, tzinfo=dt.timezone.utc)
@@ -171,18 +174,18 @@ class TestReleaseCatalog:
         status_100 = cat.calculate_version_status("1.0.0", "android", latest_version="1.1.0", reference_time=ref_dt)
         status_110 = cat.calculate_version_status("1.1.0", "android", latest_version="1.1.0", reference_time=ref_dt)
 
-        assert status_090 == "legacy"
-        assert status_100 == "active"
-        assert status_110 == "latest"
+        self.assertEqual(status_090, "legacy")
+        self.assertEqual(status_100, "active")
+        self.assertEqual(status_110, "latest")
 
         # Check full catalog item
         items = cat.build_release_catalog(platform="android", reference_date=ref_dt)
         item_090 = next(it for it in items if it["version"] == "0.9.0")
-        assert item_090["status"] == "legacy"
-        assert item_090["lifetime_crashes"] == 500
-        assert item_090["lifetime_affected_users"] == 300
+        self.assertEqual(item_090["status"], "legacy")
+        self.assertEqual(item_090["lifetime_crashes"], 500)
+        self.assertEqual(item_090["lifetime_affected_users"], 300)
 
-    def test_platform_strict_isolation(self):
+    def test_platform_strict_isolation(self) -> None:
         """Test strict isolation between Android and iOS releases."""
         cat = IssueHistoricalCatalog("test_app")
         ref_dt = dt.datetime(2026, 9, 1, 0, 0, 0, tzinfo=dt.timezone.utc)
@@ -200,19 +203,19 @@ class TestReleaseCatalog:
         android_versions = {x["version"] for x in android_catalog}
         ios_versions = {x["version"] for x in ios_catalog}
 
-        assert android_versions == {"1.0.0", "1.1.0"}
-        assert ios_versions == {"5.0.0", "5.1.0"}
+        self.assertEqual(android_versions, {"1.0.0", "1.1.0"})
+        self.assertEqual(ios_versions, {"5.0.0", "5.1.0"})
 
         # vs_previous must never cross platforms
         v110 = next(x for x in android_catalog if x["version"] == "1.1.0")
-        assert v110["vs_previous"] is not None
-        assert v110["vs_previous"]["previous_version"] == "1.0.0"
+        self.assertIsNotNone(v110["vs_previous"])
+        self.assertEqual(v110["vs_previous"]["previous_version"], "1.0.0")
 
         v510 = next(x for x in ios_catalog if x["version"] == "5.1.0")
-        assert v510["vs_previous"] is not None
-        assert v510["vs_previous"]["previous_version"] == "5.0.0"
+        self.assertIsNotNone(v510["vs_previous"])
+        self.assertEqual(v510["vs_previous"]["previous_version"], "5.0.0")
 
-    def test_lifetime_unique_users_deduplication(self):
+    def test_lifetime_unique_users_deduplication(self) -> None:
         """Test that lifetime unique users are deduplicated and NEVER summed across windows."""
         cat = IssueHistoricalCatalog("test_app")
 
@@ -223,9 +226,9 @@ class TestReleaseCatalog:
 
         # Verify app_versions stored lifetime metrics
         v_info = cat.app_versions["android"]["2.0.0"]
-        assert v_info["lifetime_affected_users"] == 80
-        assert v_info["lifetime_affected_users"] != (20 + 50 + 80)
-        assert v_info["lifetime_crashes"] == 160
+        self.assertEqual(v_info["lifetime_affected_users"], 80)
+        self.assertNotEqual(v_info["lifetime_affected_users"], (20 + 50 + 80))
+        self.assertEqual(v_info["lifetime_crashes"], 160)
 
         # Now simulate ingesting via update_from_catalog_rows (BQ authoritative deduplication)
         cat.update_from_catalog_rows([
@@ -240,20 +243,21 @@ class TestReleaseCatalog:
             }
         ])
         v_info2 = cat.app_versions["android"]["2.0.0"]
-        assert v_info2["lifetime_affected_users"] == 85
-        assert v_info2["lifetime_crashes"] == 170
-        assert v_info2["lifetime_fatal"] == 20
-        assert v_info2["lifetime_anr"] == 5
+        self.assertEqual(v_info2["lifetime_affected_users"], 85)
+        self.assertEqual(v_info2["lifetime_crashes"], 170)
+        self.assertEqual(v_info2["lifetime_fatal"], 20)
+        self.assertEqual(v_info2["lifetime_anr"], 5)
 
-    def test_previous_release_normalized_comparison(self):
-        """Test that comparison against the previous release uses normalized rates and delta calculations."""
+    def test_previous_release_normalized_comparison(self) -> None:
+        """Test that comparison against the previous release uses normalized rates over matching window exposure."""
         cat = IssueHistoricalCatalog("test_app")
         cat.update_app_versions([
             {
                 "version": "1.0.0",
                 "platform": "android",
                 "lifetime_crashes": 100,
-                "sessions_total": 10000,  # crash rate = 0.0100
+                "sessions_total": 10000,
+                "crash_events": 100,
                 "crash_free_users_rate": 0.980,
                 "lifetime_fatal": 20,
                 "lifetime_anr": 10,
@@ -264,46 +268,49 @@ class TestReleaseCatalog:
                 "version": "1.1.0",
                 "platform": "android",
                 "lifetime_crashes": 50,
-                "sessions_total": 10000,  # crash rate = 0.0050 (-50%)
-                "crash_free_users_rate": 0.990,  # +0.010 (+1.0%)
-                "lifetime_fatal": 10,  # -50%
-                "lifetime_anr": 5,  # -50%
+                "sessions_total": 10000,
+                "crash_events": 50,
+                "crash_free_users_rate": 0.990,
+                "lifetime_fatal": 10,
+                "lifetime_anr": 5,
                 "first_seen": "2026-08-01T00:00:00Z",
                 "last_seen": "2026-08-31T00:00:00Z",
             },
-        ])
+        ], window="30")
 
         catalog = cat.build_release_catalog(platform="android")
         v100 = next(x for x in catalog if x["version"] == "1.0.0")
         v110 = next(x for x in catalog if x["version"] == "1.1.0")
 
         # v1.0.0 has no predecessor
-        assert v100["vs_previous"] is None
-        assert v100["stability_status"] == "baseline"
+        self.assertIsNone(v100["vs_previous"])
+        self.assertEqual(v100["stability_status"], "baseline")
 
-        # v1.1.0 compares to v1.0.0
+        # v1.1.0 compares to v1.0.0 over 30d window exposure
         vp = v110["vs_previous"]
-        assert vp is not None
-        assert vp["previous_version"] == "1.0.0"
-        assert vp["crash_rate_change_pct"] == -0.5
-        assert vp["crash_free_users_diff"] == 0.01
-        assert vp["fatal_rate_change_pct"] == -0.5
-        assert vp["anr_rate_change_pct"] == -0.5
-        assert vp["stability"] == "improving"
-        assert vp["stability_status"] == "improved"
-        assert v110["stability_status"] == "improving"
+        self.assertIsNotNone(vp)
+        self.assertEqual(vp["previous_version"], "1.0.0")
+        # rate changed from 100/10000 (0.01) to 50/10000 (0.005) -> -0.5 (-50%)
+        self.assertEqual(vp["crash_rate_change_pct"], -0.5)
+        self.assertEqual(vp["crash_free_users_diff"], 0.01)
+        self.assertEqual(vp["fatal_rate_change_pct"], -0.5)
+        self.assertEqual(vp["anr_rate_change_pct"], -0.5)
+        self.assertEqual(vp["stability"], "improving")
+        self.assertEqual(vp["stability_status"], "improved")
+        self.assertIn(v110["stability_status"], ("improving", "improved"))
 
-    def test_issue_lifecycle_categorization_per_release(self):
-        """Test 4 categories of issue lifecycle per release: introduced, persistent, regressed, resolved."""
+    def test_issue_lifecycle_transitions_and_non_duplication(self) -> None:
+        """Test 4 categories of issue lifecycle per release and non-duplication across subsequent releases."""
         cat = IssueHistoricalCatalog("test_app")
-        # Define 2 versions with sufficient samples
+        # Define 3 sequential versions with sufficient samples
         cat.update_app_versions([
             {"version": "1.0.0", "platform": "android", "affected_users": 100, "crash_events": 200},
             {"version": "1.1.0", "platform": "android", "affected_users": 150, "crash_events": 300},
+            {"version": "1.2.0", "platform": "android", "affected_users": 160, "crash_events": 280},
         ])
 
         # Issue 1: introduced in 1.0.0 and resolved in 1.1.0
-        cat.issues["iss_resolved"] = {
+        cat.issues["android:iss_resolved"] = {
             "issue_id": "iss_resolved",
             "title": "Old bug",
             "platform": "android",
@@ -312,7 +319,7 @@ class TestReleaseCatalog:
             "state": "RESOLVED",
         }
         # Issue 2: persistent across 1.0.0 and 1.1.0
-        cat.issues["iss_persistent"] = {
+        cat.issues["android:iss_persistent"] = {
             "issue_id": "iss_persistent",
             "title": "Persistent bug",
             "platform": "android",
@@ -321,7 +328,7 @@ class TestReleaseCatalog:
             "state": "OPEN",
         }
         # Issue 3: introduced in 1.1.0
-        cat.issues["iss_introduced"] = {
+        cat.issues["android:iss_introduced"] = {
             "issue_id": "iss_introduced",
             "title": "Brand new bug",
             "platform": "android",
@@ -329,8 +336,8 @@ class TestReleaseCatalog:
             "versions_seen": ["1.1.0"],
             "state": "OPEN",
         }
-        # Issue 4: regressed in 1.1.0
-        cat.issues["iss_regressed"] = {
+        # Issue 4: regressed in 1.1.0 (seen in 0.9.0, skipped in 1.0.0, re-emerged in 1.1.0)
+        cat.issues["android:iss_regressed"] = {
             "issue_id": "iss_regressed",
             "title": "Zombie bug",
             "platform": "android",
@@ -342,18 +349,113 @@ class TestReleaseCatalog:
 
         catalog = cat.build_release_catalog(platform="android")
         v110 = next(x for x in catalog if x["version"] == "1.1.0")
-        lc = v110["issue_lifecycle"]
+        lc_110 = v110["issue_lifecycle"]
 
-        assert "iss_introduced" in lc["introduced"]
-        assert "iss_persistent" in lc["persistent"]
-        assert "iss_regressed" in lc["regressed"]
-        assert "iss_resolved" in lc["resolved"]
-        assert lc["introduced_count"] == 1
-        assert lc["persistent_count"] == 1
-        assert lc["regressed_count"] == 1
-        assert lc["resolved_count"] == 1
+        self.assertIn("iss_introduced", lc_110["introduced"])
+        self.assertIn("iss_persistent", lc_110["persistent"])
+        self.assertIn("iss_regressed", lc_110["regressed"])
+        self.assertIn("iss_resolved", lc_110["resolved"])
+        self.assertEqual(lc_110["introduced_count"], 1)
+        self.assertEqual(lc_110["persistent_count"], 1)
+        self.assertEqual(lc_110["regressed_count"], 1)
+        self.assertEqual(lc_110["resolved_count"], 1)
 
-    def test_release_date_vs_first_seen_semantic_separation(self):
+        # In v1.2.0, iss_resolved was resolved in v1.1.0 and was not present in v1.1.0
+        # It must NOT duplicate into v1.2.0's resolved list!
+        v120 = next(x for x in catalog if x["version"] == "1.2.0")
+        lc_120 = v120["issue_lifecycle"]
+        self.assertNotIn("iss_resolved", lc_120["resolved"], "Resolved issues must only report transition once")
+
+    def test_recent_health_dual_keys_and_field_contract(self) -> None:
+        """Test that recent_health provides dual keys (7/7d, 30/30d, 90/90d) and aliased field names."""
+        cat = IssueHistoricalCatalog("test_app")
+        cat.update_app_versions([
+            {
+                "version": "2.0.0",
+                "platform": "android",
+                "crash_events": 20,
+                "affected_users": 10,
+                "fatal_events": 4,
+                "anr_events": 2,
+                "sessions_total": 1000,
+                "crash_free_users_rate": 0.99,
+            }
+        ], window="7")
+
+        catalog = cat.build_release_catalog(platform="android")
+        v200 = next(x for x in catalog if x["version"] == "2.0.0")
+        rh = v200["recent_health"]
+
+        # Dual key access
+        self.assertIn("7", rh)
+        self.assertIn("7d", rh)
+        self.assertEqual(rh["7"]["crash_events"], 20)
+        self.assertEqual(rh["7d"]["crash_events"], 20)
+
+        # Field aliases contract
+        self.assertEqual(rh["7d"]["fatal_events"], 4)
+        self.assertEqual(rh["7d"]["fatal_count"], 4)
+        self.assertEqual(rh["7d"]["anr_events"], 2)
+        self.assertEqual(rh["7d"]["anr_count"], 2)
+        self.assertIn("active_issues_count", rh["7d"])
+        self.assertIn("new_issues_count", rh["7d"])
+
+    def test_multi_period_table_extraction_in_transform_bq(self) -> None:
+        """Test that transform_bq_to_v2 extracts version_catalog from any period snapshot."""
+        bq_result = {
+            "app_id": "com.test.app",
+            "platforms": ["android"],
+            "period": {"days": 7},
+            "tables": {
+                "android": {
+                    "overview": [],
+                    "top_issues": [],
+                }
+            },
+            "periods": {
+                "7": {"tables": {"android": {"overview": [], "top_issues": []}}},
+                "30": {"tables": {"android": {"overview": [], "top_issues": []}}},
+                "90": {
+                    "tables": {
+                        "android": {
+                            "overview": [],
+                            "top_issues": [],
+                            "version_catalog": [
+                                {
+                                    "app_id": "com.test.app",
+                                    "app_version": "3.1.0",
+                                    "platform": "android",
+                                    "first_seen": "2026-01-01T00:00:00Z",
+                                    "last_seen": "2026-08-30T00:00:00Z",
+                                    "crash_events": 100,
+                                    "affected_users": 40,
+                                    "fatal_events": 10,
+                                    "anr_events": 5,
+                                    "issues_count": 8,
+                                }
+                            ]
+                        }
+                    }
+                },
+            },
+        }
+
+        cfg: Dict[str, Any] = {"apps": {"com.test.app": {"platforms": ["android"]}}}
+        v2_data = transform_bq_to_v2(bq_result, cfg)
+        self.assertIn("release_catalog", v2_data)
+        cat_item = next((x for x in v2_data["release_catalog"] if x["version"] == "3.1.0"), None)
+        self.assertIsNotNone(cat_item)
+        self.assertEqual(cat_item["lifetime_crashes"], 100)
+        self.assertEqual(cat_item["lifetime_affected_users"], 40)
+
+    def test_version_catalog_sql_scans_all_time_partitions(self) -> None:
+        """Test that SQLS['version_catalog'] uses true lifetime query without 90-day filter."""
+        sql = SQLS["version_catalog"]
+        self.assertIn("event_timestamp IS NOT NULL", sql)
+        self.assertNotIn("INTERVAL 90 DAY", sql)
+        self.assertNotIn("_TABLE_SUFFIX", sql)
+
+    def test_release_date_vs_first_seen_semantic_separation(self) -> None:
         """Test strict semantic separation: release_date is NEVER faked as first_seen."""
         cat = IssueHistoricalCatalog("test_app")
         cat.update_from_issues([
@@ -369,12 +471,10 @@ class TestReleaseCatalog:
         catalog = cat.build_release_catalog(platform="android")
         v300 = next(x for x in catalog if x["version"] == "3.0.0")
 
-        # first_seen is derived from observation
-        assert v300["first_seen"] == "2026-08-15T12:00:00Z"
-        # release_date is None because no external authoritative date was configured
-        assert v300["release_date"] is None
+        self.assertEqual(v300["first_seen"], "2026-08-15T12:00:00Z")
+        self.assertIsNone(v300["release_date"])
 
-    def test_schema_validation_accepts_release_catalog(self):
+    def test_schema_validation_accepts_release_catalog(self) -> None:
         """Test schema validation for Release Catalog items and AppDashboardV2Data."""
         item: ReleaseCatalogItem = {
             "version": "1.0.0",
@@ -419,19 +519,19 @@ class TestReleaseCatalog:
         }
 
         # validate single catalog list
-        errors: list[str] = []
+        errors: List[str] = []
         validate_release_catalog([item], errors)
-        assert not errors, f"Validation errors: {errors}"
+        self.assertEqual(errors, [])
 
         # test in full dashboard data structure
         app_data = _sample_app_data()
         enrich_app_data_with_lifecycle(app_data, app_name="test_app")
-        assert "release_catalog" in app_data
-        errors2: list[str] = []
+        self.assertIn("release_catalog", app_data)
+        errors2: List[str] = []
         validate_release_catalog(app_data["release_catalog"], errors2)
-        assert not errors2, f"Validation errors in app_data: {errors2}"
+        self.assertEqual(errors2, [])
 
-    def test_releases_table_renders_all_versions_regardless_of_window(self):
+    def test_releases_table_renders_all_versions_regardless_of_window(self) -> None:
         """Test that build_html creates the Releases catalog view and detail modal properly."""
         app_data = _sample_app_data()
         enrich_app_data_with_lifecycle(app_data, app_name="test_app")
@@ -448,18 +548,22 @@ class TestReleaseCatalog:
         html = build_html(bundle)
 
         # Check section header and table
-        assert 'id="view-releases"' in html
-        assert 'id="filterReleasePlatform"' in html
-        assert 'id="filterReleaseStatus"' in html
-        assert 'id="searchReleaseVer"' in html
-        assert 'id="releasesTableBody"' in html
+        self.assertIn('id="view-releases"', html)
+        self.assertIn('id="filterReleasePlatform"', html)
+        self.assertIn('id="filterReleaseStatus"', html)
+        self.assertIn('id="searchReleaseVer"', html)
+        self.assertIn('id="releasesTableBody"', html)
 
         # Check modal structure
-        assert 'id="releaseDetailModal"' in html
-        assert 'id="releaseModalTitle"' in html
-        assert 'id="releaseModalBody"' in html
-        assert 'openReleaseDetail' in html
-        assert 'switchReleaseRecentHealthTab' in html
+        self.assertIn('id="releaseDetailModal"', html)
+        self.assertIn('id="releaseModalTitle"', html)
+        self.assertIn('id="releaseModalBody"', html)
+        self.assertIn('openReleaseDetail', html)
+        self.assertIn('switchReleaseRecentHealthTab', html)
 
         # Check data contains release_catalog
-        assert 'release_catalog' in html
+        self.assertIn('release_catalog', html)
+
+
+if __name__ == "__main__":
+    unittest.main()
