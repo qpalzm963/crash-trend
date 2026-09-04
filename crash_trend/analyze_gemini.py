@@ -144,7 +144,6 @@ except ImportError:
         from crash_trend.pipeline_health import sanitize_error_message
 
 
-API = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
 
 def iso_utc_now() -> str:
@@ -468,7 +467,7 @@ def call_gemini(
     api_key: str | None = None,
     model: str | None = None,
 ) -> dict:
-    """呼叫 Gemini generateContent API，強制使用 Structured JSON Schema 輸出（向下相容包裝）。"""
+    """呼叫 Gemini Interactions API，強制使用 Structured JSON Schema 輸出（向下相容包裝）。"""
     provider = GeminiProvider(api_key=api_key, model=model)
     return provider.analyze(payload_text, schema=schema or CANONICAL_AI_RESPONSE_SCHEMA)
 

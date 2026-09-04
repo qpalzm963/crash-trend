@@ -17,6 +17,8 @@ from crash_trend.ai_provider import (
     CANONICAL_AI_RESPONSE_SCHEMA,
     DEFAULT_GEMINI_MODEL,
     DEFAULT_OPENROUTER_MODEL,
+    GEMINI_API_URL_TEMPLATE,
+    GEMINI_INTERACTIONS_API_URL,
     GeminiProvider,
     OpenRouterProvider,
     extract_json_block,
@@ -486,19 +488,22 @@ class TestAIProviders(unittest.TestCase):
         # 1. Default Gemini 3.8 model should NOT send temperature: 0.2
         provider_38 = GeminiProvider(api_key="test-key", model="gemini-3.8-flash")
         provider_38.analyze("Prompt")
-        gen_cfg = mock_post.call_args[1]["json"]["generationConfig"]
+        body = mock_post.call_args[1]["json"]
+        gen_cfg = body.get("generation_config") or body.get("generationConfig") or {}
         self.assertNotIn("temperature", gen_cfg)
 
         # 2. Another 3.x model (e.g. gemini-3.0-flash) also omits temperature
         provider_3_0 = GeminiProvider(api_key="test-key", model="gemini-3.0-flash")
         provider_3_0.analyze("Prompt")
-        gen_cfg_3_0 = mock_post.call_args[1]["json"]["generationConfig"]
+        body_3_0 = mock_post.call_args[1]["json"]
+        gen_cfg_3_0 = body_3_0.get("generation_config") or body_3_0.get("generationConfig") or {}
         self.assertNotIn("temperature", gen_cfg_3_0)
 
         # 3. Explicit temperature override is respected
         provider_override = GeminiProvider(api_key="test-key", model="gemini-3.8-flash", temperature=0.7)
         provider_override.analyze("Prompt")
-        gen_cfg_ov = mock_post.call_args[1]["json"]["generationConfig"]
+        body_ov = mock_post.call_args[1]["json"]
+        gen_cfg_ov = body_ov.get("generation_config") or body_ov.get("generationConfig") or {}
         self.assertEqual(gen_cfg_ov.get("temperature"), 0.7)
 
     def test_global_and_per_app_model_override_gemini(self) -> None:
@@ -560,35 +565,86 @@ class TestAIProviders(unittest.TestCase):
         self.assertEqual(adapted["properties"]["tags"]["items"]["type"], "STRING")
 
     @patch("crash_trend.ai_provider.requests.post")
-    def test_gemini_native_response_json_schema(self, mock_post: MagicMock) -> None:
-        """Issue #39 Test 1: GeminiProvider uses native responseJsonSchema directly without rewrite."""
+    def test_gemini_interactions_api_native_schema(self, mock_post: MagicMock) -> None:
+        """Issue #39 Test 1: GeminiProvider defaults to Interactions API with top-level response_format and steps parsing."""
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = {
-            "candidates": [{"content": {"parts": [{"text": '{"overview": "Native Schema OK", "items": []}'}]}}]
+            "id": "int_789",
+            "model": "gemini-3.8-flash",
+            "steps": [
+                {
+                    "type": "model_output",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": '{"overview": "Interactions API OK", "items": []}',
+                        }
+                    ],
+                }
+            ],
+            "usage_metadata": {
+                "prompt_token_count": 150,
+                "candidates_token_count": 55,
+                "total_token_count": 205,
+            },
         }
         mock_post.return_value = mock_resp
 
-        # 1. Default uses responseJsonSchema with canonical schema directly
+        # 1. Default uses Interactions API with canonical schema directly in response_format
         provider = GeminiProvider(api_key="test-key", model="gemini-3.8-flash")
-        provider.analyze("Analyze Prompt")
-        gen_cfg = mock_post.call_args[1]["json"]["generationConfig"]
-        self.assertIn("responseJsonSchema", gen_cfg)
-        self.assertNotIn("responseSchema", gen_cfg)
-        self.assertEqual(gen_cfg["responseJsonSchema"], CANONICAL_AI_RESPONSE_SCHEMA)
-        self.assertFalse(gen_cfg["responseJsonSchema"]["additionalProperties"])
+        res = provider.analyze("Analyze Prompt")
+        self.assertEqual(res, {"overview": "Interactions API OK", "items": []})
 
-        # 2. Legacy fallback mode (use_legacy_schema=True) uses responseSchema
-        provider_legacy = GeminiProvider(api_key="test-key", model="gemini-3.8-flash", use_legacy_schema=True)
-        provider_legacy.analyze("Analyze Prompt Legacy")
+        # Verify POST target URL
+        called_url = mock_post.call_args[0][0]
+        self.assertEqual(called_url, GEMINI_INTERACTIONS_API_URL)
+
+        # Verify request body has top-level model, input, response_format
+        body = mock_post.call_args[1]["json"]
+        self.assertEqual(body["model"], "gemini-3.8-flash")
+        self.assertEqual(body["input"], "Analyze Prompt")
+        self.assertIn("response_format", body)
+        resp_format = body["response_format"]
+        self.assertEqual(resp_format["type"], "text")
+        self.assertEqual(resp_format["mime_type"], "application/json")
+        self.assertEqual(resp_format["schema"], CANONICAL_AI_RESPONSE_SCHEMA)
+        self.assertFalse(resp_format["schema"]["additionalProperties"])
+
+        # Verify token accounting
+        self.assertEqual(
+            provider.last_tokens,
+            {
+                "prompt_tokens": 150,
+                "completion_tokens": 55,
+                "total_tokens": 205,
+            },
+        )
+
+        # 2. Legacy fallback mode (api_type="generate_content", use_legacy_schema=True)
+        provider_legacy = GeminiProvider(
+            api_key="test-key",
+            model="gemini-3.8-flash",
+            api_type="generate_content",
+            use_legacy_schema=True,
+        )
+        mock_resp_legacy = MagicMock()
+        mock_resp_legacy.status_code = 200
+        mock_resp_legacy.json.return_value = {
+            "candidates": [{"content": {"parts": [{"text": '{"overview": "Legacy OK", "items": []}'}]}}]
+        }
+        mock_post.return_value = mock_resp_legacy
+        provider_legacy.analyze("Legacy Prompt")
+
+        leg_url = mock_post.call_args[0][0]
+        self.assertEqual(leg_url, GEMINI_API_URL_TEMPLATE.format(model="gemini-3.8-flash"))
         gen_cfg_leg = mock_post.call_args[1]["json"]["generationConfig"]
         self.assertIn("responseSchema", gen_cfg_leg)
-        self.assertNotIn("responseJsonSchema", gen_cfg_leg)
-        self.assertNotIn("additionalProperties", gen_cfg_leg["responseSchema"])
+        self.assertNotIn("response_format", mock_post.call_args[1]["json"])
 
     @patch("crash_trend.ai_provider.requests.post")
     def test_provider_canonical_schema_parity(self, mock_post: MagicMock) -> None:
-        """Issue #39 Test 2: Gemini and OpenRouter share the exact same CANONICAL_AI_RESPONSE_SCHEMA."""
+        """Issue #39 Test 2: Gemini Interactions API and OpenRouter share the exact same CANONICAL_AI_RESPONSE_SCHEMA."""
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = {
@@ -603,17 +659,20 @@ class TestAIProviders(unittest.TestCase):
         or_schema = or_body["response_format"]["json_schema"]["schema"]
         self.assertEqual(or_schema, CANONICAL_AI_RESPONSE_SCHEMA)
 
-        # Gemini sends the exact same schema object in responseJsonSchema
+        # Gemini Interactions API sends the exact same schema object in response_format.schema
         gem_provider = GeminiProvider(api_key="test-key", model="gemini-3.8-flash")
         gem_resp = MagicMock()
         gem_resp.status_code = 200
         gem_resp.json.return_value = {
-            "candidates": [{"content": {"parts": [{"text": '{"overview": "Gemini OK", "items": []}'}]}}]
+            "steps": [{
+                "type": "model_output",
+                "content": [{"type": "text", "text": '{"overview": "Gemini OK", "items": []}'}],
+            }]
         }
         mock_post.return_value = gem_resp
         gem_provider.analyze("Gemini Prompt")
         gem_body = mock_post.call_args[1]["json"]
-        gem_schema = gem_body["generationConfig"]["responseJsonSchema"]
+        gem_schema = gem_body["response_format"]["schema"]
         self.assertEqual(gem_schema, or_schema)
         self.assertEqual(gem_schema, CANONICAL_AI_RESPONSE_SCHEMA)
 

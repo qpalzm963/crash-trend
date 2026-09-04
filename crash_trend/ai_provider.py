@@ -19,6 +19,7 @@ import requests
 DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
 DEFAULT_OPENROUTER_MODEL = "google/gemini-2.5-flash"
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+GEMINI_INTERACTIONS_API_URL = "https://generativelanguage.googleapis.com/v1beta/interactions"
 GEMINI_API_URL_TEMPLATE = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
 SUPPORTED_PROVIDERS = {"gemini", "openrouter"}
@@ -256,11 +257,13 @@ class GeminiProvider(AIProvider):
         model: Optional[str] = None,
         temperature: Optional[float] = None,
         use_legacy_schema: bool = False,
+        api_type: str = "interactions",
     ) -> None:
         self._explicit_key = api_key
         self._model = model or os.environ.get("GEMINI_MODEL") or DEFAULT_GEMINI_MODEL
         self._temperature = temperature
         self._use_legacy_schema = use_legacy_schema
+        self._api_type = api_type
 
     @property
     def provider_name(self) -> str:
@@ -308,32 +311,50 @@ class GeminiProvider(AIProvider):
         schema: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         key = self.get_api_key()
-        url = GEMINI_API_URL_TEMPLATE.format(model=self._model)
-
-        generation_config: Dict[str, Any] = {
-            "responseMimeType": "application/json",
-        }
-        if self._temperature is not None:
-            generation_config["temperature"] = self._temperature
-        elif not self._is_gemini_3_x(self._model):
-            generation_config["temperature"] = 0.2
-
-        effective_schema = schema or CANONICAL_AI_RESPONSE_SCHEMA
-        if effective_schema:
-            if self._use_legacy_schema:
-                generation_config["responseSchema"] = to_gemini_schema(effective_schema)
-            else:
-                generation_config["responseJsonSchema"] = effective_schema
-
-        body = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": generation_config,
-        }
-
         headers = {
             "Content-Type": "application/json",
             "x-goog-api-key": key,
         }
+
+        effective_schema = schema or CANONICAL_AI_RESPONSE_SCHEMA
+
+        if self._api_type == "interactions":
+            url = GEMINI_INTERACTIONS_API_URL
+            body: Dict[str, Any] = {
+                "model": self._model,
+                "input": prompt,
+            }
+            if effective_schema:
+                body["response_format"] = {
+                    "type": "text",
+                    "mime_type": "application/json",
+                    "schema": effective_schema,
+                }
+            if self._temperature is not None:
+                body["generation_config"] = {"temperature": self._temperature}
+            elif not self._is_gemini_3_x(self._model):
+                body["generation_config"] = {"temperature": 0.2}
+        else:
+            # Legacy generateContent endpoint fallback (OpenAPI 3.0 or legacy responseJsonSchema)
+            url = GEMINI_API_URL_TEMPLATE.format(model=self._model)
+            generation_config: Dict[str, Any] = {
+                "responseMimeType": "application/json",
+            }
+            if self._temperature is not None:
+                generation_config["temperature"] = self._temperature
+            elif not self._is_gemini_3_x(self._model):
+                generation_config["temperature"] = 0.2
+
+            if effective_schema:
+                if self._use_legacy_schema:
+                    generation_config["responseSchema"] = to_gemini_schema(effective_schema)
+                else:
+                    generation_config["responseJsonSchema"] = effective_schema
+
+            body = {
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": generation_config,
+            }
 
         last_err: Optional[Exception] = None
         for attempt in (1, 2, 3):
@@ -351,17 +372,41 @@ class GeminiProvider(AIProvider):
                     raise RuntimeError(f"Gemini API 回傳狀態碼 {r.status_code}：{r.text[:300]}")
 
                 data = r.json()
-                usage = data.get("usageMetadata")
+
+                # Extract tokens from usage_metadata (Interactions API) or usageMetadata (legacy)
+                usage = data.get("usage_metadata") or data.get("usageMetadata")
                 if usage and isinstance(usage, dict):
                     self.last_tokens = {
-                        "prompt_tokens": usage.get("promptTokenCount"),
-                        "completion_tokens": usage.get("candidatesTokenCount"),
-                        "total_tokens": usage.get("totalTokenCount"),
+                        "prompt_tokens": usage.get("prompt_token_count") or usage.get("promptTokenCount"),
+                        "completion_tokens": usage.get("candidates_token_count") or usage.get("candidatesTokenCount"),
+                        "total_tokens": usage.get("total_token_count") or usage.get("totalTokenCount"),
                     }
                 else:
                     self.last_tokens = None
 
-                text = data["candidates"][0]["content"]["parts"][0]["text"]
+                # Extract text output from Interactions API steps or legacy candidates
+                text = None
+                steps = data.get("steps")
+                if steps and isinstance(steps, list):
+                    for step in steps:
+                        if isinstance(step, dict) and step.get("type") == "model_output":
+                            content_parts = step.get("content") or []
+                            for part in content_parts:
+                                if isinstance(part, dict) and part.get("text"):
+                                    text = part["text"]
+                                    break
+                        if text:
+                            break
+
+                # Backward-compatibility fallback for legacy generateContent candidates structure or output_text
+                if not text and "candidates" in data and data["candidates"]:
+                    text = data["candidates"][0]["content"]["parts"][0]["text"]
+                elif not text and "output_text" in data:
+                    text = data["output_text"]
+
+                if not text:
+                    raise ValueError(f"No text content found in Gemini response: {data}")
+
                 cleaned_text = extract_json_block(text)
                 return json.loads(cleaned_text)
             except (requests.Timeout, requests.ConnectionError) as e:
