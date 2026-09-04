@@ -246,6 +246,83 @@ class TestAIAdmin(unittest.TestCase):
         self.assertEqual(policy["primary_provider"], "gemini")
         self.assertEqual(policy["lightweight_provider"], "openrouter")
 
+    def test_8_gemini_cost_guard_blocks_pro_and_unknown_models(self) -> None:
+        """Test 8: Cost Guard strictly blocks Gemini Pro and preview models unless allow_paid_models is explicitly opted in."""
+        # 1. Reject gemini-3.1-pro-preview when allow_paid_models is false
+        with self.assertRaises(ValueError) as ctx1:
+            update_ai_policy(
+                app_name="shop_app",
+                updates={"primary_provider": "gemini", "primary_model": "gemini-3.1-pro-preview"},
+                config_path=self.cfg_path,
+                explicit_paid_opt_in=False,
+            )
+        self.assertIn("Cost Guard Violation", str(ctx1.exception))
+        self.assertIn("gemini-3.1-pro-preview", str(ctx1.exception))
+
+        # 2. Reject gemini-1.5-pro for lightweight when allow_paid_models is false
+        with self.assertRaises(ValueError) as ctx2:
+            update_ai_policy(
+                app_name="shop_app",
+                updates={"lightweight_provider": "gemini", "lightweight_model": "gemini-1.5-pro"},
+                config_path=self.cfg_path,
+                explicit_paid_opt_in=False,
+            )
+        self.assertIn("Cost Guard Violation", str(ctx2.exception))
+        self.assertIn("gemini-1.5-pro", str(ctx2.exception))
+
+        # 3. Allow when explicit_paid_opt_in=True and allow_paid_models=True
+        policy = update_ai_policy(
+            app_name="shop_app",
+            updates={"primary_provider": "gemini", "primary_model": "gemini-3.1-pro-preview", "allow_paid_models": True},
+            config_path=self.cfg_path,
+            explicit_paid_opt_in=True,
+        )
+        self.assertEqual(policy["primary_model"], "gemini-3.1-pro-preview")
+        self.assertTrue(policy["allow_paid_models"])
+
+    def test_9_http_post_origin_early_rejection_prevents_side_effects(self) -> None:
+        """Test 9: Untrusted Origin is rejected at line 1 of do_POST with 403, preventing any disk write."""
+        import io
+        from unittest.mock import MagicMock
+        from crash_trend.ai_config_service import AIConfigHTTPHandler
+
+        AIConfigHTTPHandler.config_path = self.cfg_path
+        test_token = "valid-token-for-attack"
+        AIConfigHTTPHandler.admin_token = test_token
+
+        # Initial config state for shop_app
+        initial_disk = yaml.safe_load(self.cfg_path.read_text(encoding="utf-8"))
+        initial_mode = initial_disk.get("apps", {}).get("shop_app", {}).get("ai", {}).get("mode")
+
+        post_body = json.dumps({
+            "app_name": "shop_app",
+            "updates": {"mode": "gemini_only"},
+        }).encode("utf-8")
+
+        handler = AIConfigHTTPHandler.__new__(AIConfigHTTPHandler)
+        handler.path = "/api/ai_policy"
+        # Attacker supplies valid token but requests from untrusted Origin
+        handler.headers = {
+            "Content-Length": str(len(post_body)),
+            "Origin": "https://evil-cross-origin.com",
+            "X-Admin-Token": test_token,
+        }
+        handler.rfile = io.BytesIO(post_body)
+        handler.wfile = io.BytesIO()
+        handler.send_response = MagicMock()
+        handler.send_header = MagicMock()
+        handler.end_headers = MagicMock()
+
+        handler.do_POST()
+        handler.send_response.assert_called_with(403)
+        err_res = json.loads(handler.wfile.getvalue().decode("utf-8"))
+        self.assertIn("Forbidden", err_res["error"])
+
+        # Crucial: Disk configuration MUST NOT have been modified!
+        post_disk = yaml.safe_load(self.cfg_path.read_text(encoding="utf-8"))
+        post_mode = post_disk.get("apps", {}).get("shop_app", {}).get("ai", {}).get("mode")
+        self.assertEqual(initial_mode, post_mode)
+
 
 if __name__ == "__main__":
     unittest.main()

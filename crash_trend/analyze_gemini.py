@@ -1053,9 +1053,9 @@ def enrich_app_data_with_priority_and_ai(
             "status": "available",
             "model": f"{triage_active_mod} (triage)",
             "generated_at": now_ts,
-            "overview": f"本期主要問題經輕量 Triage 評估均屬非致命或偶發異常（主分類：{main_cat}），無高危崩潰路徑，已跳過深度分析以節省 Gemini 配額。",
+            "overview": f"本期主要問題經輕量 Triage 評估均屬非致命或偶發異常（主分類：{main_cat}），無高危崩潰路徑，已跳過深度分析以節省 {provider_name} 配額。",
             "key_takeaways": [
-                f"前 {len(scored_issues[:top_limit])} 個核心問題已由 OpenRouter Free Worker 完成初篩分類與打標",
+                f"前 {len(scored_issues[:top_limit])} 個核心問題已由 {triage_active_prov} ({triage_active_mod}) 完成初篩分類與打標",
                 "暫無需要耗費高深度推理排查之核心崩潰",
             ],
             "distribution_insights": f"輕量分類分佈：{', '.join(f'{k} ({v}項)' for k, v in cat_counts.items())}",
@@ -1099,7 +1099,7 @@ def enrich_app_data_with_priority_and_ai(
             "status": "skipped",
             "provider": "none (gated)",
             "model": "none (gated)",
-            "routing_reason": f"Skipped: All {len(scored_issues[:top_limit])} issues triaged as not warranting deep analysis (Gemini quota saved)",
+            "routing_reason": f"Skipped: All {len(scored_issues[:top_limit])} issues triaged as not warranting deep analysis ({provider_name} quota saved)",
             "fallback_used": False,
             "fallback_reason": None,
         }
@@ -1112,7 +1112,7 @@ def enrich_app_data_with_priority_and_ai(
                 "task_type": task_type,
                 "selected_provider": triage_active_prov,
                 "selected_model": triage_active_mod,
-                "routing_reason": "Triage Gating: Skipped deep analysis (100% quota saved)",
+                "routing_reason": f"Triage Gating: Skipped deep analysis (100% {provider_name} quota saved)",
                 "fallback_used": False,
                 "fallback_reason": None,
                 "paid_model_allowed": paid_model_allowed,
@@ -1124,7 +1124,7 @@ def enrich_app_data_with_priority_and_ai(
                 app_data["sources"]["gemini_ai"]["status"] = "disabled"
                 app_data["sources"]["gemini_ai"]["last_sync_timestamp"] = now_ts
                 app_data["sources"]["gemini_ai"]["model"] = model_name
-                app_data["sources"]["gemini_ai"]["error_message"] = "Skipped by Triage Gating: No issues warranting deep analysis"
+                app_data["sources"]["gemini_ai"]["error_message"] = f"Skipped by Triage Gating: No issues warranting deep analysis ({provider_name} quota saved)"
         _sync_periods_priority_and_ai(app_data, prev_app_data=prev_app_data, core_paths=core_paths, latest_ver=latest_ver)
         return app_data
 

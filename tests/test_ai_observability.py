@@ -179,6 +179,45 @@ class TestAIObservability(unittest.TestCase):
         self.assertIsNone(summary["tokens"]["total_tokens"])
         self.assertEqual(summary["daily_trend"], [])
 
+    def test_5_gemini_paid_model_not_counted_in_free_tier(self) -> None:
+        """Test 5: Gemini Pro / preview models are strictly classified as paid, not Free Tier."""
+        records = [
+            # Call 1: Gemini Free Tier eligible Flash model
+            {
+                "timestamp": "2026-09-04T10:00:00Z",
+                "app_id": "test_app",
+                "task_type": "deep_analysis",
+                "provider": "gemini",
+                "model": "gemini-3.8-flash",
+                "status": "success",
+            },
+            # Call 2: Gemini Pro model (Standard Free Tier is NOT available)
+            {
+                "timestamp": "2026-09-04T11:00:00Z",
+                "app_id": "test_app",
+                "task_type": "deep_analysis",
+                "provider": "gemini",
+                "model": "gemini-3.1-pro-preview",
+                "status": "success",
+                "paid_model_allowed": True,
+            },
+            # Call 3: OpenRouter free model
+            {
+                "timestamp": "2026-09-04T12:00:00Z",
+                "app_id": "test_app",
+                "task_type": "issue_triage",
+                "provider": "openrouter",
+                "model": "openrouter/free",
+                "status": "success",
+            },
+        ]
+        summary = aggregate_ai_usage(records, days=7)
+        self.assertEqual(summary["total_requests"], 3)
+        # Only call 1 and call 3 are free tier (2 / 3 = 0.6667), call 2 (Pro) is NOT counted!
+        self.assertEqual(summary["free_tier_count"], 2)
+        self.assertEqual(summary["free_tier_ratio"], 0.6667)
+        self.assertTrue(summary["cost_guard"]["paid_models_ever_allowed"])
+
 
 if __name__ == "__main__":
     unittest.main()

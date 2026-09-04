@@ -3686,12 +3686,41 @@ async function saveAiPolicyFromUI() {
   const errEl = $("adminValidationError");
   if (errEl) errEl.style.display = "none";
 
-  // Client-side Free Guard check
-  if (!vals.allow_paid_models && vals.lightweight_provider === "openrouter" && vals.lightweight_model) {
-    const isFree = vals.lightweight_model === "openrouter/free" || vals.lightweight_model.includes(":free");
-    if (!isFree) {
+  // Client-side Free Guard check (both OpenRouter and Gemini)
+  if (!vals.allow_paid_models) {
+    const isFreeOR = (m) => !m || m === "openrouter/free" || m.endsWith(":free");
+    const isFreeGemini = (m) => {
+      if (!m) return false;
+      const s = m.toLowerCase().replace(/^models\//, "");
+      if (s.includes("pro") || s.includes("preview")) return false;
+      const freeList = ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.0-flash-001", "gemini-2.0-flash-lite", "gemini-1.5-flash", "gemini-1.5-flash-8b"];
+      return freeList.includes(s) || s.includes("flash");
+    };
+
+    if (vals.primary_provider === "openrouter" && !isFreeOR(vals.primary_model)) {
+      if (errEl) {
+        errEl.textContent = `Cost Guard 攔截：未勾選允許付費模型時，主力模型不得設定為付費 OpenRouter 模型 '${vals.primary_model}'！`;
+        errEl.style.display = "block";
+      }
+      return;
+    }
+    if (vals.primary_provider === "gemini" && !isFreeGemini(vals.primary_model)) {
+      if (errEl) {
+        errEl.textContent = `Cost Guard 攔截：未勾選允許付費模型時，Gemini 主力模型不得設定為非 Free Tier 模型 '${vals.primary_model}'！Google Standard Free Tier 僅適用 Flash 系列模型（如 gemini-3.8-flash），Pro / Preview 模型需勾選允許付費。`;
+        errEl.style.display = "block";
+      }
+      return;
+    }
+    if (vals.lightweight_provider === "openrouter" && !isFreeOR(vals.lightweight_model)) {
       if (errEl) {
         errEl.textContent = `Cost Guard 攔截：未勾選允許付費模型時，輕量任務模型不得設定為 '${vals.lightweight_model}'！請改為 openrouter/free 或勾選允許付費模型。`;
+        errEl.style.display = "block";
+      }
+      return;
+    }
+    if (vals.lightweight_provider === "gemini" && !isFreeGemini(vals.lightweight_model)) {
+      if (errEl) {
+        errEl.textContent = `Cost Guard 攔截：未勾選允許付費模型時，Gemini 輕量模型不得設定為非 Free Tier 模型 '${vals.lightweight_model}'！請改用 Flash 系列模型或勾選允許付費模型。`;
         errEl.style.display = "block";
       }
       return;
@@ -3699,7 +3728,7 @@ async function saveAiPolicyFromUI() {
   }
 
   if (vals.allow_paid_models) {
-    const ok = window.confirm("【Cost Guard 安全確認】\n您正在啟用付費模型支援，這可能導致 OpenRouter 呼叫產生額外費用。\n確定要儲存此設定嗎？");
+    const ok = window.confirm("【Cost Guard 安全確認】\n您正在啟用付費模型支援，這可能導致 AI 呼叫產生額外費用。\n確定要儲存此設定嗎？");
     if (!ok) return;
   }
 

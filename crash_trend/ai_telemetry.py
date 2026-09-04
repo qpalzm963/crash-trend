@@ -19,7 +19,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .ai_router import is_free_openrouter_model
+from .ai_router import is_free_gemini_model, is_free_openrouter_model
 from .config import ROOT
 from .pipeline_health import sanitize_error_message
 
@@ -185,11 +185,11 @@ def aggregate_ai_usage(
         if r.get("paid_model_allowed"):
             paid_models_ever_allowed = True
 
-        # Tier breakdown: OpenRouter Free Worker vs Gemini Direct
+        # Tier breakdown: OpenRouter Free Worker vs Gemini Free-Tier Eligible Models
         if prov == "openrouter" and is_free_openrouter_model(model):
             free_tier_count += 1
-        elif prov == "gemini":
-            # Gemini 3.8 Flash is free-tier eligible, but subject to Google AI quota & project billing
+        elif prov == "gemini" and is_free_gemini_model(model):
+            # Gemini Flash models are free-tier eligible, but subject to Google AI quota & project billing
             free_tier_count += 1
 
         # Daily trend

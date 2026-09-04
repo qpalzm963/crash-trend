@@ -32,8 +32,10 @@ from .ai_provider import (
 )
 from .ai_router import (
     DEFAULT_LIGHTWEIGHT_MODEL,
+    FREE_TIER_GEMINI_MODELS,
     SUPPORTED_ROUTING_MODES,
     AIRouterConfig,
+    is_free_gemini_model,
     is_free_openrouter_model,
     resolve_router_config,
 )
@@ -162,23 +164,25 @@ def validate_ai_policy_update(
                 "Cost Guard Security: Enabling paid models requires explicit confirmation (explicit_paid_opt_in=True)"
             )
 
-    # Check models against free guard
-    light_model = updates.get("lightweight_model") or current_policy.get("lightweight_model")
-    light_prov = updates.get("lightweight_provider") or current_policy.get("lightweight_provider")
-    if light_prov == "openrouter" and not allow_paid:
-        if light_model and not is_free_openrouter_model(light_model):
-            raise ValueError(
-                f"Cost Guard Violation: Paid model '{light_model}' is not allowed when allow_paid_models is false. "
-                f"Use 'openrouter/free' or a ':free' suffix model, or explicitly opt in to paid models."
-            )
-
-    primary_model = updates.get("primary_model") or current_policy.get("primary_model")
-    primary_prov = updates.get("primary_provider") or current_policy.get("primary_provider")
-    if primary_prov == "openrouter" and not allow_paid:
-        if primary_model and not is_free_openrouter_model(primary_model):
-            raise ValueError(
-                f"Cost Guard Violation: Paid model '{primary_model}' is not allowed when allow_paid_models is false."
-            )
+    # Check models against Cost Guard for both OpenRouter and Gemini
+    for role, prov_key, model_key in [
+        ("primary", "primary_provider", "primary_model"),
+        ("lightweight", "lightweight_provider", "lightweight_model"),
+    ]:
+        prov = updates.get(prov_key) or current_policy.get(prov_key)
+        model = updates.get(model_key) or current_policy.get(model_key)
+        if not allow_paid and prov and model:
+            if prov == "openrouter" and not is_free_openrouter_model(model):
+                raise ValueError(
+                    f"Cost Guard Violation: Paid OpenRouter model '{model}' for {role} is not allowed when allow_paid_models is false. "
+                    f"Use 'openrouter/free' or a ':free' suffix model, or explicitly opt in to paid models."
+                )
+            elif prov == "gemini" and not is_free_gemini_model(model):
+                raise ValueError(
+                    f"Cost Guard Violation: Gemini model '{model}' for {role} is not recognized as Free Tier eligible when allow_paid_models is false. "
+                    f"Google Standard Free Tier requires a recognized Flash model (e.g. {sorted(FREE_TIER_GEMINI_MODELS)}). "
+                    f"Pro or preview models (e.g. gemini-3.1-pro-preview) require allow_paid_models=True."
+                )
 
 
 def update_ai_policy(
@@ -295,6 +299,23 @@ class AIConfigHTTPHandler(http.server.BaseHTTPRequestHandler):
             return origin
         return None
 
+    def _send_cors_json(self, status: int, data: Dict[str, Any]) -> None:
+        origin = self._get_allowed_origin()
+        if origin is None:
+            self.send_response(403)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(b'{"error": "Forbidden: Untrusted Origin"}')
+            return
+
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Access-Control-Allow-Origin", origin)
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Admin-Token")
+        self.end_headers()
+        self.wfile.write(json.dumps(data, ensure_ascii=False).encode("utf-8"))
+
     def _set_cors_headers(self, status: int = 200) -> bool:
         origin = self._get_allowed_origin()
         if origin is None:
@@ -316,27 +337,41 @@ class AIConfigHTTPHandler(http.server.BaseHTTPRequestHandler):
         self._set_cors_headers(204)
 
     def do_GET(self) -> None:
-        if not self._set_cors_headers(200):
+        allowed_origin = self._get_allowed_origin()
+        if allowed_origin is None:
+            self.send_response(403)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(b'{"error": "Forbidden: Untrusted Origin"}')
             return
+
         parsed = urlparse(self.path)
         if parsed.path == "/api/ai_policy":
             params = parse_qs(parsed.query)
             app_name = params.get("app", [None])[0]
             try:
                 policy = get_effective_ai_policy(app_name=app_name)
-                self.wfile.write(json.dumps(policy, ensure_ascii=False).encode("utf-8"))
+                self._send_cors_json(200, policy)
             except Exception as e:
-                self.wfile.write(json.dumps({"error": sanitize_error_message(str(e))}).encode("utf-8"))
+                self._send_cors_json(400, {"error": sanitize_error_message(str(e))})
         else:
-            self.wfile.write(json.dumps({"error": "Not Found"}).encode("utf-8"))
+            self._send_cors_json(404, {"error": "Not Found"})
 
     def do_POST(self) -> None:
-        # Strict Token Authentication to prevent CSRF / cross-site tampering
+        # 1. Early Origin Whitelist Verification before ANY side effects or body reading
+        allowed_origin = self._get_allowed_origin()
+        if allowed_origin is None:
+            self.send_response(403)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(b'{"error": "Forbidden: Untrusted Origin"}')
+            return
+
+        # 2. Strict Token Authentication
         expected_token = self.admin_token or get_or_create_admin_token()
         provided_token = self.headers.get("X-Admin-Token", "").strip()
         if not provided_token or not hmac.compare_digest(provided_token, expected_token):
-            if self._set_cors_headers(401):
-                self.wfile.write(json.dumps({"error": "Unauthorized: Invalid or missing X-Admin-Token"}).encode("utf-8"))
+            self._send_cors_json(401, {"error": "Unauthorized: Invalid or missing X-Admin-Token"})
             return
 
         parsed = urlparse(self.path)
@@ -345,8 +380,7 @@ class AIConfigHTTPHandler(http.server.BaseHTTPRequestHandler):
         try:
             payload = json.loads(post_body.decode("utf-8"))
         except Exception:
-            if self._set_cors_headers(400):
-                self.wfile.write(json.dumps({"error": "Invalid JSON"}).encode("utf-8"))
+            self._send_cors_json(400, {"error": "Invalid JSON"})
             return
 
         if parsed.path == "/api/ai_policy":
@@ -360,27 +394,21 @@ class AIConfigHTTPHandler(http.server.BaseHTTPRequestHandler):
                     config_path=self.config_path,
                     explicit_paid_opt_in=explicit_opt_in,
                 )
-                if self._set_cors_headers(200):
-                    self.wfile.write(json.dumps(updated, ensure_ascii=False).encode("utf-8"))
+                self._send_cors_json(200, updated)
             except Exception as e:
-                if self._set_cors_headers(400):
-                    self.wfile.write(json.dumps({"error": sanitize_error_message(str(e))}).encode("utf-8"))
+                self._send_cors_json(400, {"error": sanitize_error_message(str(e))})
         elif parsed.path == "/api/ai_policy/reset":
             app_name = payload.get("app_name")
             if not app_name:
-                if self._set_cors_headers(400):
-                    self.wfile.write(json.dumps({"error": "app_name is required for reset"}).encode("utf-8"))
+                self._send_cors_json(400, {"error": "app_name is required for reset"})
                 return
             try:
                 res = reset_app_ai_policy(app_name, config_path=self.config_path)
-                if self._set_cors_headers(200):
-                    self.wfile.write(json.dumps(res, ensure_ascii=False).encode("utf-8"))
+                self._send_cors_json(200, res)
             except Exception as e:
-                if self._set_cors_headers(400):
-                    self.wfile.write(json.dumps({"error": sanitize_error_message(str(e))}).encode("utf-8"))
+                self._send_cors_json(400, {"error": sanitize_error_message(str(e))})
         else:
-            if self._set_cors_headers(404):
-                self.wfile.write(json.dumps({"error": "Not Found"}).encode("utf-8"))
+            self._send_cors_json(404, {"error": "Not Found"})
 
 
 def serve_admin_api(

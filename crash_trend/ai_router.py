@@ -55,6 +55,39 @@ def is_free_openrouter_model(model: str) -> bool:
     return m == "openrouter/free" or m.endswith(":free")
 
 
+# Gemini models known to offer Standard Free Tier (Gemini Flash family)
+FREE_TIER_GEMINI_MODELS = {
+    "gemini-3.8-flash",
+    "gemini-2.5-flash",
+    "gemini-2.0-flash",
+    "gemini-2.0-flash-001",
+    "gemini-2.0-flash-lite",
+    "gemini-1.5-flash",
+    "gemini-1.5-flash-8b",
+}
+
+
+def is_free_gemini_model(model: str) -> bool:
+    """Returns True if the Gemini model is recognized as Standard Free Tier eligible.
+
+    Pro models (e.g. gemini-3.1-pro-preview, gemini-1.5-pro, gemini-2.5-pro) or custom/unknown
+    models require allow_paid_models=True.
+    """
+    if not model or not isinstance(model, str):
+        return False
+    m = model.strip().lower()
+    if m.startswith("models/"):
+        m = m[len("models/"):]
+    # Pro or preview models strictly require paid opt-in
+    if "pro" in m or "preview" in m:
+        return False
+    if m in FREE_TIER_GEMINI_MODELS:
+        return True
+    if "flash" in m:
+        return True
+    return False
+
+
 def is_transient_error(e: Exception) -> bool:
     """Returns True only for transient errors that may recover via fallback.
 
@@ -300,16 +333,23 @@ class AITaskRouter:
                     fallback_target_model = None
 
         # Enforce Free Guard on selected model
-        if selected_provider == "openrouter" and not self.config.allow_paid_models:
-            if not is_free_openrouter_model(selected_model):
+        if not self.config.allow_paid_models:
+            if selected_provider == "openrouter" and not is_free_openrouter_model(selected_model):
                 raise ValueError(
                     f"Paid model '{selected_model}' not allowed when allow_paid_models is false"
                 )
+            elif selected_provider == "gemini" and not is_free_gemini_model(selected_model):
+                raise ValueError(
+                    f"Gemini model '{selected_model}' is not recognized as Free Tier eligible when allow_paid_models is false"
+                )
 
         # Enforce Free Guard on fallback target model
-        if fallback_target_provider == "openrouter" and not self.config.allow_paid_models:
-            if fallback_target_model and not is_free_openrouter_model(fallback_target_model):
+        if not self.config.allow_paid_models:
+            if fallback_target_provider == "openrouter" and fallback_target_model and not is_free_openrouter_model(fallback_target_model):
                 # Cannot fallback to a paid model when allow_paid_models is false
+                fallback_target_provider = None
+                fallback_target_model = None
+            elif fallback_target_provider == "gemini" and fallback_target_model and not is_free_gemini_model(fallback_target_model):
                 fallback_target_provider = None
                 fallback_target_model = None
 
@@ -339,6 +379,10 @@ class AITaskRouter:
                 zdr=self.config.lightweight_zdr,
             )
         elif p_name == "gemini":
+            if not self.config.allow_paid_models and not is_free_gemini_model(model_name):
+                raise ValueError(
+                    f"Gemini model '{model_name}' is not recognized as Free Tier eligible when allow_paid_models is false"
+                )
             key = self.config.primary_api_key or resolve_gemini_key(raise_on_missing=False)
             return GeminiProvider(
                 api_key=key,
