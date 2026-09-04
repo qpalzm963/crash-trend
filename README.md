@@ -1,189 +1,454 @@
 # crash-trend
 
-**Firebase Crashlytics 趨勢分析與 SaaS 儀表板引擎 (Dashboard V2)** — 匯出 BigQuery 崩潰資料 ＋ Firebase Sessions 統計 ＋ MCP 堆疊追蹤 → AI 找 top pattern 與策略摘要 → 產出優先修復清單、月報，與自包含現代 SaaS 儀表板。設定驅動、多 App 共用一套腳本，換公司／換專案 10 分鐘上線。
+**Firebase Crashlytics 趨勢分析與 Dashboard V2.5** — 將 Crashlytics BigQuery、Firebase Sessions 與可選的 Crashlytics MCP 資料整合成可排序的修復優先級、AI 分析、Pipeline Health、週期報表與自包含式 Dashboard。
 
 ![dashboard](docs/screenshot.png)
 
-## 它解決什麼問題
+## 為什麼需要 crash-trend
 
-Crashlytics console 看得到個別 crash，但「哪些 crash 最該先修？」「整體 Crash-free 率與各版本健康度如何？」「集中在哪些機型/版本/用戶族群？」需要人工整理。crash-trend 把這件事變成一條自動化的現代化管線：
+Firebase Crashlytics 很適合查看單一 crash，但要回答下面這些問題，通常仍需要人工整理：
 
+- 哪些 crash / ANR 最值得先修？
+- 最新版本是否正在惡化？
+- Crash-free Users / Sessions 是否下降？
+- 問題集中在哪些版本、裝置或使用者族群？
+- 哪些 issue 需要進一步做 Root Cause 分析？
+- 本週資料源、AI 與同步流程是否正常？
+
+crash-trend 將這些工作整理成一條可重複執行的資料管線：
+
+```text
+Crashlytics BigQuery ──┐
+Firebase Sessions ─────┼─→ fetch / enrich ─→ normalize ─→ deterministic priority (P0~P3)
+Crashlytics MCP ───────┘                                  │
+                                                         ├─→ AI Task Router
+                                                         │    ├─ lightweight triage
+                                                         │    └─ deep analysis
+                                                         │
+                                                         ├─→ dashboard.html
+                                                         ├─→ pipeline health
+                                                         ├─→ surge detection
+                                                         └─→ monthly chat report
 ```
-BigQuery Crashlytics ──┐
-Firebase Sessions ─────┼→ fetch & enrich ─→ analyze_gemini (確定性評分 P0~P3 + AI 策略) ─→ dashboard.html
-Crashlytics MCP / BQ ──┘                     └→ weekly_sync / surge alert / chat 卡片
-```
 
-### Dashboard V2 核心特色
+---
 
-- **現代 SaaS Analytics 風格**：淺色白底卡片設計、8 大功能分頁（總覽、問題列表、版本健康度、裝置分析、發佈版本、通知管線、AI 分析、系統設定）、響應式側邊欄與深淺色主題切換。
-- **Crash-free 率與去重指標**：接入 Firebase Sessions 計算 Crash-free Users 與 Crash-free Sessions；期間去重 Affected Users；Sessions 未開啟時具備明確的 `Unavailable` 狀態，**絕不顯示假 0%**。
-- **確定性 Priority Score ＋ Gemini AI 分析**：
-  - 程式確定性評分：`P0` / `P1` / `P2` / `P3`（依受影響用戶、Fatal/ANR、惡化趨勢、最新版本影響、核心路徑權重加總）。
-  - Gemini AI 策略摘要：首頁 AI Overview、Key Takeaways、推薦行動，以及各問題的 Root Cause 推測與具體修復建議。
-- **元兇定位 (Blame Frame)**：解析關鍵元兇程式碼位置（檔案、行號、方法符號）與完整 Stack Trace，一鍵複製修復 Prompt 貼給 Coding Agent。
-- **自包含與離線可用**：單一 HTML 檔、Chart.js 內嵌、零外部 CDN 依賴，`file://` 本地直接開啟。
-- **多 App 無縫切換**：頂部 Header 支援多 App 下拉切換，URL 帶 `#<app>` 直達指定分頁。
+## Dashboard V2.5 核心能力
+
+### Crash Intelligence Dashboard
+
+- 現代 SaaS Analytics 風格與響應式側邊欄。
+- 8 大功能區：總覽、問題列表、版本健康度、裝置分析、發佈版本、通知管線、AI 分析、系統設定。
+- 支援多 App 切換與 `#<app>` URL hash 直達。
+- 單一 `dashboard.html` 自包含輸出，可直接使用 `file://` 開啟。
+- Docker Compose 另提供 Nginx 靜態服務，預設可從 `http://localhost:8787` 查看。
+
+### Crash-free 與版本健康度
+
+- Crashlytics BigQuery 作為核心 crash / ANR 資料源。
+- Firebase Sessions 可選，用來計算 Crash-free Users / Sessions。
+- 支援期間去重 Affected Users、每日趨勢、版本與裝置分布。
+- Sessions 未啟用或不可用時會明確顯示 `Unavailable` / `未開啟`，不以假 `0%` 代替缺失資料。
+
+### Deterministic Priority Score
+
+每個 issue 先由程式規則計算 `P0` / `P1` / `P2` / `P3`，評分可考慮：
+
+- Affected users
+- Fatal / ANR
+- 趨勢是否惡化
+- 是否影響最新版本
+- 是否命中 `core_paths` 核心業務路徑
+
+AI 不負責取代這個基礎排序；即使沒有 AI Key，核心資料管線仍可產出 Dashboard 與 deterministic priority。
+
+### AI Runtime & Routing
+
+Dashboard V2.5 將 AI 分析拆成兩層：
+
+| 任務 | 預設角色 | 用途 |
+|---|---|---|
+| Lightweight triage | OpenRouter Free Worker | 摘要、分類、標籤、判斷是否值得做深度分析 |
+| Deep analysis | Gemini Direct | Root Cause、Suggested Fix、策略摘要與修復建議 |
+
+目前支援：
+
+- `auto`：輕量任務與深度分析依角色自動路由。
+- `gemini_only`：全部交給 Gemini。
+- `openrouter_only`：全部交給 OpenRouter。
+- **Triage Gating**：低風險 issue 可跳過深度分析，降低不必要的 Gemini 呼叫。
+- **Canonical JSON Schema**：Gemini / OpenRouter 共用一致的結構化輸出契約。
+- **Cost Guard**：`allow_paid_models: false` 時，僅允許專案明確列入免費模型 allowlist 的模型。
+- **Transient fallback**：可選擇只在 429 / 5xx / timeout 等暫時性錯誤時切換 provider；預設關閉。
+- **Privacy Guard**：可控制是否把本地 source snippet 放入 AI prompt。
+
+> [!IMPORTANT]
+> `Free Tier` / `free model` 判斷是依專案內目前的 provider allowlist 與設定保護機制執行。實際 API 可用額度、資格與計費仍以 Google AI Studio / OpenRouter 當下帳號與官方政策為準。
+
+### AI Policy Admin & Telemetry
+
+- `ai_config_service.py`：查看或調整全域 / App AI policy。
+- 可啟動本機 Admin API，讓 Dashboard 設定頁安全寫回 `apps.yaml`。
+- Admin API 使用 token 驗證與 CORS Origin 防護。
+- `ai_telemetry.py`：記錄 AI request、成功率、429、fallback、provider / model 與實際可取得的 token usage。
+- 沒有 token 資料時不做推估，避免產生看似精準但實際不存在的用量數字。
+
+### Blame Frame 與 Issue Detail
+
+- 解析 Stack Trace、關鍵 frame、檔案、行號與 symbol。
+- MCP 可補充 BigQuery 不足的 Stack Trace / Breadcrumbs / Logs。
+- 支援產生可直接貼給 Coding Agent 的修復 Prompt。
+
+### Pipeline Health
+
+每次執行會產出 `out/pipeline_run.json`，紀錄：
+
+- App / Stage 狀態：`success`、`failed`、`skipped`、`disabled`、`degraded`
+- Stage 執行時間
+- 經過 credential sanitization 的錯誤原因
+- BigQuery / Sessions / MCP / AI 資料源狀態與新鮮度
+
+非核心資料源失敗時會盡可能 graceful degradation，不讓 Sessions、MCP 或 AI 單點失敗直接破壞整條 crash 分析流程。
 
 ---
 
 ## 快速開始
 
+### 1. Clone 與安裝
+
 ```bash
-git clone https://github.com/qpalzm963/crash-trend && cd crash-trend
-cp apps.example.yaml apps.yaml                 # 填寫你的 App 設定（Firebase 專案 ID、package 等）
-gcloud auth login                              # 具備 GCP/Firebase 專案 IAM 權限的帳號
-scripts/create_sa.sh <firebase_project_id>     # 一鍵建立唯讀 SA ＋ 金鑰
-# Firebase Console → 專案設定 → Integrations → BigQuery → Link 勾 Crashlytics 與 Sessions
-printf 'GEMINI_API_KEY=...\n' > .env           # AI 分析用（Google AI Studio 取得）
-docker compose up -d --build                   # 每週三 10:00（Asia/Taipei）自動同步
-# 手動試跑整條管線驗證：
-docker compose run --rm crash-trend /bin/bash /app/scripts/weekly_sync.sh
+git clone https://github.com/qpalzm963/crash-trend.git
+cd crash-trend
+cp apps.example.yaml apps.yaml
+```
+
+Python 本機執行：
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+```
+
+CI 目前使用 Python 3.11 / 3.12 執行單元測試。
+
+### 2. 建立 BigQuery 唯讀 Service Account
+
+先登入有 Firebase / GCP 專案權限的帳號：
+
+```bash
+gcloud auth login
+scripts/create_sa.sh <firebase_project_id>
+```
+
+預設憑證位置：
+
+```text
+~/.config/crash-trend/sa.json
+```
+
+接著到 Firebase Console 將 Crashlytics 連結至 BigQuery；若需要 Crash-free Users / Sessions，再另外啟用 Firebase Sessions 匯出。
+
+### 3. 設定 AI Key
+
+預設 `auto` 模式建議同時準備 Gemini 與 OpenRouter：
+
+```bash
+cat > .env <<'EOF'
+GEMINI_API_KEY=your_gemini_key
+OPENROUTER_API_KEY=your_openrouter_key
+EOF
+```
+
+可選環境變數：
+
+```text
+GEMINI_MODEL
+OPENROUTER_MODEL
+AI_ROUTING_MODE
+AI_ALLOW_PAID_MODELS
+```
+
+若不設定 AI Key，AI stage 會停用或降級；BigQuery、Priority Score、Dashboard 等非 AI 核心功能仍可使用。
+
+### 4. 執行完整 Pipeline
+
+直接執行：
+
+```bash
+python3 crash_trend/pipeline_run.py
 open dashboard.html
 ```
 
-不用 Docker 的話：
+只跑指定 App / 指定天數：
+
 ```bash
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-./scripts/weekly_sync.sh
-open dashboard.html
+python3 crash_trend/pipeline_run.py --app shop_app --days 30
+```
+
+### 5. Docker Compose
+
+```bash
+docker compose up -d --build
+```
+
+- `crash-trend`：依 `docker/crontab` 每週三 10:00（Asia/Taipei）執行 `weekly_sync.sh`。
+- `dashboard`：Nginx 靜態服務，預設 port `8787`。
+
+手動驗證排程流程：
+
+```bash
+docker compose run --rm crash-trend /bin/bash /app/scripts/weekly_sync.sh
+```
+
+瀏覽器開啟：
+
+```text
+http://localhost:8787
 ```
 
 ---
 
-## 設定檔架構
+## `apps.yaml` 設定
 
-所有環境差異收斂在三處，核心程式碼零改動：
-
-| 檔案 | 內容 | 版控 |
-|---|---|---|
-| `apps.yaml` | 各 App 的 Firebase 專案、BQ dataset、Sessions dataset、core_paths、custom_keys | 建議放私有 instance repo |
-| `.env` | `GEMINI_API_KEY`、`GEMINI_MODEL`（預設 gemini-3.8-flash） | ✗ 永不進版控 |
-| `~/.config/crash-trend/sa.json` | BigQuery 唯讀 SA 金鑰（`create_sa.sh` 產生） | ✗ 永不進版控（Docker read-only 掛載） |
-
-### 多 App 設定與 Data Source Profile (`apps.yaml`)
-
-系統正式支援 **Crashlytics-only** 與 **Full Sessions** 雙模式。若未開啟 Sessions 匯出，管線完全不打無效 API、不報 404，儀表板以 `未開啟` 清楚標註，其餘 Crash 除錯與 AI 優先級功能 100% 正常。
+`apps.example.yaml` 是完整範例。設定分成全域 credentials / AI policy，以及各 App 的資料源與專案資訊。
 
 ```yaml
 credentials:
   bq_service_account: ~/.config/crash-trend/sa.json
 
-apps:
-  # 模式 A：Crashlytics-only 模式（推薦：輕量、零額外 Sessions 儲存成本）
-  clock_in_app:
-    display_name: MP打卡系統
-    firebase_project: mp-clockin-44dee
-    data_sources:
-      crashlytics_bigquery: true          # 啟用 Crashlytics 匯出
-      sessions: false                     # 停用 Sessions 查詢（不需 firebase_sessions 表）
-      mcp: optional                       # optional 備援
-    bq_dataset: firebase_crashlytics
-    package_name: com.mp.clockinapp
-    bundle_id: com.mp.clockin
-    source_repo: ~/develop/clock_in_app
-    platforms: [android, ios]
-    core_paths: [auth_repository, punch, clock_in]
+ai:
+  mode: auto
+  primary:
+    provider: gemini
+    model: gemini-3.8-flash
+  lightweight:
+    provider: openrouter
+    model: openrouter/free
+    zdr: true
+  allow_paid_models: false
+  privacy:
+    include_source_snippet: true
+  fallback:
+    enabled: false
 
-  # 模式 B：完整模式 (含 Firebase Sessions 計算 Crash-free %)
+apps:
   shop_app:
     display_name: 購物商城 App
-    firebase_project: shop-prod-12345
+    firebase_project: shop-app-12345
     data_sources:
       crashlytics_bigquery: true
-      sessions: true                      # 啟用 Sessions 查詢計算 Crash-free 率
+      sessions: true
+      mcp:
+        mode: manual
+        max_age_days: 7
     bq_dataset: firebase_crashlytics
     sessions_dataset: firebase_sessions
     package_name: com.example.shop
+    bundle_id: com.example.shop.ios
     source_repo: ~/develop/shop_app
     platforms: [android, ios]
     core_paths: [checkout, payment, CartActivity]
     custom_keys: [user_tier, network_type]
-### 3. MCP 補強策略 (MCP Refresh Strategy)
+```
 
-Firebase Crashlytics MCP 為**可選補強資料源**，主要用於補充 BigQuery 缺失之完整堆疊、Blame frame、Breadcrumbs 與 Logs。
+### Data Source Profile
 
-| 模式 (`mcp.mode`) | 行為說明 | 適用情境 |
-| :--- | :--- | :--- |
-| **`manual`** *(預設)* | 排程完全不發送 MCP 請求，由開發者本機手動執行指令刷新快取至 `out/<app>/stacktraces.json` | 避免 CI/伺服器無登入態或 quota 限制 |
-| **`weekly`** | `weekly_sync.sh` 自動檢查快取是否超過 `max_age_days`（預設 7 天），過期才嘗試刷新；**MCP 失敗絕不中斷管線** | 本機排程且有固定 `firebase login` 授權 |
-| **`off`** | 完全停用 MCP，純靠 BigQuery 欄位與堆疊啟發式解析 | 不需要 MCP 或完全離線環境 |
+可依 App 需求選擇兩種常見模式：
 
-**前置需求與手動指令**：
+**Crashlytics-only**
+
+```yaml
+data_sources:
+  crashlytics_bigquery: true
+  sessions: false
+  mcp: off
+```
+
+適合只需要 crash / ANR、Affected Users、Stack Trace 與 AI 優先級，不需要 Crash-free Sessions 的 App。
+
+**Full Sessions**
+
+```yaml
+data_sources:
+  crashlytics_bigquery: true
+  sessions: true
+  mcp:
+    mode: manual
+    max_age_days: 7
+```
+
+適合需要 Crash-free Users / Sessions 與版本健康度的 App。
+
+---
+
+## MCP 補強策略
+
+Crashlytics MCP 是**可選資料源**，主要用於補充 BigQuery 不足的 Stack Trace、Blame Frame、Breadcrumbs 與 Logs。
+
+| `mcp.mode` | 行為 | 適用情境 |
+|---|---|---|
+| `manual` | 週排程略過 MCP，只使用既有 cache；需要時手動刷新 | 預設，最穩定 |
+| `weekly` | cache 過期才嘗試刷新；失敗時 graceful degradation | 有固定 Firebase 使用者登入態的本機環境 |
+| `off` | 完全關閉 MCP | 純 BigQuery / 不需要 MCP |
+
+手動刷新：
+
 ```bash
-# 1. 確保安裝最新版 Firebase CLI 並登入
 npm i -g firebase-tools@latest
 firebase login
-
-# 2. 手動刷新特定 App 之 MCP 快取 (manual 模式)
-python3 crash_trend/fetch_stacktraces.py --app clock_in_app
+python3 crash_trend/fetch_stacktraces.py --app shop_app
 ```
 
 > [!NOTE]
-> Firebase Crashlytics MCP 依賴 `firebase login` 之使用者權限；GCP 服務帳號（Service Account）呼叫未公開之 Crashlytics v1alpha API 一律會回傳 404。因此 MCP 嚴格定位為選配補強，BigQuery 已有之完整資訊絕不會被 MCP 覆蓋。
+> MCP 依賴 Firebase CLI 的使用者登入態。Service Account 主要用於 BigQuery，不應假設它可以取代 MCP 所需的 Firebase 使用者授權。
 
-### 4. 管線健康度與來源新鮮度 (Pipeline Health & Source Health - V2.2)
+---
 
-- **結構化執行摘要 (`out/pipeline_run.json`)**：每次排程或手動執行，自動記錄各 App、各 Stage 的狀態 (`success` / `failed` / `skipped` / `disabled` / `degraded`)、精確耗時與**經過敏感憑證消毒 (Credential Sanitization)** 之錯誤原因。
-- **儀表板來源健康度資訊卡**：總覽頁面直觀展示 BigQuery、Sessions、MCP、AI 之即時連線健康度與相對時間新鮮度（例如 `2 小時前`、`9 天前`、`本次同步`）；MCP 過期自動備註使用備用快取中，Sessions 停用明確標示 `未開啟`。
+## AI Policy 管理
 
-### 5. AI 執行期治理與雙層生產路由 (AI Runtime & Routing - V2.5)
+查看有效設定：
 
-系統支援雙層架構生產路由與嚴格零費用防護（Cost Guard）：
-
-| 功能領域 | 實作機制 | 說明 |
-| :--- | :--- | :--- |
-| **預設模型升級 (#38)** | `gemini-3.8-flash` | Direct Gemini 升級至 2026-09 最新 GA 模型，支援高思考深度，自動省略過時 temperature 參數。 |
-| **原生 JSON Schema (#39)** | `responseJsonSchema` | Gemini 與 OpenRouter 全面對齊單一 Canonical JSON Schema 契約，無 lossy schema rewrite。 |
-| **生產輕量路由 (#40)** | `auto` 雙工模式 | 輕量任務（Triage、分類、打標）由 OpenRouter Free Worker 承接；**具備 Triage Gating 機制**，低危/非致命問題跳過深度推理以節省 100% Gemini 配額，高危問題精準過濾發送。 |
-| **後台 Policy 治理 (#41)** | `ai_config_service.py` | 儀表板提供即時互動表單，搭配本機 Admin API (`--serve 8080`) 實現一鍵寫回 `apps.yaml`；支援 `auto` / `gemini_only` / `openrouter_only` 安全切換與 Cost Guard 阻擋。 |
-| **使用量與配額觀測 (#42)** | `ai_telemetry.py` | 審計近 7 天請求量、成功率、429 Rate Limit、備援次數；嚴格 Token 審計（不造假估算）；清楚標示 Free Tier 適用資格與 Google Cloud 計費聲明。 |
-
-**AI Policy 管理 CLI 指令範例**：
 ```bash
-# 啟動儀表板一鍵即時寫回 Admin API 服務 (預設 Port 8080，具備安全 Token 與 CORS Origin 攔截防護)
-python3 -m crash_trend.ai_config_service --serve 8080
-
-# 查看當前 Effective Policy (全域或指定 App)
-python3 -m crash_trend.ai_config_service --app clock_in_app --show
-
-# 切換路由模式 (auto / gemini_only / openrouter_only)
-python3 -m crash_trend.ai_config_service --app clock_in_app --mode auto
-
-# 調整主力與輕量 Provider 及 Model
-python3 -m crash_trend.ai_config_service --app clock_in_app --primary-provider gemini --primary-model gemini-3.8-flash --lightweight-provider openrouter --lightweight-model openrouter/free
-
-# 重置特定 App 回全域預設 Policy
-python3 -m crash_trend.ai_config_service --app clock_in_app --reset
+python3 -m crash_trend.ai_config_service --app shop_app --show
 ```
+
+切換模式：
+
+```bash
+python3 -m crash_trend.ai_config_service --app shop_app --mode auto
+python3 -m crash_trend.ai_config_service --app shop_app --mode gemini_only
+python3 -m crash_trend.ai_config_service --app shop_app --mode openrouter_only
+```
+
+調整 provider / model：
+
+```bash
+python3 -m crash_trend.ai_config_service \
+  --app shop_app \
+  --primary-provider gemini \
+  --primary-model gemini-3.8-flash \
+  --lightweight-provider openrouter \
+  --lightweight-model openrouter/free
+```
+
+重設 App override：
+
+```bash
+python3 -m crash_trend.ai_config_service --app shop_app --reset
+```
+
+啟動本機 Admin API：
+
+```bash
+python3 -m crash_trend.ai_config_service --serve 8080
+```
+
+此服務用於 Dashboard 設定頁寫回 `apps.yaml`，包含 token authentication 與 CORS Origin 驗證；請維持在受信任的本機 / 內網環境使用。
+
+---
+
+## 週同步與通知
+
+`scripts/weekly_sync.sh` 會：
+
+1. 執行 `pipeline_run.py`。
+2. 依每個 App 的資料源設定抓取 / enrich / normalize / analyze。
+3. 產生最新 Dashboard 與 Pipeline Run Summary。
+4. 若設定 `CRASH_REPORT_URL`，每月最多發送一次聊天摘要卡；發送失敗時下週重試。
+5. 若 repo 有產生可追蹤的變更，建立 `chore: weekly sync YYYY-MM-DD` commit。
+6. macOS 本機執行時可透過 `osascript` 顯示完成 / 失敗通知。
+
+部署與排程細節請參考 [`DEPLOY.md`](DEPLOY.md)。
 
 ---
 
 ## 專案結構
 
-```
+```text
 crash_trend/
-  schema_v2.py           # Dashboard V2 資料契約 (TypedDicts) 與嚴格驗證器
-  pipeline_health.py     # Pipeline Health：Run Summary、Stage 狀態、敏感資訊消毒
-  pipeline_run.py        # 端到端管線驅動器（排程與 CLI 進入點）
-  ai_provider.py         # AI Provider 實作 (Gemini Direct 與 OpenRouter，共享 Canonical JSON Schema)
-  ai_router.py           # AITaskRouter 任務分類、動態路由、Free Guard 與自動備援
-  ai_config_service.py   # AI Policy Admin 後台治理、安全更新與 CLI 管理工具
-  ai_telemetry.py        # AI Usage & Quota Observability 使用量審計與統計引擎
-  fetch_bigquery.py      # BigQuery V2：Overview 聚合、日曆日每日趨勢、維度分布
-  fetch_sessions.py      # Firebase Sessions：Crash-free Users / Sessions 指標與版本健康度
-  fetch_issue_details.py # Issue Detail：Stack trace、Blame frame、Breadcrumbs、Logs (含 MCP fallback)
-  fetch_stacktraces.py   # Firebase MCP 驅動客戶端 (headless stdio JSON-RPC)
-  analyze_gemini.py      # 確定性 Priority Score ＋ AI 雙層分析 (Triage + Deep Analysis)
-  build_dashboard.py     # 多 App 聚合與自包含 SaaS Dashboard HTML 產生器
-  check_surge.py         # 每日趨勢週暴增偵測告警
-  pm_brief.py            # 優先 issue → 給 PM 的白話簡報
-  post_report.py         # 月度摘要卡發送（聊天整合，可選）
-  config.py              # apps.yaml 讀取與路徑工具
+  ai_config_service.py   # AI Policy CLI / Admin API
+  ai_provider.py         # Gemini / OpenRouter Provider 與 Canonical Schemas
+  ai_router.py           # Task Router、Cost Guard、Fallback、Privacy policy
+  ai_telemetry.py        # AI request / quota / token telemetry
+  analyze_ai.py          # Provider-neutral AI 分析入口
+  analyze_gemini.py      # Priority Score、triage gating 與分析核心
+  build_dashboard.py     # 自包含 Dashboard HTML 產生器
+  check_surge.py         # Crash 趨勢暴增偵測
+  config.py              # apps.yaml 載入與資料源設定
+  fetch_bigquery.py      # Crashlytics BigQuery 資料抓取
+  fetch_issue_details.py # Issue detail / stack trace enrichment
+  fetch_sessions.py      # Firebase Sessions / Crash-free metrics
+  fetch_stacktraces.py   # Firebase MCP stacktrace cache
+  lifecycle.py           # Issue lifecycle / 狀態處理
+  normalize.py           # Canonical normalization / 歷史資料整理
+  pipeline_health.py     # Run Summary、Stage status、錯誤資訊消毒
+  pipeline_run.py        # 端到端 Pipeline Orchestrator
+  pm_brief.py            # PM-friendly issue 摘要
+  post_report.py         # 每月聊天摘要卡
+  schema_v2.py           # Dashboard V2 TypedDict / schema validation
+  versions.py            # App version 比較工具
+
 scripts/
-  weekly_sync.sh         # 週同步主要排程入口（整合 pipeline_run.py）
-  create_sa.sh           # GCP 服務帳號一鍵建立
-  export_from_bq.py      # 手動單次 query dump 工具
-tests/                   # 單元測試、E2E 契約測試與測試夾具
+  create_sa.sh
+  weekly_sync.sh
+  com.crash-trend.weekly-sync.plist.example
+
+docker/
+  crontab
+
+docs/
+  dashboard_v2_schema.md
+  screenshot.png
+
+manual/
+  example_app/
+
+tests/
+  ...
+
+DEPLOY.md
+Dockerfile
+docker-compose.yml
+apps.example.yaml
+requirements.txt
 ```
 
+---
+
+## 主要輸出
+
+執行後的 runtime artifacts 預設不進 Git：
+
+```text
+dashboard.html
+out/
+  pipeline_run.json
+  dashboard_v2.json
+  <app>/...
+reports/
+logs/
+```
+
+`.env`、`apps.yaml`、Service Account JSON、Admin token 與 crash 原始輸出也已透過 `.gitignore` / Docker mount 策略避免直接提交到 repository。
+
+---
+
+## 測試
+
+```bash
+python -m unittest discover -s tests -p "test_*.py" -v
+```
+
+GitHub Actions 會在 `main`、`feature/**` push 與對 `main` 的 Pull Request 上執行測試，matrix 為 Python 3.11 / 3.12。
+
+---
+
+## 文件
+
+- [`DEPLOY.md`](DEPLOY.md)：Docker / 排程 / 部署方式
+- [`docs/dashboard_v2_schema.md`](docs/dashboard_v2_schema.md)：Dashboard V2 資料契約
+- [`apps.example.yaml`](apps.example.yaml)：完整多 App / AI / Data Source 設定範例
+
+## License
+
+MIT — 詳見 [`LICENSE`](LICENSE)。
