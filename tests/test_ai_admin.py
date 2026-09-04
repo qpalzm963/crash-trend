@@ -142,6 +142,66 @@ class TestAIAdmin(unittest.TestCase):
         self.assertNotIn("ai", disk_cfg["apps"]["custom_app"])
         self.assertEqual(disk_cfg["apps"]["custom_app"]["display_name"], "Custom App")
 
+    def test_6_http_admin_api_endpoints(self) -> None:
+        """Test 6: AIConfigHTTPHandler serves GET /api/ai_policy and POST /api/ai_policy."""
+        import io
+        from unittest.mock import MagicMock
+        from crash_trend.ai_config_service import AIConfigHTTPHandler
+
+        AIConfigHTTPHandler.config_path = self.cfg_path
+
+        # 1. Test GET /api/ai_policy?app=shop_app
+        handler = AIConfigHTTPHandler.__new__(AIConfigHTTPHandler)
+        handler.path = "/api/ai_policy?app=shop_app"
+        handler.headers = {}
+        handler.wfile = io.BytesIO()
+        handler.send_response = MagicMock()
+        handler.send_header = MagicMock()
+        handler.end_headers = MagicMock()
+
+        handler.do_GET()
+        handler.send_response.assert_called_with(200)
+        res_data = json.loads(handler.wfile.getvalue().decode("utf-8"))
+        self.assertEqual(res_data["mode"], "auto")
+
+        # 2. Test POST /api/ai_policy update
+        post_body = json.dumps({
+            "app_name": "shop_app",
+            "updates": {"mode": "gemini_only"},
+            "explicit_paid_opt_in": False,
+        }).encode("utf-8")
+
+        handler = AIConfigHTTPHandler.__new__(AIConfigHTTPHandler)
+        handler.path = "/api/ai_policy"
+        handler.headers = {"Content-Length": str(len(post_body))}
+        handler.rfile = io.BytesIO(post_body)
+        handler.wfile = io.BytesIO()
+        handler.send_response = MagicMock()
+        handler.send_header = MagicMock()
+        handler.end_headers = MagicMock()
+
+        handler.do_POST()
+        handler.send_response.assert_called_with(200)
+        post_res = json.loads(handler.wfile.getvalue().decode("utf-8"))
+        self.assertEqual(post_res["mode"], "gemini_only")
+        self.assertTrue(post_res["has_per_app_override"])
+
+        # 3. Test POST /api/ai_policy/reset
+        reset_body = json.dumps({"app_name": "shop_app"}).encode("utf-8")
+        handler = AIConfigHTTPHandler.__new__(AIConfigHTTPHandler)
+        handler.path = "/api/ai_policy/reset"
+        handler.headers = {"Content-Length": str(len(reset_body))}
+        handler.rfile = io.BytesIO(reset_body)
+        handler.wfile = io.BytesIO()
+        handler.send_response = MagicMock()
+        handler.send_header = MagicMock()
+        handler.end_headers = MagicMock()
+
+        handler.do_POST()
+        handler.send_response.assert_called_with(200)
+        reset_res = json.loads(handler.wfile.getvalue().decode("utf-8"))
+        self.assertFalse(reset_res["has_per_app_override"])
+
 
 if __name__ == "__main__":
     unittest.main()

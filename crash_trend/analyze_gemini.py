@@ -974,16 +974,6 @@ def enrich_app_data_with_priority_and_ai(
                 snippets.append("\n".join(parts))
 
     display_name = app_data.get("metadata", {}).get("display_name", "App")
-    prompt = build_ai_prompt(
-        display_name=display_name,
-        kpi=app_data.get("kpi"),
-        prev_kpi=prev_app_data.get("kpi") if prev_app_data else None,
-        scored_issues=scored_issues[:top_limit],
-        distributions=app_data.get("distributions"),
-        custom_keys=app_data.get("distributions", {}).get("custom_keys"),
-        trend_data=app_data.get("daily_trend"),
-        snippets=snippets,
-    )
 
     # 4. 呼叫 Router / Provider 並防禦性解析 (Dashboard V2.5 - Issue #40)
     tasks_telemetry: dict[str, Any] = {}
@@ -1036,7 +1026,119 @@ def enrich_app_data_with_priority_and_ai(
                 "error_message": safe_triage_err,
             }
 
-    # 4.2 深度分析 / 主任務呼叫
+    # 4.2 深度分析前評估：由 Triage 結果進行 Gating（Issue #40 - 節省 Gemini 呼叫與 Token）
+    deep_candidates = scored_issues[:top_limit]
+    triage_gating_active = False
+    if triage_map:
+        warrant_candidates = [
+            i for i in scored_issues[:top_limit]
+            if triage_map.get(i.get("issue_id", ""), {}).get("warrants_deep_analysis", True)
+        ]
+        triage_gating_active = True
+        deep_candidates = warrant_candidates
+
+    # 情境 A：全數 Issue 經 Triage 評估皆無致命/高危風險，無需深度分析，直接跳過以省下 100% 的 Gemini 配額！
+    if triage_gating_active and len(deep_candidates) == 0:
+        cat_counts: dict[str, int] = {}
+        for t in triage_map.values():
+            c = t.get("category", "OTHER")
+            cat_counts[c] = cat_counts.get(c, 0) + 1
+        main_cat = max(cat_counts.items(), key=lambda x: x[1])[0] if cat_counts else "GENERAL"
+
+        now_ts = iso_utc_now()
+        ai_summary = {
+            "status": "available",
+            "model": model_name,
+            "generated_at": now_ts,
+            "overview": f"本期主要問題經輕量 Triage 評估均屬非致命或偶發異常（主分類：{main_cat}），無高危崩潰路徑，已跳過深度分析以節省 Gemini 配額。",
+            "key_takeaways": [
+                f"全數 {len(scored_issues[:top_limit])} 個問題已由 OpenRouter Free Worker 完成初篩分類與打標",
+                "暫無需要耗費高深度推理排查之核心崩潰",
+            ],
+            "distribution_insights": f"輕量分類分佈：{', '.join(f'{k} ({v}項)' for k, v in cat_counts.items())}",
+            "recommended_actions": [
+                {
+                    "priority": iss.get("priority", {}).get("level", "P2"),
+                    "issue_id": iss.get("issue_id", ""),
+                    "action": triage_map.get(iss.get("issue_id", ""), {}).get("short_summary", "依照常規發版流程修復"),
+                    "effort": "S",
+                }
+                for iss in scored_issues[:3]
+            ],
+            "data_limitations": None,
+        }
+
+        for issue in scored_issues:
+            iid = issue.get("issue_id", "")
+            t_info = triage_map.get(iid, {})
+            issue["ai_analysis"] = {
+                "status": "available",
+                "root_cause": t_info.get("triage_reason", "輕量評估未發現需深入推理之根因"),
+                "suggested_fix": f"建議依照【{t_info.get('category', 'OTHER')}】常規修復指引處理",
+                "effort": "S",
+                "confidence": "medium",
+                "reasoning_sources": ["triage"],
+                "short_summary": t_info.get("short_summary"),
+                "category": t_info.get("category"),
+                "tags": t_info.get("tags", []),
+                "warrants_deep_analysis": False,
+                "triage_reason": t_info.get("triage_reason"),
+            }
+
+        app_data["top_issues"] = scored_issues
+        app_data["ai_summary"] = ai_summary
+        tasks_telemetry["deep_analysis"] = {
+            "task_type": task_type,
+            "status": "skipped",
+            "provider": provider_name,
+            "model": model_name,
+            "routing_reason": f"Skipped: All {len(scored_issues[:top_limit])} issues triaged as not warranting deep analysis (Gemini quota saved)",
+            "fallback_used": False,
+            "fallback_reason": None,
+        }
+        if "sources" in app_data:
+            app_data["sources"]["ai"] = {
+                "status": "available",
+                "provider": provider_name,
+                "model": model_name,
+                "requested_mode": requested_mode,
+                "task_type": task_type,
+                "selected_provider": provider_name,
+                "selected_model": model_name,
+                "routing_reason": "Triage Gating: Skipped deep analysis (100% quota saved)",
+                "fallback_used": False,
+                "fallback_reason": None,
+                "paid_model_allowed": paid_model_allowed,
+                "tasks": tasks_telemetry,
+                "last_sync_timestamp": now_ts,
+                "error_message": None,
+            }
+            if "gemini_ai" in app_data["sources"]:
+                app_data["sources"]["gemini_ai"]["status"] = "available"
+                app_data["sources"]["gemini_ai"]["last_sync_timestamp"] = now_ts
+                app_data["sources"]["gemini_ai"]["model"] = model_name
+                app_data["sources"]["gemini_ai"]["error_message"] = None
+        _sync_periods_priority_and_ai(app_data, prev_app_data=prev_app_data, core_paths=core_paths, latest_ver=latest_ver)
+        return app_data
+
+    # 情境 B：有部分或全部 Issue 需要深度分析，建構僅包含 deep_candidates 之 Prompt（顯著減少 Token）
+    deep_candidate_ids = {str(i.get("issue_id", "")) for i in deep_candidates}
+    target_snippets = [
+        s for s in snippets
+        if any(f"[issue {cid}]" in s for cid in deep_candidate_ids)
+    ]
+    prompt = build_ai_prompt(
+        display_name=display_name,
+        kpi=app_data.get("kpi"),
+        prev_kpi=prev_app_data.get("kpi") if prev_app_data else None,
+        scored_issues=deep_candidates,
+        distributions=app_data.get("distributions"),
+        custom_keys=app_data.get("distributions", {}).get("custom_keys"),
+        trend_data=app_data.get("daily_trend"),
+        snippets=target_snippets,
+    )
+
+    # 4.3 深度分析 / 主任務呼叫
     fallback_used = False
     fallback_reason = None
     try:
@@ -1051,23 +1153,43 @@ def enrich_app_data_with_priority_and_ai(
             raw_ai_res = active_provider.analyze(prompt, schema=CANONICAL_AI_RESPONSE_SCHEMA)
 
         ai_summary, analysis_map = parse_gemini_response(
-            raw_ai_res, scored_issues, model_name=model_name, provider_name=provider_name
+            raw_ai_res, deep_candidates, model_name=model_name, provider_name=provider_name
         )
         for issue in scored_issues:
             iid = issue.get("issue_id", "")
-            base_analysis = analysis_map.get(iid, generate_disabled_issue_analysis())
-            if iid in triage_map:
-                t_info = triage_map[iid]
-                base_analysis["short_summary"] = t_info.get("short_summary")
-                base_analysis["category"] = t_info.get("category")
-                base_analysis["tags"] = t_info.get("tags")
-                base_analysis["warrants_deep_analysis"] = t_info.get("warrants_deep_analysis")
-                base_analysis["triage_reason"] = t_info.get("triage_reason")
-            issue["ai_analysis"] = base_analysis
+            t_info = triage_map.get(iid, {})
+            if iid in analysis_map:
+                # 經過深度分析的問題：合併深度推理與輕量標籤
+                base_analysis = analysis_map[iid]
+                if t_info:
+                    base_analysis["short_summary"] = t_info.get("short_summary")
+                    base_analysis["category"] = t_info.get("category")
+                    base_analysis["tags"] = t_info.get("tags")
+                    base_analysis["warrants_deep_analysis"] = t_info.get("warrants_deep_analysis", True)
+                    base_analysis["triage_reason"] = t_info.get("triage_reason")
+                issue["ai_analysis"] = base_analysis
+            elif t_info:
+                # 經 Triage 判定不需深度分析的問題：直接使用 Triage 結果，節省推理
+                issue["ai_analysis"] = {
+                    "status": "available",
+                    "root_cause": t_info.get("triage_reason", "輕量評估未發現需深入推理之根因"),
+                    "suggested_fix": f"建議依照【{t_info.get('category', 'OTHER')}】常規修復指引處理",
+                    "effort": "S",
+                    "confidence": "medium",
+                    "reasoning_sources": ["triage"],
+                    "short_summary": t_info.get("short_summary"),
+                    "category": t_info.get("category"),
+                    "tags": t_info.get("tags", []),
+                    "warrants_deep_analysis": False,
+                    "triage_reason": t_info.get("triage_reason"),
+                }
+            else:
+                issue["ai_analysis"] = generate_disabled_issue_analysis()
 
         app_data["top_issues"] = scored_issues
         app_data["ai_summary"] = ai_summary
         now_ts = iso_utc_now()
+        extracted_tokens = getattr(router_res, "tokens", None) if active_router is not None else getattr(active_provider, "last_tokens", None)
         record_ai_call(
             app_id=app_data.get("metadata", {}).get("app_id", display_name),
             task_type=task_type,
@@ -1075,14 +1197,17 @@ def enrich_app_data_with_priority_and_ai(
             model=model_name,
             status="fallback" if fallback_used else "success",
             paid_model_allowed=paid_model_allowed,
-            tokens=getattr(router_res if active_router else active_provider, "tokens", None),
+            tokens=extracted_tokens,
         )
+        effective_routing_reason = routing_reason
+        if triage_gating_active and len(deep_candidates) < len(scored_issues[:top_limit]):
+            effective_routing_reason += f" (Triage Gated: {len(deep_candidates)}/{len(scored_issues[:top_limit])} issues analyzed)"
         tasks_telemetry["deep_analysis"] = {
             "task_type": task_type,
             "status": "available",
             "provider": provider_name,
             "model": model_name,
-            "routing_reason": routing_reason,
+            "routing_reason": effective_routing_reason,
             "fallback_used": fallback_used,
             "fallback_reason": fallback_reason,
         }
@@ -1095,7 +1220,7 @@ def enrich_app_data_with_priority_and_ai(
                 "task_type": task_type,
                 "selected_provider": provider_name,
                 "selected_model": model_name,
-                "routing_reason": routing_reason,
+                "routing_reason": effective_routing_reason,
                 "fallback_used": fallback_used,
                 "fallback_reason": fallback_reason,
                 "paid_model_allowed": paid_model_allowed,

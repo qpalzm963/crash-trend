@@ -190,6 +190,8 @@ class TestBuildDashboardV2(unittest.TestCase):
         self.assertIn("aiPolicyCard", html)
         self.assertIn("AI Policy & Routing 治理設定", html)
         self.assertIn("Free Tier Guard 啟動", html)
+        self.assertIn("adminModeSelect", html)
+        self.assertIn("saveAiPolicyFromUI", html)
         self.assertIn("ai_config_service", html)
 
         # AI Observability card elements
@@ -198,6 +200,7 @@ class TestBuildDashboardV2(unittest.TestCase):
         self.assertIn("429 Rate Limit", html)
         self.assertIn("總 AI 請求量", html)
         self.assertIn("Token 消耗量審計", html)
+        self.assertIn("每日呼叫趨勢明細", html)
 
 
 if __name__ == "__main__":

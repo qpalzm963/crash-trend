@@ -13,11 +13,13 @@ from __future__ import annotations
 
 import argparse
 import copy
+import http.server
 import json
 import os
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import parse_qs, urlparse
 
 import yaml
 
@@ -246,6 +248,99 @@ def reset_app_ai_policy(
     return get_effective_ai_policy(app_name, cfg)
 
 
+class AIConfigHTTPHandler(http.server.BaseHTTPRequestHandler):
+    """Lightweight HTTP Handler serving the AI Policy Admin REST API."""
+    config_path: Optional[Path] = None
+
+    def log_message(self, format: str, *args: Any) -> None:
+        # Suppress noisy standard output in background server mode
+        pass
+
+    def _set_cors_headers(self, status: int = 200) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.end_headers()
+
+    def do_OPTIONS(self) -> None:
+        self._set_cors_headers(204)
+
+    def do_GET(self) -> None:
+        parsed = urlparse(self.path)
+        if parsed.path == "/api/ai_policy":
+            params = parse_qs(parsed.query)
+            app_name = params.get("app", [None])[0]
+            try:
+                policy = get_effective_ai_policy(app_name=app_name)
+                self._set_cors_headers(200)
+                self.wfile.write(json.dumps(policy, ensure_ascii=False).encode("utf-8"))
+            except Exception as e:
+                self._set_cors_headers(400)
+                self.wfile.write(json.dumps({"error": sanitize_error_message(str(e))}).encode("utf-8"))
+        else:
+            self._set_cors_headers(404)
+            self.wfile.write(json.dumps({"error": "Not Found"}).encode("utf-8"))
+
+    def do_POST(self) -> None:
+        parsed = urlparse(self.path)
+        content_len = int(self.headers.get("Content-Length", 0))
+        post_body = self.rfile.read(content_len) if content_len > 0 else b"{}"
+        try:
+            payload = json.loads(post_body.decode("utf-8"))
+        except Exception:
+            self._set_cors_headers(400)
+            self.wfile.write(json.dumps({"error": "Invalid JSON"}).encode("utf-8"))
+            return
+
+        if parsed.path == "/api/ai_policy":
+            app_name = payload.get("app_name")
+            updates = payload.get("updates", {})
+            explicit_opt_in = bool(payload.get("explicit_paid_opt_in", False))
+            try:
+                updated = update_ai_policy(
+                    app_name=app_name,
+                    updates=updates,
+                    config_path=self.config_path,
+                    explicit_paid_opt_in=explicit_opt_in,
+                )
+                self._set_cors_headers(200)
+                self.wfile.write(json.dumps(updated, ensure_ascii=False).encode("utf-8"))
+            except Exception as e:
+                self._set_cors_headers(400)
+                self.wfile.write(json.dumps({"error": sanitize_error_message(str(e))}).encode("utf-8"))
+        elif parsed.path == "/api/ai_policy/reset":
+            app_name = payload.get("app_name")
+            if not app_name:
+                self._set_cors_headers(400)
+                self.wfile.write(json.dumps({"error": "app_name is required for reset"}).encode("utf-8"))
+                return
+            try:
+                res = reset_app_ai_policy(app_name, config_path=self.config_path)
+                self._set_cors_headers(200)
+                self.wfile.write(json.dumps(res, ensure_ascii=False).encode("utf-8"))
+            except Exception as e:
+                self._set_cors_headers(400)
+                self.wfile.write(json.dumps({"error": sanitize_error_message(str(e))}).encode("utf-8"))
+        else:
+            self._set_cors_headers(404)
+            self.wfile.write(json.dumps({"error": "Not Found"}).encode("utf-8"))
+
+
+def serve_admin_api(port: int = 8080, host: str = "127.0.0.1", config_path: Optional[Path] = None) -> None:
+    """Runs a local administrative HTTP API server for Dashboard AI Policy controls."""
+    AIConfigHTTPHandler.config_path = config_path
+    server = http.server.HTTPServer((host, port), AIConfigHTTPHandler)
+    print(f"✓ AI Policy Admin API server running at http://{host}:{port}/api/ai_policy")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nAdmin API server stopped.")
+    finally:
+        server.server_close()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="AI Policy Admin Controls CLI (Dashboard V2.5)")
     parser.add_argument("--app", help="Target app name (omit for global policy)")
@@ -258,8 +353,13 @@ def main() -> None:
     parser.add_argument("--privacy-source-snippet", choices=["true", "false"], help="Include local source snippet")
     parser.add_argument("--fallback", choices=["true", "false"], help="Enable or disable transient fallback")
     parser.add_argument("--reset", action="store_true", help="Reset per-app override to global policy")
+    parser.add_argument("--serve", nargs="?", const=8080, type=int, help="Start local admin HTTP API server (default port 8080)")
 
     args = parser.parse_args()
+
+    if args.serve:
+        serve_admin_api(port=args.serve)
+        return
 
     if args.reset:
         if not args.app:

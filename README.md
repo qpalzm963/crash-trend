@@ -135,12 +135,15 @@ python3 crash_trend/fetch_stacktraces.py --app clock_in_app
 | :--- | :--- | :--- |
 | **預設模型升級 (#38)** | `gemini-3.8-flash` | Direct Gemini 升級至 2026-09 最新 GA 模型，支援高思考深度，自動省略過時 temperature 參數。 |
 | **原生 JSON Schema (#39)** | `responseJsonSchema` | Gemini 與 OpenRouter 全面對齊單一 Canonical JSON Schema 契約，無 lossy schema rewrite。 |
-| **生產輕量路由 (#40)** | `auto` 雙工模式 | 輕量任務（Issue Triage、分類、摘要、打標）由 OpenRouter Free Worker 承接；深度診斷保留給 Gemini Direct。 |
-| **後台 Policy 治理 (#41)** | `ai_config_service.py` | 支援 `auto` / `gemini_only` / `openrouter_only` 安全切換；`allow_paid_models=false` 嚴格阻擋付費模型。 |
-| **使用量與配額觀測 (#42)** | `ai_telemetry.py` | 記錄近 7 天請求量、成功率、429 Rate Limit、備援次數；嚴格審計真實 Token 數據，不假造估算。 |
+| **生產輕量路由 (#40)** | `auto` 雙工模式 | 輕量任務（Triage、分類、打標）由 OpenRouter Free Worker 承接；**具備 Triage Gating 機制**，低危/非致命問題跳過深度推理以節省 100% Gemini 配額，高危問題精準過濾發送。 |
+| **後台 Policy 治理 (#41)** | `ai_config_service.py` | 儀表板提供即時互動表單，搭配本機 Admin API (`--serve 8080`) 實現一鍵寫回 `apps.yaml`；支援 `auto` / `gemini_only` / `openrouter_only` 安全切換與 Cost Guard 阻擋。 |
+| **使用量與配額觀測 (#42)** | `ai_telemetry.py` | 審計近 7 天請求量、成功率、429 Rate Limit、備援次數；嚴格 Token 審計（不造假估算）；清楚標示 Free Tier 適用資格與 Google Cloud 計費聲明。 |
 
 **AI Policy 管理 CLI 指令範例**：
 ```bash
+# 啟動儀表板一鍵即時寫回 Admin API 服務 (預設 Port 8080)
+python3 -m crash_trend.ai_config_service --serve 8080
+
 # 查看當前 Effective Policy (全域或指定 App)
 python3 -m crash_trend.ai_config_service --app clock_in_app --show
 

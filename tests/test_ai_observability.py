@@ -144,9 +144,10 @@ class TestAIObservability(unittest.TestCase):
         self.assertEqual(summary["fallback_count"], 1)
         self.assertEqual(summary["error_count"], 0)
 
-        # 100% of requests were on free tier models
+        # 100% of requests were on free tier eligible models
         self.assertEqual(summary["free_tier_ratio"], 1.0)
-        self.assertEqual(summary["cost_guard"]["policy"], "strict_free_tier_enforced")
+        self.assertEqual(summary["cost_guard"]["policy"], "strict_free_guard_active")
+        self.assertIn("Google", summary["cost_guard"]["disclaimer"])
 
         # Distribution breakdown
         self.assertEqual(summary["by_task_type"]["deep_analysis"], 2)

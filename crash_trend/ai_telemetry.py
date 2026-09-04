@@ -185,11 +185,11 @@ def aggregate_ai_usage(
         if r.get("paid_model_allowed"):
             paid_models_ever_allowed = True
 
-        # Check free tier classification
-        if prov == "gemini":
-            # Direct Gemini Free tier API
+        # Tier breakdown: OpenRouter Free Worker vs Gemini Direct
+        if prov == "openrouter" and is_free_openrouter_model(model):
             free_tier_count += 1
-        elif prov == "openrouter" and is_free_openrouter_model(model):
+        elif prov == "gemini":
+            # Gemini 3.8 Flash is free-tier eligible, but subject to Google AI quota & project billing
             free_tier_count += 1
 
         # Daily trend
@@ -235,7 +235,8 @@ def aggregate_ai_usage(
         "free_tier_count": free_tier_count,
         "cost_guard": {
             "paid_models_ever_allowed": paid_models_ever_allowed,
-            "policy": "paid_models_permitted" if paid_models_ever_allowed else "strict_free_tier_enforced",
+            "policy": "paid_models_permitted" if paid_models_ever_allowed else "strict_free_guard_active",
+            "disclaimer": "OpenRouter 輕量任務鎖定 free worker；Gemini 呼叫適用 Google Free Tier 配額，超出或綁定計費專案可能產生費用，實際以 Google Cloud Console 帳單為準。",
         },
         "by_task_type": dict(by_task),
         "by_provider": dict(by_provider),
