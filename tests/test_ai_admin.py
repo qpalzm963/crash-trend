@@ -143,17 +143,19 @@ class TestAIAdmin(unittest.TestCase):
         self.assertEqual(disk_cfg["apps"]["custom_app"]["display_name"], "Custom App")
 
     def test_6_http_admin_api_endpoints(self) -> None:
-        """Test 6: AIConfigHTTPHandler serves GET /api/ai_policy and POST /api/ai_policy."""
+        """Test 6: AIConfigHTTPHandler serves GET /api/ai_policy and POST /api/ai_policy with token auth and origin protection."""
         import io
         from unittest.mock import MagicMock
         from crash_trend.ai_config_service import AIConfigHTTPHandler
 
         AIConfigHTTPHandler.config_path = self.cfg_path
+        test_token = "test-token-12345"
+        AIConfigHTTPHandler.admin_token = test_token
 
         # 1. Test GET /api/ai_policy?app=shop_app
         handler = AIConfigHTTPHandler.__new__(AIConfigHTTPHandler)
         handler.path = "/api/ai_policy?app=shop_app"
-        handler.headers = {}
+        handler.headers = {"Origin": "http://127.0.0.1:8080"}
         handler.wfile = io.BytesIO()
         handler.send_response = MagicMock()
         handler.send_header = MagicMock()
@@ -164,43 +166,85 @@ class TestAIAdmin(unittest.TestCase):
         res_data = json.loads(handler.wfile.getvalue().decode("utf-8"))
         self.assertEqual(res_data["mode"], "auto")
 
-        # 2. Test POST /api/ai_policy update
+        # 2. Test untrusted Origin rejection (CORS protection against external sites)
+        handler_bad_origin = AIConfigHTTPHandler.__new__(AIConfigHTTPHandler)
+        handler_bad_origin.path = "/api/ai_policy"
+        handler_bad_origin.headers = {"Origin": "https://malicious-website.com"}
+        handler_bad_origin.wfile = io.BytesIO()
+        handler_bad_origin.send_response = MagicMock()
+        handler_bad_origin.send_header = MagicMock()
+        handler_bad_origin.end_headers = MagicMock()
+
+        handler_bad_origin.do_OPTIONS()
+        handler_bad_origin.send_response.assert_called_with(403)
+
+        # 3. Test POST without token -> 401 Unauthorized
         post_body = json.dumps({
             "app_name": "shop_app",
             "updates": {"mode": "gemini_only"},
-            "explicit_paid_opt_in": False,
         }).encode("utf-8")
 
-        handler = AIConfigHTTPHandler.__new__(AIConfigHTTPHandler)
-        handler.path = "/api/ai_policy"
-        handler.headers = {"Content-Length": str(len(post_body))}
-        handler.rfile = io.BytesIO(post_body)
-        handler.wfile = io.BytesIO()
-        handler.send_response = MagicMock()
-        handler.send_header = MagicMock()
-        handler.end_headers = MagicMock()
+        handler_unauth = AIConfigHTTPHandler.__new__(AIConfigHTTPHandler)
+        handler_unauth.path = "/api/ai_policy"
+        handler_unauth.headers = {"Content-Length": str(len(post_body)), "Origin": "http://localhost:8080"}
+        handler_unauth.rfile = io.BytesIO(post_body)
+        handler_unauth.wfile = io.BytesIO()
+        handler_unauth.send_response = MagicMock()
+        handler_unauth.send_header = MagicMock()
+        handler_unauth.end_headers = MagicMock()
 
-        handler.do_POST()
-        handler.send_response.assert_called_with(200)
-        post_res = json.loads(handler.wfile.getvalue().decode("utf-8"))
+        handler_unauth.do_POST()
+        handler_unauth.send_response.assert_called_with(401)
+
+        # 4. Test POST with valid token update
+        handler_auth = AIConfigHTTPHandler.__new__(AIConfigHTTPHandler)
+        handler_auth.path = "/api/ai_policy"
+        handler_auth.headers = {
+            "Content-Length": str(len(post_body)),
+            "Origin": "http://127.0.0.1:8080",
+            "X-Admin-Token": test_token,
+        }
+        handler_auth.rfile = io.BytesIO(post_body)
+        handler_auth.wfile = io.BytesIO()
+        handler_auth.send_response = MagicMock()
+        handler_auth.send_header = MagicMock()
+        handler_auth.end_headers = MagicMock()
+
+        handler_auth.do_POST()
+        handler_auth.send_response.assert_called_with(200)
+        post_res = json.loads(handler_auth.wfile.getvalue().decode("utf-8"))
         self.assertEqual(post_res["mode"], "gemini_only")
         self.assertTrue(post_res["has_per_app_override"])
 
-        # 3. Test POST /api/ai_policy/reset
+        # 5. Test POST /api/ai_policy/reset with valid token
         reset_body = json.dumps({"app_name": "shop_app"}).encode("utf-8")
-        handler = AIConfigHTTPHandler.__new__(AIConfigHTTPHandler)
-        handler.path = "/api/ai_policy/reset"
-        handler.headers = {"Content-Length": str(len(reset_body))}
-        handler.rfile = io.BytesIO(reset_body)
-        handler.wfile = io.BytesIO()
-        handler.send_response = MagicMock()
-        handler.send_header = MagicMock()
-        handler.end_headers = MagicMock()
+        handler_reset = AIConfigHTTPHandler.__new__(AIConfigHTTPHandler)
+        handler_reset.path = "/api/ai_policy/reset"
+        handler_reset.headers = {
+            "Content-Length": str(len(reset_body)),
+            "Origin": "null",
+            "X-Admin-Token": test_token,
+        }
+        handler_reset.rfile = io.BytesIO(reset_body)
+        handler_reset.wfile = io.BytesIO()
+        handler_reset.send_response = MagicMock()
+        handler_reset.send_header = MagicMock()
+        handler_reset.end_headers = MagicMock()
 
-        handler.do_POST()
-        handler.send_response.assert_called_with(200)
-        reset_res = json.loads(handler.wfile.getvalue().decode("utf-8"))
+        handler_reset.do_POST()
+        handler_reset.send_response.assert_called_with(200)
+        reset_res = json.loads(handler_reset.wfile.getvalue().decode("utf-8"))
         self.assertFalse(reset_res["has_per_app_override"])
+
+    def test_7_update_providers_via_service(self) -> None:
+        """Test 7: Updating primary_provider and lightweight_provider persists correctly."""
+        policy = update_ai_policy(
+            app_name="shop_app",
+            updates={"primary_provider": "gemini", "lightweight_provider": "openrouter"},
+            config_path=self.cfg_path,
+        )
+        self.assertEqual(policy["primary_provider"], "gemini")
+        self.assertEqual(policy["lightweight_provider"], "openrouter")
 
 
 if __name__ == "__main__":

@@ -210,7 +210,7 @@ def aggregate_ai_usage(
             if isinstance(tok.get("completion_tokens"), int):
                 completion_tokens_sum += tok["completion_tokens"]
 
-    free_tier_ratio = round((free_tier_count / total_requests), 4) if total_requests > 0 else 1.0
+    free_tier_ratio = round((free_tier_count / total_requests), 4) if total_requests > 0 else None
 
     daily_trend = [
         {"date": d, **counts}

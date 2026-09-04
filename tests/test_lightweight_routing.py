@@ -395,7 +395,13 @@ class TestLightweightRouting(unittest.TestCase):
             active_model="openrouter/free",
         )
 
-        enriched = enrich_app_data_with_priority_and_ai(app_data, router=router)
+        # Add an extra issue beyond triage scope
+        extra_issue = copy.deepcopy(app_data["top_issues"][0])
+        extra_issue["issue_id"] = "issue_beyond_top_limit"
+        extra_issue["title"] = "UntriagedException"
+        app_data["top_issues"].append(extra_issue)
+
+        enriched = enrich_app_data_with_priority_and_ai(app_data, router=router, top_limit=1)
 
         # 1. CRITICAL: Router analyze was called ONLY ONCE for triage, Gemini was NEVER CALLED!
         self.assertEqual(mock_analyze.call_count, 1)
@@ -405,21 +411,33 @@ class TestLightweightRouting(unittest.TestCase):
         errs = validate_app_dashboard_v2(enriched)
         self.assertEqual(errs, [])
 
-        # 3. Telemetry records deep_analysis as skipped
+        # 3. Telemetry records deep_analysis as skipped and reflects OpenRouter as active provider
         src_ai = enriched["sources"]["ai"]
         self.assertEqual(src_ai["status"], "available")
+        self.assertEqual(src_ai["selected_provider"], "openrouter")
+        self.assertEqual(src_ai["selected_model"], "openrouter/free")
+        self.assertEqual(enriched["sources"]["gemini_ai"]["status"], "disabled")
+        self.assertEqual(enriched["ai_summary"]["model"], "openrouter/free (triage)")
+
         tasks = src_ai["tasks"]
         self.assertEqual(tasks["lightweight"]["status"], "available")
         self.assertEqual(tasks["deep_analysis"]["status"], "skipped")
+        self.assertEqual(tasks["deep_analysis"]["provider"], "none (gated)")
+        self.assertEqual(tasks["deep_analysis"]["model"], "none (gated)")
         self.assertIn("Skipped", tasks["deep_analysis"]["routing_reason"])
 
-        # 4. Issue has complete and valid ai_analysis directly populated from triage
-        iss = next(i for i in enriched["top_issues"] if i["issue_id"] == "aa11bb22")
-        self.assertEqual(iss["ai_analysis"]["status"], "available")
-        self.assertEqual(iss["ai_analysis"]["category"], "NETWORK")
-        self.assertEqual(iss["ai_analysis"]["short_summary"], "偶發網路連線逾時")
-        self.assertFalse(iss["ai_analysis"]["warrants_deep_analysis"])
-        self.assertEqual(iss["ai_analysis"]["root_cause"], "非致命網路波動，無需深度推理")
+        # 4. Triaged issue has complete and valid ai_analysis directly populated from triage
+        iss1 = next(i for i in enriched["top_issues"] if i["issue_id"] == "aa11bb22")
+        self.assertEqual(iss1["ai_analysis"]["status"], "available")
+        self.assertEqual(iss1["ai_analysis"]["category"], "NETWORK")
+        self.assertEqual(iss1["ai_analysis"]["short_summary"], "偶發網路連線逾時")
+        self.assertFalse(iss1["ai_analysis"]["warrants_deep_analysis"])
+        self.assertEqual(iss1["ai_analysis"]["root_cause"], "非致命網路波動，無需深度推理")
+
+        # 5. Untriaged issue beyond top_limit is cleanly marked unavailable (no fabricated diagnosis)
+        iss2 = next(i for i in enriched["top_issues"] if i["issue_id"] == "issue_beyond_top_limit")
+        self.assertEqual(iss2["ai_analysis"]["status"], "unavailable")
+        self.assertIsNone(iss2["ai_analysis"]["root_cause"])
 
     @patch("crash_trend.ai_router.AITaskRouter.analyze")
     def test_8_triage_gating_filters_deep_candidates(self, mock_analyze: MagicMock) -> None:

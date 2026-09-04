@@ -191,6 +191,9 @@ class TestBuildDashboardV2(unittest.TestCase):
         self.assertIn("AI Policy & Routing 治理設定", html)
         self.assertIn("Free Tier Guard 啟動", html)
         self.assertIn("adminModeSelect", html)
+        self.assertIn("adminPrimaryProvider", html)
+        self.assertIn("adminLightweightProvider", html)
+        self.assertIn("adminApiToken", html)
         self.assertIn("saveAiPolicyFromUI", html)
         self.assertIn("ai_config_service", html)
 

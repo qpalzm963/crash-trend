@@ -1046,13 +1046,16 @@ def enrich_app_data_with_priority_and_ai(
         main_cat = max(cat_counts.items(), key=lambda x: x[1])[0] if cat_counts else "GENERAL"
 
         now_ts = iso_utc_now()
+        triage_active_prov = triage_res.active_provider if "triage_res" in locals() else (active_router.config.lightweight_provider if active_router else "openrouter")
+        triage_active_mod = triage_res.active_model if "triage_res" in locals() else (active_router.config.lightweight_model if active_router else "openrouter/free")
+
         ai_summary = {
             "status": "available",
-            "model": model_name,
+            "model": f"{triage_active_mod} (triage)",
             "generated_at": now_ts,
             "overview": f"本期主要問題經輕量 Triage 評估均屬非致命或偶發異常（主分類：{main_cat}），無高危崩潰路徑，已跳過深度分析以節省 Gemini 配額。",
             "key_takeaways": [
-                f"全數 {len(scored_issues[:top_limit])} 個問題已由 OpenRouter Free Worker 完成初篩分類與打標",
+                f"前 {len(scored_issues[:top_limit])} 個核心問題已由 OpenRouter Free Worker 完成初篩分類與打標",
                 "暫無需要耗費高深度推理排查之核心崩潰",
             ],
             "distribution_insights": f"輕量分類分佈：{', '.join(f'{k} ({v}項)' for k, v in cat_counts.items())}",
@@ -1070,28 +1073,32 @@ def enrich_app_data_with_priority_and_ai(
 
         for issue in scored_issues:
             iid = issue.get("issue_id", "")
-            t_info = triage_map.get(iid, {})
-            issue["ai_analysis"] = {
-                "status": "available",
-                "root_cause": t_info.get("triage_reason", "輕量評估未發現需深入推理之根因"),
-                "suggested_fix": f"建議依照【{t_info.get('category', 'OTHER')}】常規修復指引處理",
-                "effort": "S",
-                "confidence": "medium",
-                "reasoning_sources": ["triage"],
-                "short_summary": t_info.get("short_summary"),
-                "category": t_info.get("category"),
-                "tags": t_info.get("tags", []),
-                "warrants_deep_analysis": False,
-                "triage_reason": t_info.get("triage_reason"),
-            }
+            if iid in triage_map:
+                t_info = triage_map[iid]
+                issue["ai_analysis"] = {
+                    "status": "available",
+                    "root_cause": t_info.get("triage_reason", "輕量評估未發現需深入推理之根因"),
+                    "suggested_fix": f"建議依照【{t_info.get('category', 'OTHER')}】常規修復指引處理",
+                    "effort": "S",
+                    "confidence": "medium",
+                    "reasoning_sources": ["triage"],
+                    "short_summary": t_info.get("short_summary"),
+                    "category": t_info.get("category"),
+                    "tags": t_info.get("tags", []),
+                    "warrants_deep_analysis": False,
+                    "triage_reason": t_info.get("triage_reason"),
+                }
+            else:
+                # 超出 top_limit 未被 triage 且未被 deep analysis 分析的問題，不予偽造診斷
+                issue["ai_analysis"] = generate_disabled_issue_analysis()
 
         app_data["top_issues"] = scored_issues
         app_data["ai_summary"] = ai_summary
         tasks_telemetry["deep_analysis"] = {
             "task_type": task_type,
             "status": "skipped",
-            "provider": provider_name,
-            "model": model_name,
+            "provider": "none (gated)",
+            "model": "none (gated)",
             "routing_reason": f"Skipped: All {len(scored_issues[:top_limit])} issues triaged as not warranting deep analysis (Gemini quota saved)",
             "fallback_used": False,
             "fallback_reason": None,
@@ -1099,12 +1106,12 @@ def enrich_app_data_with_priority_and_ai(
         if "sources" in app_data:
             app_data["sources"]["ai"] = {
                 "status": "available",
-                "provider": provider_name,
-                "model": model_name,
+                "provider": triage_active_prov,
+                "model": triage_active_mod,
                 "requested_mode": requested_mode,
                 "task_type": task_type,
-                "selected_provider": provider_name,
-                "selected_model": model_name,
+                "selected_provider": triage_active_prov,
+                "selected_model": triage_active_mod,
                 "routing_reason": "Triage Gating: Skipped deep analysis (100% quota saved)",
                 "fallback_used": False,
                 "fallback_reason": None,
@@ -1114,10 +1121,10 @@ def enrich_app_data_with_priority_and_ai(
                 "error_message": None,
             }
             if "gemini_ai" in app_data["sources"]:
-                app_data["sources"]["gemini_ai"]["status"] = "available"
+                app_data["sources"]["gemini_ai"]["status"] = "disabled"
                 app_data["sources"]["gemini_ai"]["last_sync_timestamp"] = now_ts
                 app_data["sources"]["gemini_ai"]["model"] = model_name
-                app_data["sources"]["gemini_ai"]["error_message"] = None
+                app_data["sources"]["gemini_ai"]["error_message"] = "Skipped by Triage Gating: No issues warranting deep analysis"
         _sync_periods_priority_and_ai(app_data, prev_app_data=prev_app_data, core_paths=core_paths, latest_ver=latest_ver)
         return app_data
 

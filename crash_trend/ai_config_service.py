@@ -13,9 +13,11 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hmac
 import http.server
 import json
 import os
+import secrets
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -37,6 +39,34 @@ from .ai_router import (
 )
 from .config import APPS_YAML, ROOT, load_config
 from .pipeline_health import sanitize_error_message
+
+ADMIN_TOKEN_FILE = ROOT / "out" / ".admin_token"
+
+
+def get_or_create_admin_token(token_override: Optional[str] = None) -> str:
+    """Retrieves or creates a cryptographically secure token for Admin API writeback."""
+    if token_override:
+        return token_override.strip()
+    env_token = os.environ.get("CRASH_TREND_ADMIN_TOKEN")
+    if env_token:
+        return env_token.strip()
+
+    if ADMIN_TOKEN_FILE.exists():
+        try:
+            tok = ADMIN_TOKEN_FILE.read_text(encoding="utf-8").strip()
+            if tok:
+                return tok
+        except Exception:
+            pass
+
+    new_token = secrets.token_hex(16)
+    try:
+        ADMIN_TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
+        ADMIN_TOKEN_FILE.write_text(new_token, encoding="utf-8")
+        ADMIN_TOKEN_FILE.chmod(0o600)
+    except Exception:
+        pass
+    return new_token
 
 
 def get_effective_ai_policy(
@@ -251,47 +281,72 @@ def reset_app_ai_policy(
 class AIConfigHTTPHandler(http.server.BaseHTTPRequestHandler):
     """Lightweight HTTP Handler serving the AI Policy Admin REST API."""
     config_path: Optional[Path] = None
+    admin_token: Optional[str] = None
 
     def log_message(self, format: str, *args: Any) -> None:
         # Suppress noisy standard output in background server mode
         pass
 
-    def _set_cors_headers(self, status: int = 200) -> None:
+    def _get_allowed_origin(self) -> Optional[str]:
+        origin = self.headers.get("Origin")
+        if not origin or origin == "null":
+            return "null"
+        if origin.startswith("http://127.0.0.1:") or origin.startswith("http://localhost:"):
+            return origin
+        return None
+
+    def _set_cors_headers(self, status: int = 200) -> bool:
+        origin = self._get_allowed_origin()
+        if origin is None:
+            self.send_response(403)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(b'{"error": "Forbidden: Untrusted Origin"}')
+            return False
+
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Origin", origin)
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Admin-Token")
         self.end_headers()
+        return True
 
     def do_OPTIONS(self) -> None:
         self._set_cors_headers(204)
 
     def do_GET(self) -> None:
+        if not self._set_cors_headers(200):
+            return
         parsed = urlparse(self.path)
         if parsed.path == "/api/ai_policy":
             params = parse_qs(parsed.query)
             app_name = params.get("app", [None])[0]
             try:
                 policy = get_effective_ai_policy(app_name=app_name)
-                self._set_cors_headers(200)
                 self.wfile.write(json.dumps(policy, ensure_ascii=False).encode("utf-8"))
             except Exception as e:
-                self._set_cors_headers(400)
                 self.wfile.write(json.dumps({"error": sanitize_error_message(str(e))}).encode("utf-8"))
         else:
-            self._set_cors_headers(404)
             self.wfile.write(json.dumps({"error": "Not Found"}).encode("utf-8"))
 
     def do_POST(self) -> None:
+        # Strict Token Authentication to prevent CSRF / cross-site tampering
+        expected_token = self.admin_token or get_or_create_admin_token()
+        provided_token = self.headers.get("X-Admin-Token", "").strip()
+        if not provided_token or not hmac.compare_digest(provided_token, expected_token):
+            if self._set_cors_headers(401):
+                self.wfile.write(json.dumps({"error": "Unauthorized: Invalid or missing X-Admin-Token"}).encode("utf-8"))
+            return
+
         parsed = urlparse(self.path)
         content_len = int(self.headers.get("Content-Length", 0))
         post_body = self.rfile.read(content_len) if content_len > 0 else b"{}"
         try:
             payload = json.loads(post_body.decode("utf-8"))
         except Exception:
-            self._set_cors_headers(400)
-            self.wfile.write(json.dumps({"error": "Invalid JSON"}).encode("utf-8"))
+            if self._set_cors_headers(400):
+                self.wfile.write(json.dumps({"error": "Invalid JSON"}).encode("utf-8"))
             return
 
         if parsed.path == "/api/ai_policy":
@@ -305,34 +360,43 @@ class AIConfigHTTPHandler(http.server.BaseHTTPRequestHandler):
                     config_path=self.config_path,
                     explicit_paid_opt_in=explicit_opt_in,
                 )
-                self._set_cors_headers(200)
-                self.wfile.write(json.dumps(updated, ensure_ascii=False).encode("utf-8"))
+                if self._set_cors_headers(200):
+                    self.wfile.write(json.dumps(updated, ensure_ascii=False).encode("utf-8"))
             except Exception as e:
-                self._set_cors_headers(400)
-                self.wfile.write(json.dumps({"error": sanitize_error_message(str(e))}).encode("utf-8"))
+                if self._set_cors_headers(400):
+                    self.wfile.write(json.dumps({"error": sanitize_error_message(str(e))}).encode("utf-8"))
         elif parsed.path == "/api/ai_policy/reset":
             app_name = payload.get("app_name")
             if not app_name:
-                self._set_cors_headers(400)
-                self.wfile.write(json.dumps({"error": "app_name is required for reset"}).encode("utf-8"))
+                if self._set_cors_headers(400):
+                    self.wfile.write(json.dumps({"error": "app_name is required for reset"}).encode("utf-8"))
                 return
             try:
                 res = reset_app_ai_policy(app_name, config_path=self.config_path)
-                self._set_cors_headers(200)
-                self.wfile.write(json.dumps(res, ensure_ascii=False).encode("utf-8"))
+                if self._set_cors_headers(200):
+                    self.wfile.write(json.dumps(res, ensure_ascii=False).encode("utf-8"))
             except Exception as e:
-                self._set_cors_headers(400)
-                self.wfile.write(json.dumps({"error": sanitize_error_message(str(e))}).encode("utf-8"))
+                if self._set_cors_headers(400):
+                    self.wfile.write(json.dumps({"error": sanitize_error_message(str(e))}).encode("utf-8"))
         else:
-            self._set_cors_headers(404)
-            self.wfile.write(json.dumps({"error": "Not Found"}).encode("utf-8"))
+            if self._set_cors_headers(404):
+                self.wfile.write(json.dumps({"error": "Not Found"}).encode("utf-8"))
 
 
-def serve_admin_api(port: int = 8080, host: str = "127.0.0.1", config_path: Optional[Path] = None) -> None:
+def serve_admin_api(
+    port: int = 8080,
+    host: str = "127.0.0.1",
+    config_path: Optional[Path] = None,
+    token: Optional[str] = None,
+) -> None:
     """Runs a local administrative HTTP API server for Dashboard AI Policy controls."""
+    sec_token = get_or_create_admin_token(token_override=token)
     AIConfigHTTPHandler.config_path = config_path
+    AIConfigHTTPHandler.admin_token = sec_token
     server = http.server.HTTPServer((host, port), AIConfigHTTPHandler)
     print(f"✓ AI Policy Admin API server running at http://{host}:{port}/api/ai_policy")
+    print(f"  [Security] Admin API Token: {sec_token}")
+    print(f"  [Security] Token file: {ADMIN_TOKEN_FILE}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -346,7 +410,9 @@ def main() -> None:
     parser.add_argument("--app", help="Target app name (omit for global policy)")
     parser.add_argument("--show", action="store_true", help="Display current effective policy")
     parser.add_argument("--mode", choices=["auto", "gemini_only", "openrouter_only"], help="Set routing mode")
+    parser.add_argument("--primary-provider", choices=sorted(SUPPORTED_PROVIDERS), help="Set primary provider (gemini / openrouter)")
     parser.add_argument("--primary-model", help="Set primary model name")
+    parser.add_argument("--lightweight-provider", choices=sorted(SUPPORTED_PROVIDERS), help="Set lightweight provider (gemini / openrouter)")
     parser.add_argument("--lightweight-model", help="Set lightweight model name")
     parser.add_argument("--allow-paid-models", choices=["true", "false"], help="Set paid model policy")
     parser.add_argument("--confirm-paid-opt-in", action="store_true", help="Explicit confirmation for paid models")
@@ -354,11 +420,12 @@ def main() -> None:
     parser.add_argument("--fallback", choices=["true", "false"], help="Enable or disable transient fallback")
     parser.add_argument("--reset", action="store_true", help="Reset per-app override to global policy")
     parser.add_argument("--serve", nargs="?", const=8080, type=int, help="Start local admin HTTP API server (default port 8080)")
+    parser.add_argument("--token", help="Admin API authentication token override")
 
     args = parser.parse_args()
 
     if args.serve:
-        serve_admin_api(port=args.serve)
+        serve_admin_api(port=args.serve, token=args.token)
         return
 
     if args.reset:
@@ -371,8 +438,12 @@ def main() -> None:
     updates: Dict[str, Any] = {}
     if args.mode:
         updates["mode"] = args.mode
+    if args.primary_provider:
+        updates["primary_provider"] = args.primary_provider
     if args.primary_model:
         updates["primary_model"] = args.primary_model
+    if args.lightweight_provider:
+        updates["lightweight_provider"] = args.lightweight_provider
     if args.lightweight_model:
         updates["lightweight_model"] = args.lightweight_model
     if args.allow_paid_models:

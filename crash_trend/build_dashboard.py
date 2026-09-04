@@ -3461,7 +3461,7 @@ function renderSettings() {
           政策調整控制台 (Interactive Policy Controls)
         </div>
 
-        <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(240px, 1fr));gap:14px;margin-bottom:14px">
+        <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(200px, 1fr));gap:12px;margin-bottom:14px">
           <div>
             <label style="display:block;font-size:12px;font-weight:600;margin-bottom:4px">路由模式 (Routing Mode)</label>
             <select id="adminModeSelect" style="width:100%;padding:6px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-surface);font-size:13px">
@@ -3471,11 +3471,25 @@ function renderSettings() {
             </select>
           </div>
           <div>
-            <label style="display:block;font-size:12px;font-weight:600;margin-bottom:4px">主力深度模型 (Primary Model)</label>
+            <label style="display:block;font-size:12px;font-weight:600;margin-bottom:4px">深度 Provider</label>
+            <select id="adminPrimaryProvider" style="width:100%;padding:6px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-surface);font-size:13px">
+              <option value="gemini" ${pol.primary_provider === 'gemini' ? 'selected' : ''}>gemini (Google Direct)</option>
+              <option value="openrouter" ${pol.primary_provider === 'openrouter' ? 'selected' : ''}>openrouter (OpenRouter)</option>
+            </select>
+          </div>
+          <div>
+            <label style="display:block;font-size:12px;font-weight:600;margin-bottom:4px">深度 Model</label>
             <input type="text" id="adminPrimaryModel" value="${esc(pol.primary_model)}" style="width:100%;padding:6px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-surface);font-size:13px">
           </div>
           <div>
-            <label style="display:block;font-size:12px;font-weight:600;margin-bottom:4px">輕量任務模型 (Lightweight Model)</label>
+            <label style="display:block;font-size:12px;font-weight:600;margin-bottom:4px">輕量 Provider</label>
+            <select id="adminLightweightProvider" style="width:100%;padding:6px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-surface);font-size:13px">
+              <option value="openrouter" ${pol.lightweight_provider === 'openrouter' ? 'selected' : ''}>openrouter (OpenRouter)</option>
+              <option value="gemini" ${pol.lightweight_provider === 'gemini' ? 'selected' : ''}>gemini (Google Direct)</option>
+            </select>
+          </div>
+          <div>
+            <label style="display:block;font-size:12px;font-weight:600;margin-bottom:4px">輕量 Model</label>
             <input type="text" id="adminLightweightModel" value="${esc(pol.lightweight_model)}" style="width:100%;padding:6px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-surface);font-size:13px">
           </div>
         </div>
@@ -3502,6 +3516,7 @@ function renderSettings() {
         <div id="adminValidationError" style="display:none;margin-bottom:12px;padding:8px 12px;background:#fce8e6;border:1px solid #fad2cf;border-radius:var(--radius-sm);color:#c5221f;font-size:12px"></div>
 
         <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+          <input type="password" id="adminApiToken" placeholder="Admin Token (本機服務安全金鑰)" value="" style="padding:6px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-surface);font-size:12px;width:180px" title="本機服務啟動時終端機顯示的 Token，或存於 out/.admin_token">
           <button class="export-btn" style="background:var(--accent);color:#fff;border-color:var(--accent);font-weight:600" onclick="saveAiPolicyFromUI()">
             儲存變更 (Save Policy)
           </button>
@@ -3509,7 +3524,7 @@ function renderSettings() {
             複製 CLI 指令
           </button>
           ${pol.has_per_app_override ? `<button class="export-btn" style="color:var(--danger-text);border-color:var(--danger-text)" onclick="resetAiPolicyFromUI()">重置為全域 Policy</button>` : ''}
-          <span style="font-size:11px;color:var(--text-muted);margin-left:auto">寫回服務端點：<code>http://127.0.0.1:8080/api/ai_policy</code></span>
+          <span style="font-size:11px;color:var(--text-muted);margin-left:auto">本機寫回端點：<code>http://127.0.0.1:8080/api/ai_policy</code></span>
         </div>
       </div>
     `;
@@ -3522,7 +3537,7 @@ function renderSettings() {
     error_count: 0,
     fallback_count: 0,
     rate_limit_count: 0,
-    free_tier_ratio: 1.0,
+    free_tier_ratio: null,
     by_task_type: {},
     by_provider: {},
     by_model: {},
@@ -3535,9 +3550,13 @@ function renderSettings() {
   const usageBadge = $("aiUsageHeaderBadge");
   if (usageBadge) {
     const cg = usage.cost_guard || {};
-    usageBadge.innerHTML = cg.paid_models_ever_allowed
-      ? `<span class="badge badge-fatal">曾允許付費模型 (Paid Permitted)</span>`
-      : `<span class="badge badge-active" style="background:#e6f4ea;color:#137333">Free Tier Eligible (免費額度適用)</span>`;
+    if (usage.total_requests === 0) {
+      usageBadge.innerHTML = `<span class="badge" style="background:var(--bg-subtle)">無調用數據 (No Data)</span>`;
+    } else {
+      usageBadge.innerHTML = cg.paid_models_ever_allowed
+        ? `<span class="badge badge-fatal">曾允許付費模型 (Paid Permitted)</span>`
+        : `<span class="badge badge-active" style="background:#e6f4ea;color:#137333">Free Tier Eligible (免費額度適用)</span>`;
+    }
   }
 
   const usageEl = $("aiUsageContent");
@@ -3547,7 +3566,9 @@ function renderSettings() {
       ? `Prompt: <b>${fmt(tok.prompt_tokens)}</b> · Output: <b>${fmt(tok.completion_tokens)}</b> · Total: <b>${fmt(tok.total_tokens)}</b> tokens`
       : `<span style="color:var(--text-muted)">無 Token Metadata（Provider 未回傳，不做虛假估算）</span>`;
 
-    const freePct = Math.round((usage.free_tier_ratio || 1.0) * 100);
+    const freePctText = (usage.total_requests > 0 && usage.free_tier_ratio !== null && usage.free_tier_ratio !== undefined)
+      ? `${Math.round(usage.free_tier_ratio * 100)}%`
+      : "—";
 
     const taskBadges = Object.entries(usage.by_task_type || {}).map(([t, c]) =>
       `<span class="badge" style="background:var(--bg-surface);border:1px solid var(--border)"><code>${esc(t)}</code>: <b>${c}</b></span>`
@@ -3601,7 +3622,7 @@ function renderSettings() {
         </div>
         <div style="background:var(--bg-surface);padding:10px 12px;border:1px solid var(--border);border-radius:var(--radius-md)">
           <div style="font-size:11px;color:var(--text-muted)">Free Tier 適用比例</div>
-          <div style="font-size:20px;font-weight:700;color:var(--good-text);margin-top:2px">${freePct}%</div>
+          <div style="font-size:20px;font-weight:700;color:var(--good-text);margin-top:2px">${freePctText}</div>
         </div>
       </div>
 
@@ -3641,13 +3662,22 @@ function handlePaidModelToggle(checked) {
 }
 
 function getAiPolicyFormValues() {
+  const tokenInput = $("adminApiToken");
+  const inputVal = tokenInput ? tokenInput.value.trim() : "";
+  const token = inputVal || localStorage.getItem("ai_admin_token") || "";
+  if (inputVal) {
+    localStorage.setItem("ai_admin_token", inputVal);
+  }
   return {
     mode: $("adminModeSelect") ? $("adminModeSelect").value : "auto",
+    primary_provider: $("adminPrimaryProvider") ? $("adminPrimaryProvider").value : "gemini",
     primary_model: $("adminPrimaryModel") ? $("adminPrimaryModel").value.trim() : "",
+    lightweight_provider: $("adminLightweightProvider") ? $("adminLightweightProvider").value : "openrouter",
     lightweight_model: $("adminLightweightModel") ? $("adminLightweightModel").value.trim() : "",
     include_source_snippet: $("adminPrivacySnippet") ? $("adminPrivacySnippet").checked : true,
     fallback_enabled: $("adminFallback") ? $("adminFallback").checked : false,
     allow_paid_models: $("adminAllowPaid") ? $("adminAllowPaid").checked : false,
+    admin_token: token,
   };
 }
 
@@ -3657,7 +3687,7 @@ async function saveAiPolicyFromUI() {
   if (errEl) errEl.style.display = "none";
 
   // Client-side Free Guard check
-  if (!vals.allow_paid_models && vals.lightweight_model) {
+  if (!vals.allow_paid_models && vals.lightweight_provider === "openrouter" && vals.lightweight_model) {
     const isFree = vals.lightweight_model === "openrouter/free" || vals.lightweight_model.includes(":free");
     if (!isFree) {
       if (errEl) {
@@ -3674,15 +3704,32 @@ async function saveAiPolicyFromUI() {
   }
 
   try {
+    const headers = { "Content-Type": "application/json" };
+    if (vals.admin_token) {
+      headers["X-Admin-Token"] = vals.admin_token;
+    }
     const res = await fetch("http://127.0.0.1:8080/api/ai_policy", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: headers,
       body: JSON.stringify({
         app_name: curAppId,
-        updates: vals,
+        updates: {
+          mode: vals.mode,
+          primary_provider: vals.primary_provider,
+          primary_model: vals.primary_model,
+          lightweight_provider: vals.lightweight_provider,
+          lightweight_model: vals.lightweight_model,
+          include_source_snippet: vals.include_source_snippet,
+          fallback_enabled: vals.fallback_enabled,
+          allow_paid_models: vals.allow_paid_models,
+        },
         explicit_paid_opt_in: vals.allow_paid_models,
       }),
     });
+    if (res.status === 401) {
+      alert("【認證失敗 (401)】Admin Token 無效或未提供。\n請於控制台「Admin Token」欄位輸入服務啟動時終端機顯示的金鑰（或查看 out/.admin_token 檔案）。");
+      return;
+    }
     if (!res.ok) {
       const errData = await res.json().catch(() => ({}));
       throw new Error(errData.error || `HTTP ${res.status}`);
@@ -3694,7 +3741,7 @@ async function saveAiPolicyFromUI() {
     renderSettings();
     showToast("✓ AI Policy 已成功儲存至 apps.yaml，將於下次管線執行生效！");
   } catch (err) {
-    const cliCmd = `python3 -m crash_trend.ai_config_service --app ${curAppId} --mode ${vals.mode} --primary-model ${vals.primary_model} --lightweight-model ${vals.lightweight_model} ${vals.allow_paid_models ? '--allow-paid-models true --confirm-paid-opt-in' : '--allow-paid-models false'}`;
+    const cliCmd = `python3 -m crash_trend.ai_config_service --app ${curAppId} --mode ${vals.mode} --primary-provider ${vals.primary_provider} --primary-model ${vals.primary_model} --lightweight-provider ${vals.lightweight_provider} --lightweight-model ${vals.lightweight_model} ${vals.allow_paid_models ? '--allow-paid-models true --confirm-paid-opt-in' : '--allow-paid-models false'}`;
     navigator.clipboard.writeText(cliCmd).catch(() => {});
     alert(`本地 Admin API 服務尚未啟動 (http://127.0.0.1:8080)。\n您可執行「python3 -m crash_trend.ai_config_service --serve 8080」開啟一鍵即時寫回。\n\n已為您複製對應 CLI 指令到剪貼簿：\n${cliCmd}`);
   }
@@ -3702,7 +3749,7 @@ async function saveAiPolicyFromUI() {
 
 function copyAiPolicyCliFromUI() {
   const vals = getAiPolicyFormValues();
-  const cliCmd = `python3 -m crash_trend.ai_config_service --app ${curAppId} --mode ${vals.mode} --primary-model ${vals.primary_model} --lightweight-model ${vals.lightweight_model} ${vals.allow_paid_models ? '--allow-paid-models true --confirm-paid-opt-in' : '--allow-paid-models false'}`;
+  const cliCmd = `python3 -m crash_trend.ai_config_service --app ${curAppId} --mode ${vals.mode} --primary-provider ${vals.primary_provider} --primary-model ${vals.primary_model} --lightweight-provider ${vals.lightweight_provider} --lightweight-model ${vals.lightweight_model} ${vals.allow_paid_models ? '--allow-paid-models true --confirm-paid-opt-in' : '--allow-paid-models false'}`;
   navigator.clipboard.writeText(cliCmd).then(() => {
     showToast("已複製 CLI 管理指令到剪貼簿");
   }).catch(() => {
@@ -3714,12 +3761,21 @@ async function resetAiPolicyFromUI() {
   const ok = window.confirm(`確定要清除 App「${curAppId}」的專屬 AI 設定，並回復至 Global Policy 嗎？`);
   if (!ok) return;
 
+  const vals = getAiPolicyFormValues();
   try {
+    const headers = { "Content-Type": "application/json" };
+    if (vals.admin_token) {
+      headers["X-Admin-Token"] = vals.admin_token;
+    }
     const res = await fetch("http://127.0.0.1:8080/api/ai_policy/reset", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: headers,
       body: JSON.stringify({ app_name: curAppId }),
     });
+    if (res.status === 401) {
+      alert("【認證失敗 (401)】Admin Token 無效或未提供。\n請於控制台「Admin Token」欄位輸入服務啟動時終端機顯示的金鑰。");
+      return;
+    }
     if (!res.ok) {
       const errData = await res.json().catch(() => ({}));
       throw new Error(errData.error || `HTTP ${res.status}`);

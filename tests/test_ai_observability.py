@@ -174,6 +174,7 @@ class TestAIObservability(unittest.TestCase):
         """Test 4: aggregate_ai_usage with empty history returns clean schema without errors."""
         summary = aggregate_ai_usage([], days=7)
         self.assertEqual(summary["total_requests"], 0)
+        self.assertIsNone(summary["free_tier_ratio"])
         self.assertEqual(summary["tokens"]["status"], "unavailable")
         self.assertIsNone(summary["tokens"]["total_tokens"])
         self.assertEqual(summary["daily_trend"], [])

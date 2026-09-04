@@ -141,7 +141,7 @@ python3 crash_trend/fetch_stacktraces.py --app clock_in_app
 
 **AI Policy 管理 CLI 指令範例**：
 ```bash
-# 啟動儀表板一鍵即時寫回 Admin API 服務 (預設 Port 8080)
+# 啟動儀表板一鍵即時寫回 Admin API 服務 (預設 Port 8080，具備安全 Token 與 CORS Origin 攔截防護)
 python3 -m crash_trend.ai_config_service --serve 8080
 
 # 查看當前 Effective Policy (全域或指定 App)
@@ -149,6 +149,9 @@ python3 -m crash_trend.ai_config_service --app clock_in_app --show
 
 # 切換路由模式 (auto / gemini_only / openrouter_only)
 python3 -m crash_trend.ai_config_service --app clock_in_app --mode auto
+
+# 調整主力與輕量 Provider 及 Model
+python3 -m crash_trend.ai_config_service --app clock_in_app --primary-provider gemini --primary-model gemini-3.8-flash --lightweight-provider openrouter --lightweight-model openrouter/free
 
 # 重置特定 App 回全域預設 Policy
 python3 -m crash_trend.ai_config_service --app clock_in_app --reset
