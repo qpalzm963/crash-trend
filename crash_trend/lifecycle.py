@@ -21,11 +21,29 @@ from typing import Any, Dict, Iterable, List, Literal, Optional, Tuple
 
 try:
     from crash_trend.config import ROOT, get_app, load_config, out_dir
-    from crash_trend.schema_v2 import HistoricalCatalogData, IssueLifecycle, LifecycleStatus
+    from crash_trend.schema_v2 import (
+        HistoricalCatalogData,
+        IssueLifecycle,
+        LifecycleStatus,
+        PreviousReleaseComparison,
+        ReleaseCatalogItem,
+        ReleaseIssueLifecycle,
+        ReleaseRecentHealth,
+        ReleaseStatus,
+    )
     from crash_trend.versions import max_version, min_version, version_key
 except ImportError:
     from config import ROOT, get_app, load_config, out_dir  # type: ignore
-    from schema_v2 import HistoricalCatalogData, IssueLifecycle, LifecycleStatus  # type: ignore
+    from schema_v2 import (  # type: ignore
+        HistoricalCatalogData,
+        IssueLifecycle,
+        LifecycleStatus,
+        PreviousReleaseComparison,
+        ReleaseCatalogItem,
+        ReleaseIssueLifecycle,
+        ReleaseRecentHealth,
+        ReleaseStatus,
+    )
     from versions import max_version, min_version, version_key  # type: ignore
 
 
@@ -323,8 +341,13 @@ class IssueHistoricalCatalog:
 
         self.catalog_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    def update_app_versions(self, version_health: Iterable[dict], platform: Optional[str] = None) -> None:
-        """Records version-level metrics and sample sufficiency into catalog per platform."""
+    def update_app_versions(
+        self,
+        version_health: Iterable[dict],
+        platform: Optional[str] = None,
+        window: Optional[int | str] = None,
+    ) -> None:
+        """Records version-level metrics, lifetime counts, and windowed recent health into catalog per platform."""
         now_iso = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
         for v in version_health:
             if not isinstance(v, dict):
@@ -341,8 +364,16 @@ class IssueHistoricalCatalog:
 
             adoption = v.get("adoption_rate") if v.get("adoption_rate") is not None else existing.get("adoption_rate")
             sessions = v.get("sessions_total") if v.get("sessions_total") is not None else existing.get("sessions_total")
-            events = v.get("crash_events", 0) or existing.get("crash_events", 0)
+            events = v.get("crash_events", 0) if v.get("crash_events") is not None else existing.get("crash_events", 0)
+            users = v.get("affected_users", 0) if v.get("affected_users") is not None else existing.get("affected_users", 0)
             status = v.get("status") or existing.get("status") or "active"
+            cfu_rate = v.get("crash_free_users_rate") if v.get("crash_free_users_rate") is not None else existing.get("crash_free_users_rate")
+            cfs_rate = v.get("crash_free_sessions_rate") if v.get("crash_free_sessions_rate") is not None else existing.get("crash_free_sessions_rate")
+
+            # Authoritative release date: ONLY set if explicitly provided, NEVER fake first_seen as release_date
+            rel_date = v.get("release_date") or existing.get("release_date")
+            first_seen = v.get("first_seen") or existing.get("first_seen")
+            last_seen = v.get("last_seen") or existing.get("last_seen")
 
             is_suff = is_version_sample_sufficient({
                 "adoption_rate": adoption,
@@ -351,6 +382,38 @@ class IssueHistoricalCatalog:
                 "sample_sufficient": v.get("sample_sufficient") or existing.get("sample_sufficient"),
             })
 
+            # Lifetime metrics: never sum across windows or days; use max / deduplicated
+            lifetime_crashes = max(int(existing.get("lifetime_crashes") or 0), int(v.get("lifetime_crashes") or 0), int(events))
+            lifetime_users = max(int(existing.get("lifetime_affected_users") or 0), int(v.get("lifetime_affected_users") or 0), int(users))
+            lifetime_issues = max(int(existing.get("lifetime_issues") or 0), int(v.get("lifetime_issues") or 0))
+            lifetime_fatal = max(int(existing.get("lifetime_fatal") or 0), int(v.get("lifetime_fatal") or 0))
+            lifetime_anr = max(int(existing.get("lifetime_anr") or 0), int(v.get("lifetime_anr") or 0))
+
+            # Update recent health dictionary per window
+            recent_health = dict(existing.get("recent_health") or {})
+            if window is not None:
+                w_key = str(window)
+                clean_w = w_key.rstrip("d")
+                w_data = {
+                    "crash_events": int(events),
+                    "affected_users": int(users),
+                    "sessions_total": sessions,
+                    "crash_free_users_rate": v.get("crash_free_users_rate"),
+                    "crash_free_sessions_rate": v.get("crash_free_sessions_rate"),
+                    "adoption_rate": adoption,
+                    "fatal_events": int(v.get("fatal_events", 0)),
+                    "fatal_count": int(v.get("fatal_events", 0)),
+                    "anr_events": int(v.get("anr_events", 0)),
+                    "anr_count": int(v.get("anr_events", 0)),
+                    "new_issues_count": int(v.get("new_issues_count", 0)),
+                    "active_issues_count": int(v.get("new_issues_count", 0)),
+                    "sample_sufficient": is_suff,
+                    "status": status,
+                    "trend": v.get("trend") or "stable",
+                }
+                recent_health[clean_w] = w_data
+                recent_health[f"{clean_w}d"] = w_data
+
             self.app_versions[pf][ver] = {
                 "version": ver,
                 "platform": pf,
@@ -358,7 +421,18 @@ class IssueHistoricalCatalog:
                 "adoption_rate": adoption,
                 "sessions_total": sessions,
                 "crash_events": events,
+                "crash_free_users_rate": cfu_rate,
+                "crash_free_sessions_rate": cfs_rate,
                 "sample_sufficient": is_suff,
+                "release_date": rel_date,
+                "first_seen": first_seen,
+                "last_seen": last_seen,
+                "lifetime_crashes": lifetime_crashes,
+                "lifetime_issues": lifetime_issues,
+                "lifetime_affected_users": lifetime_users,
+                "lifetime_fatal": lifetime_fatal,
+                "lifetime_anr": lifetime_anr,
+                "recent_health": recent_health,
                 "last_updated": now_iso,
             }
 
@@ -374,12 +448,16 @@ class IssueHistoricalCatalog:
             canonical_key = self._canonical_key(pf, iid)
 
             v_dist = iss.get("version_distribution") or []
-            dist_versions = [v["version"] for v in v_dist if isinstance(v, dict) and v.get("version")]
+            dist_versions = [str(v["version"]).strip() for v in v_dist if isinstance(v, dict) and v.get("version")]
             iss_versions = set(dist_versions)
             if iss.get("first_seen_version"):
-                iss_versions.add(str(iss["first_seen_version"]))
+                iss_versions.add(str(iss["first_seen_version"]).strip())
             if iss.get("last_seen_version"):
-                iss_versions.add(str(iss["last_seen_version"]))
+                iss_versions.add(str(iss["last_seen_version"]).strip())
+
+            ts_first = iss.get("first_seen_timestamp")
+            ts_last = iss.get("last_seen_timestamp")
+            err_type = iss.get("error_type", "NON_FATAL")
 
             existing = self.issues.get(canonical_key)
             if existing:
@@ -392,8 +470,8 @@ class IssueHistoricalCatalog:
                 f_ver = min_version(all_candidates_first)
                 l_ver = max_version(all_candidates_last)
 
-                ts_first_list = [t for t in [existing.get("first_seen_timestamp"), iss.get("first_seen_timestamp")] if t]
-                ts_last_list = [t for t in [existing.get("last_seen_timestamp"), iss.get("last_seen_timestamp")] if t]
+                ts_first_list = [t for t in [existing.get("first_seen_timestamp"), ts_first] if t]
+                ts_last_list = [t for t in [existing.get("last_seen_timestamp"), ts_last] if t]
 
                 existing["versions_seen"] = sorted_vers
                 existing["first_seen_version"] = f_ver or existing.get("first_seen_version")
@@ -413,56 +491,504 @@ class IssueHistoricalCatalog:
                     "platform": pf,
                     "title": iss.get("title", ""),
                     "subtitle": iss.get("subtitle", ""),
-                    "error_type": iss.get("error_type", "NON_FATAL"),
+                    "error_type": err_type,
                     "first_seen_version": f_ver,
                     "last_seen_version": l_ver,
-                    "first_seen_timestamp": iss.get("first_seen_timestamp"),
-                    "last_seen_timestamp": iss.get("last_seen_timestamp"),
+                    "first_seen_timestamp": ts_first,
+                    "last_seen_timestamp": ts_last,
                     "versions_seen": sorted_vers,
                     "last_updated": now_iso,
                 }
 
+            # Register/update each version entity in self.app_versions
+            self.app_versions.setdefault(pf, {})
+            for v_name in iss_versions:
+                if not v_name:
+                    continue
+                v_obj = self.app_versions[pf].setdefault(v_name, {
+                    "version": v_name,
+                    "platform": pf,
+                    "status": "active",
+                    "adoption_rate": None,
+                    "sessions_total": None,
+                    "crash_events": 0,
+                    "sample_sufficient": False,
+                    "release_date": None,
+                    "first_seen": None,
+                    "last_seen": None,
+                    "lifetime_crashes": 0,
+                    "lifetime_issues": 0,
+                    "lifetime_affected_users": 0,
+                    "lifetime_fatal": 0,
+                    "lifetime_anr": 0,
+                    "recent_health": {},
+                    "last_updated": now_iso,
+                })
+                if ts_first:
+                    v_obj["first_seen"] = min(v_obj["first_seen"], ts_first) if v_obj.get("first_seen") else ts_first
+                if ts_last:
+                    v_obj["last_seen"] = max(v_obj["last_seen"], ts_last) if v_obj.get("last_seen") else ts_last
+
     def update_from_catalog_rows(self, rows: Iterable[dict]) -> None:
-        """Ingests broad catalog query rows (issue_id, app_version, first_seen_ts, last_seen_ts, events, users)."""
+        """Ingests broad catalog query rows (issue_id, app_version, first_seen_ts, last_seen_ts, events, users, fatal, anr)."""
         now_iso = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
         for row in rows:
             iid = row.get("issue_id")
-            ver = str(row.get("app_version", "")).strip()
-            if not iid or not ver:
+            ver = str(row.get("app_version") or row.get("version") or "").strip()
+            if not ver:
                 continue
 
             pf = "ios" if (row.get("platform") or row.get("_platform")) == "ios" else "android"
-            canonical_key = self._canonical_key(pf, iid)
+            self.app_versions.setdefault(pf, {})
+            v_obj = self.app_versions[pf].setdefault(ver, {
+                "version": ver,
+                "platform": pf,
+                "status": "active",
+                "adoption_rate": None,
+                "sessions_total": None,
+                "crash_events": 0,
+                "sample_sufficient": False,
+                "release_date": None,
+                "first_seen": None,
+                "last_seen": None,
+                "lifetime_crashes": 0,
+                "lifetime_issues": 0,
+                "lifetime_affected_users": 0,
+                "lifetime_fatal": 0,
+                "lifetime_anr": 0,
+                "recent_health": {},
+                "last_updated": now_iso,
+            })
 
-            ts_first = row.get("first_seen_timestamp")
-            ts_last = row.get("last_seen_timestamp")
+            ts_first = row.get("first_seen_timestamp") or row.get("first_seen")
+            ts_last = row.get("last_seen_timestamp") or row.get("last_seen")
+            if ts_first:
+                v_obj["first_seen"] = min(v_obj["first_seen"], ts_first) if v_obj.get("first_seen") else ts_first
+            if ts_last:
+                v_obj["last_seen"] = max(v_obj["last_seen"], ts_last) if v_obj.get("last_seen") else ts_last
 
-            existing = self.issues.get(canonical_key)
-            if existing:
-                all_vers = set(existing.get("versions_seen", [])) | {ver}
-                sorted_vers = sorted(list(all_vers), key=version_key)
-                existing["versions_seen"] = sorted_vers
-                existing["first_seen_version"] = min_version([existing.get("first_seen_version"), ver]) or ver
-                existing["last_seen_version"] = max_version([existing.get("last_seen_version"), ver]) or ver
-                if ts_first and (not existing.get("first_seen_timestamp") or ts_first < existing["first_seen_timestamp"]):
-                    existing["first_seen_timestamp"] = ts_first
-                if ts_last and (not existing.get("last_seen_timestamp") or ts_last > existing["last_seen_timestamp"]):
-                    existing["last_seen_timestamp"] = ts_last
-                existing["last_updated"] = now_iso
-            else:
-                self.issues[canonical_key] = {
-                    "issue_id": iid,
-                    "platform": pf,
-                    "title": row.get("title", ""),
-                    "subtitle": row.get("subtitle", ""),
-                    "error_type": row.get("error_type", "NON_FATAL"),
-                    "first_seen_version": ver,
-                    "last_seen_version": ver,
-                    "first_seen_timestamp": ts_first,
-                    "last_seen_timestamp": ts_last,
-                    "versions_seen": [ver],
-                    "last_updated": now_iso,
+            ev_count = row.get("crash_events") if row.get("crash_events") is not None else (row.get("lifetime_crashes") if row.get("lifetime_crashes") is not None else row.get("events"))
+            if ev_count is not None:
+                v_obj["lifetime_crashes"] = max(v_obj.get("lifetime_crashes", 0), int(ev_count))
+                v_obj["crash_events"] = v_obj["lifetime_crashes"]
+            usr_count = row.get("affected_users") if row.get("affected_users") is not None else (row.get("lifetime_affected_users") if row.get("lifetime_affected_users") is not None else (row.get("lifetime_users") if row.get("lifetime_users") is not None else row.get("users")))
+            if usr_count is not None:
+                v_obj["lifetime_affected_users"] = max(v_obj.get("lifetime_affected_users", 0), int(usr_count))
+            fat_count = row.get("fatal_events") if row.get("fatal_events") is not None else row.get("lifetime_fatal")
+            if fat_count is not None:
+                v_obj["lifetime_fatal"] = max(v_obj.get("lifetime_fatal", 0), int(fat_count))
+            anr_count = row.get("anr_events") if row.get("anr_events") is not None else row.get("lifetime_anr")
+            if anr_count is not None:
+                v_obj["lifetime_anr"] = max(v_obj.get("lifetime_anr", 0), int(anr_count))
+            iss_count = row.get("issues_count") if row.get("issues_count") is not None else row.get("lifetime_issues")
+            if iss_count is not None:
+                v_obj["lifetime_issues"] = max(v_obj.get("lifetime_issues", 0), int(iss_count))
+
+            if iid:
+                canonical_key = self._canonical_key(pf, iid)
+                existing = self.issues.get(canonical_key)
+                if existing:
+                    all_vers = set(existing.get("versions_seen", [])) | {ver}
+                    sorted_vers = sorted(list(all_vers), key=version_key)
+                    existing["versions_seen"] = sorted_vers
+                    existing["first_seen_version"] = min_version([existing.get("first_seen_version"), ver]) or ver
+                    existing["last_seen_version"] = max_version([existing.get("last_seen_version"), ver]) or ver
+                    if ts_first and (not existing.get("first_seen_timestamp") or ts_first < existing["first_seen_timestamp"]):
+                        existing["first_seen_timestamp"] = ts_first
+                    if ts_last and (not existing.get("last_seen_timestamp") or ts_last > existing["last_seen_timestamp"]):
+                        existing["last_seen_timestamp"] = ts_last
+                    existing["last_updated"] = now_iso
+                else:
+                    self.issues[canonical_key] = {
+                        "issue_id": iid,
+                        "platform": pf,
+                        "title": row.get("title", ""),
+                        "subtitle": row.get("subtitle", ""),
+                        "error_type": row.get("error_type", "NON_FATAL"),
+                        "first_seen_version": ver,
+                        "last_seen_version": ver,
+                        "first_seen_timestamp": ts_first,
+                        "last_seen_timestamp": ts_last,
+                        "versions_seen": [ver],
+                        "last_updated": now_iso,
+                    }
+
+    def calculate_version_status(
+        self,
+        version: str,
+        platform: str,
+        latest_version: Optional[str] = None,
+        reference_time: Optional[dt.datetime] = None,
+    ) -> Literal["latest", "active", "legacy"]:
+        """Evaluates whether a version is latest, active, or legacy (>90d inactive)."""
+        pf = "ios" if platform == "ios" else "android"
+        latest_v = latest_version or max_version(self.get_known_app_versions(platform=pf))
+        if latest_v and version == latest_v:
+            return "latest"
+
+        v_info = self.app_versions.get(pf, {}).get(version, {})
+        explicit_status = str(v_info.get("status", "")).lower()
+        if explicit_status in ("legacy", "deprecated"):
+            return "legacy"
+
+        ref_dt = reference_time or dt.datetime.now(dt.timezone.utc)
+        last_seen_str = v_info.get("last_seen")
+        if last_seen_str:
+            try:
+                clean = last_seen_str.replace("Z", "+00:00")
+                last_dt = dt.datetime.fromisoformat(clean)
+                if last_dt.tzinfo is None:
+                    last_dt = last_dt.replace(tzinfo=dt.timezone.utc)
+                else:
+                    last_dt = last_dt.astimezone(dt.timezone.utc)
+                delta_days = (ref_dt - last_dt).total_seconds() / 86400.0
+                if delta_days > 90.0:
+                    return "legacy"
+                return "active"
+            except Exception:
+                pass
+
+        recent = v_info.get("recent_health", {})
+        has_recent = False
+        if isinstance(recent, dict):
+            for r in recent.values():
+                if isinstance(r, dict) and ((r.get("crash_events") or 0) > 0 or (r.get("sessions_total") or 0) > 0):
+                    has_recent = True
+                    break
+
+        if has_recent:
+            return "active"
+
+        return "legacy" if ((v_info.get("crash_events") or 0) == 0 and not recent) else "active"
+
+    def build_release_catalog(
+        self,
+        app_data: Optional[dict] = None,
+        platform: Optional[str] = None,
+        reference_date: Optional[Any] = None,
+    ) -> List[ReleaseCatalogItem]:
+        """Constructs the decoupled persistent release catalog conforming to ReleaseCatalogItem."""
+        ref_dt = dt.datetime.now(dt.timezone.utc)
+        if reference_date is not None:
+            if isinstance(reference_date, dt.datetime):
+                ref_dt = reference_date if reference_date.tzinfo else reference_date.replace(tzinfo=dt.timezone.utc)
+            elif isinstance(reference_date, dt.date):
+                ref_dt = dt.datetime(reference_date.year, reference_date.month, reference_date.day, tzinfo=dt.timezone.utc)
+            elif isinstance(reference_date, str):
+                try:
+                    parsed = dt.datetime.fromisoformat(reference_date.replace("Z", "+00:00"))
+                    ref_dt = parsed if parsed.tzinfo else parsed.replace(tzinfo=dt.timezone.utc)
+                except Exception:
+                    pass
+
+        target_platforms = [platform] if platform in ("android", "ios") else ["android", "ios"]
+        catalog_items: List[ReleaseCatalogItem] = []
+
+        for pf in target_platforms:
+            known_vers = list(self.get_known_app_versions(platform=pf))
+            if isinstance(app_data, dict):
+                for v in app_data.get("version_health") or []:
+                    if isinstance(v, dict) and v.get("version"):
+                        v_pf = v.get("platform")
+                        if v_pf is None or v_pf in (pf, "all"):
+                            known_vers.append(str(v["version"]).strip())
+                for d in app_data.get("distributions", {}).get("app_versions") or []:
+                    if isinstance(d, dict) and d.get("app_version"):
+                        d_pf = d.get("platform")
+                        if d_pf is None or d_pf in (pf, "all"):
+                            known_vers.append(str(d["app_version"]).strip())
+
+            sorted_vers = sorted(list(set(v for v in known_vers if v)), key=version_key)
+            if not sorted_vers:
+                continue
+
+            latest_v = get_latest_app_version(app_data, platform=pf, catalog=self) or sorted_vers[-1]
+            pf_issues = [iss for iss in self.issues.values() if iss.get("platform") == pf]
+
+            for idx, ver in enumerate(sorted_vers):
+                v_prev = sorted_vers[idx - 1] if idx > 0 else None
+                v_info = self.app_versions.get(pf, {}).get(ver, {})
+
+                status = self.calculate_version_status(ver, pf, latest_version=latest_v, reference_time=ref_dt)
+
+                first_seen = v_info.get("first_seen")
+                last_seen = v_info.get("last_seen")
+
+                matching_issues = [iss for iss in pf_issues if ver in iss.get("versions_seen", [])]
+                if not first_seen and matching_issues:
+                    f_ts_list = [iss.get("first_seen_timestamp") for iss in matching_issues if iss.get("first_seen_timestamp")]
+                    if f_ts_list:
+                        first_seen = min(f_ts_list)
+                if not last_seen and matching_issues:
+                    l_ts_list = [iss.get("last_seen_timestamp") for iss in matching_issues if iss.get("last_seen_timestamp")]
+                    if l_ts_list:
+                        last_seen = max(l_ts_list)
+
+                # Authoritative release date: NEVER fallback to first_seen
+                rel_date = v_info.get("release_date")
+                if rel_date and not isinstance(rel_date, str):
+                    rel_date = None
+
+                lt_crashes = max(int(v_info.get("lifetime_crashes") or 0), int(v_info.get("crash_events") or 0))
+                lt_issues = max(int(v_info.get("lifetime_issues") or 0), len(matching_issues))
+                lt_users = max(int(v_info.get("lifetime_affected_users") or 0), int(v_info.get("affected_users") or 0))
+                lt_fatal = int(v_info.get("lifetime_fatal") or 0)
+                lt_anr = int(v_info.get("lifetime_anr") or 0)
+
+                introduced_ids: List[str] = []
+                persistent_ids: List[str] = []
+                regressed_ids: List[str] = []
+                resolved_ids: List[str] = []
+
+                ver_key_val = version_key(ver)
+                is_ver_sufficient = is_version_sample_sufficient(v_info)
+
+                for iss in pf_issues:
+                    iid = iss.get("issue_id", "")
+                    if not iid:
+                        continue
+                    iss_f_ver = iss.get("first_seen_version", "")
+                    iss_vers = set(iss.get("versions_seen", []))
+                    if iss_f_ver == ver:
+                        introduced_ids.append(iid)
+                    elif ver in iss_vers:
+                        if v_prev and v_prev in iss_vers:
+                            persistent_ids.append(iid)
+                        elif iss.get("reappeared_version") == ver or (iss_f_ver and version_key(iss_f_ver) < ver_key_val):
+                            regressed_ids.append(iid)
+                        else:
+                            persistent_ids.append(iid)
+                    else:
+                        # ver not in iss_vers: only count as resolved if it was active in immediate previous version
+                        if v_prev and v_prev in iss_vers and is_ver_sufficient:
+                            resolved_ids.append(iid)
+
+                issue_lifecycle: ReleaseIssueLifecycle = {
+                    "introduced_count": len(introduced_ids),
+                    "persistent_count": len(persistent_ids),
+                    "regressed_count": len(regressed_ids),
+                    "resolved_count": len(resolved_ids),
+                    "introduced": introduced_ids,
+                    "persistent": persistent_ids,
+                    "regressed": regressed_ids,
+                    "resolved": resolved_ids,
+                    "introduced_issues": introduced_ids,
+                    "persistent_issues": persistent_ids,
+                    "regressed_issues": regressed_ids,
+                    "resolved_issues": resolved_ids,
                 }
+
+                recent_health: Dict[str, ReleaseRecentHealth] = {}
+                periods_dict = app_data.get("periods") if isinstance(app_data, dict) else None
+
+                for w_key in ("7", "30", "90"):
+                    snap = periods_dict.get(w_key) if periods_dict else None
+                    snap_vh = snap.get("version_health", []) if snap else []
+                    match_item = next(
+                        (item for item in snap_vh if str(item.get("version", "")).strip() == ver and item.get("platform") in (pf, "all")),
+                        None,
+                    )
+                    cached_recent = v_info.get("recent_health", {}).get(w_key) or v_info.get("recent_health", {}).get(f"{w_key}d")
+
+                    if match_item:
+                        ev = int(match_item.get("crash_events") or 0)
+                        usr = int(match_item.get("affected_users") or 0)
+                        sess = match_item.get("sessions_total")
+                        cfu = match_item.get("crash_free_users_rate")
+                        cfs = match_item.get("crash_free_sessions_rate")
+                        adopt = match_item.get("adoption_rate")
+                        suff = is_version_sample_sufficient(match_item)
+                        st = match_item.get("status") or status
+                        tr = match_item.get("trend") or "stable"
+
+                        snap_fatal = 0
+                        snap_anr = 0
+                        snap_pf_issues = [s_iss for s_iss in (snap.get("top_issues") or []) if s_iss.get("platform") in (pf, "all", None)]
+                        for s_iss in snap_pf_issues:
+                            for v_dist in s_iss.get("version_distribution") or []:
+                                if v_dist.get("version") == ver:
+                                    if s_iss.get("error_type") == "FATAL":
+                                        snap_fatal += int(v_dist.get("events") or 0)
+                                    elif s_iss.get("error_type") == "ANR":
+                                        snap_anr += int(v_dist.get("events") or 0)
+
+                        new_iss_cnt = len([i for i in snap_pf_issues if i.get("first_seen_version") == ver])
+
+                        w_entry = {
+                            "crash_events": ev,
+                            "affected_users": usr,
+                            "sessions_total": sess,
+                            "crash_free_users_rate": cfu,
+                            "crash_free_sessions_rate": cfs,
+                            "adoption_rate": adopt,
+                            "fatal_events": snap_fatal,
+                            "fatal_count": snap_fatal,
+                            "anr_events": snap_anr,
+                            "anr_count": snap_anr,
+                            "new_issues_count": new_iss_cnt,
+                            "active_issues_count": new_iss_cnt,
+                            "sample_sufficient": suff,
+                            "status": st,
+                            "trend": tr,
+                        }
+                        recent_health[w_key] = w_entry
+                        recent_health[f"{w_key}d"] = w_entry
+                    elif cached_recent:
+                        c_copy = dict(cached_recent)
+                        f_cnt = c_copy.get("fatal_count") if c_copy.get("fatal_count") is not None else c_copy.get("fatal_events", 0)
+                        a_cnt = c_copy.get("anr_count") if c_copy.get("anr_count") is not None else c_copy.get("anr_events", 0)
+                        i_cnt = c_copy.get("active_issues_count") if c_copy.get("active_issues_count") is not None else c_copy.get("new_issues_count", 0)
+                        c_copy["fatal_count"] = f_cnt
+                        c_copy["fatal_events"] = f_cnt
+                        c_copy["anr_count"] = a_cnt
+                        c_copy["anr_events"] = a_cnt
+                        c_copy["active_issues_count"] = i_cnt
+                        c_copy["new_issues_count"] = i_cnt
+                        recent_health[w_key] = c_copy
+                        recent_health[f"{w_key}d"] = c_copy
+                    else:
+                        empty_entry = {
+                            "crash_events": 0,
+                            "affected_users": 0,
+                            "sessions_total": None,
+                            "crash_free_users_rate": None,
+                            "crash_free_sessions_rate": None,
+                            "adoption_rate": None,
+                            "fatal_events": 0,
+                            "fatal_count": 0,
+                            "anr_events": 0,
+                            "anr_count": 0,
+                            "new_issues_count": 0,
+                            "active_issues_count": 0,
+                            "sample_sufficient": False,
+                            "status": "inactive" if status == "legacy" else status,
+                            "trend": "stable",
+                        }
+                        recent_health[w_key] = empty_entry
+                        recent_health[f"{w_key}d"] = empty_entry
+
+                vs_previous: Optional[PreviousReleaseComparison] = None
+                if v_prev:
+                    prev_info = self.app_versions.get(pf, {}).get(v_prev, {})
+                    prev_recent = prev_info.get("recent_health", {})
+
+                    # Find matching window for normalized exposure comparison
+                    crash_rate_diff: Optional[float] = None
+                    comp_w = None
+                    for candidate_w in ("30", "90", "7"):
+                        c_w = recent_health.get(candidate_w)
+                        p_w = prev_recent.get(candidate_w)
+                        if c_w and p_w and c_w.get("sessions_total") and p_w.get("sessions_total"):
+                            comp_w = candidate_w
+                            break
+
+                    if comp_w:
+                        c_w = recent_health[comp_w]
+                        p_w = prev_recent[comp_w]
+                        c_ev = int(c_w.get("crash_events") or 0)
+                        c_se = int(c_w.get("sessions_total") or 0)
+                        p_ev = int(p_w.get("crash_events") or 0)
+                        p_se = int(p_w.get("sessions_total") or 0)
+                        if c_se > 0 and p_se > 0:
+                            rate_curr = c_ev / c_se
+                            rate_prev = p_ev / p_se
+                            crash_rate_diff = round((rate_curr - rate_prev) / rate_prev, 4) if rate_prev > 0 else 0.0
+                    else:
+                        c_sess = v_info.get("sessions_total")
+                        p_sess = prev_info.get("sessions_total")
+                        c_ev = v_info.get("crash_events")
+                        p_ev = prev_info.get("crash_events")
+                        if c_sess and p_sess and c_sess > 0 and p_sess > 0 and c_ev is not None and p_ev is not None:
+                            rate_curr = int(c_ev) / c_sess
+                            rate_prev = int(p_ev) / p_sess
+                            crash_rate_diff = round((rate_curr - rate_prev) / rate_prev, 4) if rate_prev > 0 else 0.0
+
+                    cfu_curr = v_info.get("crash_free_users_rate")
+                    if cfu_curr is None:
+                        for rh in recent_health.values():
+                            if isinstance(rh, dict) and rh.get("crash_free_users_rate") is not None:
+                                cfu_curr = rh["crash_free_users_rate"]
+                                break
+                    cfu_prev = prev_info.get("crash_free_users_rate")
+                    if cfu_prev is None:
+                        for rh in prev_recent.values():
+                            if isinstance(rh, dict) and rh.get("crash_free_users_rate") is not None:
+                                cfu_prev = rh["crash_free_users_rate"]
+                                break
+
+                    cfu_diff: Optional[float] = None
+                    if cfu_curr is not None and cfu_prev is not None:
+                        cfu_diff = round(cfu_curr - cfu_prev, 4)
+
+                    fatal_change: Optional[float] = None
+                    prev_fatal = int(prev_info.get("lifetime_fatal") or 0)
+                    if prev_fatal > 0:
+                        fatal_change = round((lt_fatal - prev_fatal) / prev_fatal, 4)
+
+                    anr_change: Optional[float] = None
+                    prev_anr = int(prev_info.get("lifetime_anr") or 0)
+                    if prev_anr > 0:
+                        anr_change = round((lt_anr - prev_anr) / prev_anr, 4)
+
+                    prev_introduced_cnt = len([i for i in pf_issues if i.get("first_seen_version") == v_prev])
+                    new_issues_diff = len(introduced_ids) - prev_introduced_cnt
+
+                    stability: Literal["improving", "stable", "degrading", "baseline"] = "stable"
+                    if crash_rate_diff is not None:
+                        if crash_rate_diff <= -0.05:
+                            stability = "improving"
+                        elif crash_rate_diff >= 0.05:
+                            stability = "degrading"
+                        else:
+                            stability = "stable"
+                    elif cfu_diff is not None:
+                        if cfu_diff >= 0.001:
+                            stability = "improving"
+                        elif cfu_diff <= -0.001:
+                            stability = "degrading"
+                        else:
+                            stability = "stable"
+
+                    vs_previous = {
+                        "previous_version": v_prev,
+                        "crash_rate_change_pct": crash_rate_diff,
+                        "crash_free_users_diff": cfu_diff,
+                        "fatal_change_pct": fatal_change,
+                        "fatal_rate_change_pct": fatal_change,
+                        "anr_change_pct": anr_change,
+                        "anr_rate_change_pct": anr_change,
+                        "new_issues_diff": new_issues_diff,
+                        "new_issues_count": new_issues_diff,
+                        "stability": stability,
+                        "stability_status": "improved" if stability == "improving" else ("regressed" if stability == "degrading" else stability),
+                    }
+
+                catalog_items.append({
+                    "version": ver,
+                    "platform": pf,
+                    "first_seen": first_seen,
+                    "last_seen": last_seen,
+                    "release_date": rel_date,
+                    "status": status,
+                    "lifetime_crashes": lt_crashes,
+                    "lifetime_issues": lt_issues,
+                    "lifetime_affected_users": lt_users,
+                    "lifetime_fatal": lt_fatal,
+                    "lifetime_anr": lt_anr,
+                    "stability_status": stability if vs_previous else "baseline",
+                    "recent_health": recent_health,
+                    "issue_lifecycle": issue_lifecycle,
+                    "vs_previous": vs_previous,
+                })
+
+        final_items: List[ReleaseCatalogItem] = []
+        for pf in target_platforms:
+            pf_items = [i for i in catalog_items if i["platform"] == pf]
+            latest_items = [i for i in pf_items if i["status"] == "latest"]
+            other_items = sorted([i for i in pf_items if i["status"] != "latest"], key=lambda x: version_key(x["version"]), reverse=True)
+            final_items.extend(latest_items + other_items)
+
+        return final_items
 
     def get_known_app_versions(self, platform: Optional[str] = None) -> List[str]:
         """Returns sorted list of all known app versions recorded in catalog, optionally isolated by platform."""
@@ -488,7 +1014,6 @@ class IssueHistoricalCatalog:
         if platform:
             canonical = self._canonical_key(platform, issue_id)
             return self.issues.get(canonical)
-        # Fallback lookups only when platform is not specified (None)
         for pf in ("android", "ios"):
             ck = self._canonical_key(pf, issue_id)
             if ck in self.issues:
@@ -518,6 +1043,18 @@ def bootstrap_catalog_from_disk(
                 issues = r_data.get("issues") or r_data.get("top_issues") or []
                 if issues:
                     cat.update_from_issues(issues)
+                vh = r_data.get("version_health")
+                if vh:
+                    cat.update_app_versions(vh)
+                app_vers = r_data.get("distributions", {}).get("app_versions") or []
+                for av in app_vers:
+                    if isinstance(av, dict) and av.get("app_version"):
+                        cat.update_from_catalog_rows([{
+                            "app_version": av["app_version"],
+                            "events": av.get("events", 0),
+                            "users": av.get("users", 0),
+                            "platform": av.get("platform", "android"),
+                        }])
             except Exception:
                 pass
 
@@ -529,6 +1066,9 @@ def bootstrap_catalog_from_disk(
             u_issues = u_data.get("issues") or []
             if u_issues:
                 cat.update_from_issues(u_issues)
+            u_vh = u_data.get("version_health")
+            if u_vh:
+                cat.update_app_versions(u_vh)
         except Exception:
             pass
 
@@ -539,10 +1079,10 @@ def bootstrap_catalog_from_disk(
             v2_data = json.loads(v2_file.read_text(encoding="utf-8"))
             v2_issues = v2_data.get("top_issues") or []
             cat.update_from_issues(v2_issues)
-            for snap in (v2_data.get("periods") or {}).values():
+            for p_k, snap in (v2_data.get("periods") or {}).items():
                 if isinstance(snap, dict):
                     cat.update_from_issues(snap.get("top_issues") or [])
-                    cat.update_app_versions(snap.get("version_health") or [])
+                    cat.update_app_versions(snap.get("version_health") or [], window=p_k)
             cat.update_app_versions(v2_data.get("version_health") or [])
         except Exception:
             pass
@@ -557,8 +1097,9 @@ def enrich_app_data_with_lifecycle(
     app_name: Optional[str] = None,
     out_dir: Optional[Path] = None,
     catalog_rows: Optional[Iterable[dict]] = None,
+    version_catalog_rows: Optional[Iterable[dict]] = None,
 ) -> dict:
-    """Enriches app_data top_issues and all periods snapshots with deterministic lifecycle,
+    """Enriches app_data top_issues, all periods snapshots, and builds persistent release_catalog,
     strictly isolating Android and iOS version sequences and latest versions.
     """
     if not isinstance(app_data, dict):
@@ -578,16 +1119,26 @@ def enrich_app_data_with_lifecycle(
     if catalog_rows:
         cat.update_from_catalog_rows(catalog_rows)
 
+    if version_catalog_rows:
+        cat.update_from_catalog_rows(version_catalog_rows)
+
     # Ingest app_versions from current version_health into catalog
     vh = app_data.get("version_health") or []
     cat.update_app_versions(vh)
+
+    periods = app_data.get("periods") or {}
+    if isinstance(periods, dict):
+        for p_k, snap in periods.items():
+            if isinstance(snap, dict):
+                snap_vh = snap.get("version_health")
+                if snap_vh:
+                    cat.update_app_versions(snap_vh, window=p_k)
 
     # Collect all issues across top_issues and all period snapshots and update catalog
     all_issues_to_index: List[dict] = []
     if isinstance(app_data.get("top_issues"), list):
         all_issues_to_index.extend(app_data["top_issues"])
 
-    periods = app_data.get("periods") or {}
     if isinstance(periods, dict):
         for snap in periods.values():
             if isinstance(snap, dict) and isinstance(snap.get("top_issues"), list):
@@ -769,6 +1320,15 @@ def enrich_app_data_with_lifecycle(
                 )
                 iss["lifecycle"] = lc
 
+    # 6. Build persistent Release Catalog and attach to app_data and period snapshots
+    release_catalog = cat.build_release_catalog(app_data)
+    app_data["release_catalog"] = release_catalog
+    if isinstance(periods, dict):
+        for snap in periods.values():
+            if isinstance(snap, dict):
+                snap["release_catalog"] = release_catalog
+
+    cat.save()
     return app_data
 
 

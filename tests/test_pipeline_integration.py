@@ -317,7 +317,7 @@ class TestPipelineIntegrationScenarios(unittest.TestCase):
             with patch("crash_trend.build_dashboard.ROOT", tmproot):
                 bundle = assemble_bundle_from_apps(fake_cfg)
                 self.assertIsNotNone(bundle)
-                self.assertIn(bundle["schema_version"], ("2.0", "2.3.0"))
+                self.assertIn(bundle["schema_version"], ("2.0", "2.3.0", "2.6.0"))
                 self.assertIn("shop_app", bundle["apps"])
                 self.assertIn("rider_app", bundle["apps"])
 
