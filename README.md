@@ -304,10 +304,37 @@ python3 crash_trend/fetch_stacktraces.py --app shop_app
 
 ---
 
+## AI Runtime 治理與 Structured Output 契約
+
+系統支援雙層架構生產路由與嚴格零費用防護（Cost Guard）：
+
+| 功能領域 | 實作機制 | 說明 |
+| :--- | :--- | :--- |
+| **預設模型升級 (#38)** | `gemini-3.8-flash` | Direct Gemini 升級至 2026-09 最新 GA 模型，支援高思考深度，自動省略過時 temperature 參數。 |
+| **Interactions 原生契約 (#39)** | `POST /v1beta/interactions` & `response_format` | 升級為 Google 官方最新 Interactions API，透過頂層 `response_format` 直接套用 Canonical JSON Schema，由 `steps` 時間軸解析輸出並從 `usage` 審計 Token，雙 provider 零耗損共用契約。 |
+| **生產輕量路由 (#40)** | `auto` 雙工模式 | 輕量任務（Triage、分類、打標）由 OpenRouter Free Worker 承接；**具備 Triage Gating 機制**，低危/非致命問題跳過深度推理以節省 100% Gemini 配額，高危問題精準過濾發送。 |
+| **後台 Policy 治理 (#41)** | `ai_config_service.py` | 儀表板提供即時互動表單，搭配本機 Admin API (`--serve 8080`) 實現一鍵寫回 `apps.yaml`；支援 `auto` / `gemini_only` / `openrouter_only` 安全切換與 Cost Guard 阻擋。 |
+| **使用量與配額觀測 (#42)** | `ai_telemetry.py` | 審計近 7 天請求量、成功率、429 Rate Limit、備援次數；嚴格 Token 審計（不造假估算）；清楚標示 Free Tier 適用資格與 Google Cloud 計費聲明。 |
+
+### AI Structured Output 契約規格 (Issue #39)
+
+Gemini Direct 與 OpenRouter Free Worker 全面共用同一份標準 `CANONICAL_AI_RESPONSE_SCHEMA`，不依賴 legacy `generationConfig.responseJsonSchema` 或 lossy OpenAPI 3.0 schema rewrite：
+- **Google Gemini Direct**：
+  - 端點：`POST https://generativelanguage.googleapis.com/v1beta/interactions`
+  - Structured Output 契約：頂層 `response_format: {"type": "text", "mime_type": "application/json", "schema": CANONICAL_AI_RESPONSE_SCHEMA}`
+  - 響應解析：由 `steps[].type == "model_output"` 之 content text 提取純淨 JSON 區塊
+  - Token 審計：由 `usage.total_input_tokens` / `total_output_tokens` / `total_tokens` 精確記錄
+  - 向下相容：支援 `api_type="generate_content"` 及 legacy `candidates` 結構回退
+- **OpenRouter Free Worker**：
+  - 端點：`POST https://openrouter.ai/api/v1/chat/completions`
+  - Structured Output 契約：頂層 `response_format: {"type": "json_schema", "json_schema": {"name": "...", "strict": true, "schema": CANONICAL_AI_RESPONSE_SCHEMA}}`
+  - 零資料保留：自動注入 `provider: { data_collection: "deny" }` 實踐 Zero Data Retention (ZDR)
+
+---
+
 ## AI Policy 管理
 
 查看有效設定：
-
 ```bash
 python3 -m crash_trend.ai_config_service --app shop_app --show
 ```
