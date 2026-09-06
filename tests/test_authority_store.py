@@ -319,6 +319,177 @@ class TestCatalogAuthorityStore(unittest.TestCase):
             self.assertEqual(validate_app_dashboard_v2(v2_result), [])
             self.assertEqual(validate_historical_catalog(cat_json), [])
 
+    def test_partial_non_empty_ids_authority_incomplete_triggers_bootstrap(self) -> None:
+        """Regression test for Review 5124265563 Blocker 1:
+
+        Legacy catalog with non-empty installation_ids (2 IDs) but fewer than recorded
+        lifetime_affected_users (500) must be treated as INCOMPLETE authority,
+        keeping bootstrap_complete=False and triggering full historical bootstrap.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            cat_file = tmppath / "historical_catalog.json"
+            db_path = tmppath / "catalog_authority.sqlite3"
+
+            cat_data = {
+                "schema_version": "2.3.0",
+                "app_id": "partial_app",
+                "updated_at": "2026-08-01T00:00:00Z",
+                "watermark": "2026-08-01T12:00:00Z",
+                "bootstrap_complete": True,
+                "issues": {},
+                "app_versions": {
+                    "android": {
+                        "1.0.0": {
+                            "version": "1.0.0",
+                            "platform": "android",
+                            "lifetime_crashes": 1000,
+                            "lifetime_affected_users": 500,
+                            "installation_ids": ["uuid_1", "uuid_2"],  # Non-empty, but 2 < 500!
+                        }
+                    },
+                    "ios": {},
+                },
+            }
+            cat_file.write_text(json.dumps(cat_data), encoding="utf-8")
+
+            # 1. Verification before load: should_trigger_catalog_bootstrap MUST detect incomplete authority
+            is_boot, wm = should_trigger_catalog_bootstrap(
+                cat_data=cat_data,
+                cat_file_exists=True,
+                authority_store_path=db_path,
+                app_id="partial_app",
+                cat_file_path=cat_file,
+            )
+            self.assertTrue(is_boot, "Non-empty but incomplete legacy IDs (2 < 500) MUST trigger full bootstrap")
+            self.assertIsNone(wm)
+
+            # 2. On load(), IDs are migrated but authority is flagged incomplete
+            cat = IssueHistoricalCatalog(cat_file, app_id="partial_app", authority_store_path=db_path)
+            cat.load()
+
+            self.assertEqual(cat.authority_store.count_installations("partial_app", "android", "1.0.0"), 2)
+            self.assertFalse(cat.authority_store.has_version_authority("partial_app", "android", "1.0.0"))
+            self.assertFalse(cat.bootstrap_complete, "Catalog bootstrap_complete must be False after partial migration")
+            self.assertEqual(cat.app_versions["android"]["1.0.0"]["lifetime_affected_users"], 500)
+
+            # 3. On save(), serialized catalog records bootstrap_complete=False
+            cat.save()
+            cat.close()
+
+            saved_disk = json.loads(cat_file.read_text(encoding="utf-8"))
+            self.assertFalse(saved_disk.get("bootstrap_complete", False))
+            self.assertFalse(saved_disk.get("authority", {}).get("bootstrap_complete", False))
+
+            # 4. Incomplete authority continues to trigger full bootstrap
+            is_boot_saved, _ = should_trigger_catalog_bootstrap(
+                cat_data=saved_disk,
+                cat_file_exists=True,
+                authority_store_path=db_path,
+                app_id="partial_app",
+                cat_file_path=cat_file,
+            )
+            self.assertTrue(is_boot_saved, "Saved incomplete authority MUST still trigger bootstrap")
+
+            # 5. Full bootstrap ingestion restores full authority and exact count
+            boot_cat = IssueHistoricalCatalog(cat_file, app_id="partial_app", authority_store_path=db_path)
+            boot_cat.load()
+            all_500_ids = [f"uuid_{i}" for i in range(500)]
+            boot_cat.update_from_catalog_rows([
+                {
+                    "app_version": "1.0.0",
+                    "platform": "android",
+                    "first_seen": "2026-08-01T00:00:00Z",
+                    "last_seen": "2026-08-01T12:00:00Z",
+                    "crash_events": 1000,
+                    "affected_users": 500,
+                    "installation_ids": all_500_ids,
+                }
+            ], is_bootstrap=True, advance_watermark=True)
+            boot_cat.bootstrap_complete = True
+            boot_cat.save()
+            boot_cat.close()
+
+            boot_saved = json.loads(cat_file.read_text(encoding="utf-8"))
+            self.assertTrue(boot_saved["bootstrap_complete"])
+            self.assertTrue(boot_saved["authority"]["bootstrap_complete"])
+            is_boot_final, final_wm = should_trigger_catalog_bootstrap(
+                cat_data=boot_saved,
+                cat_file_exists=True,
+                authority_store_path=db_path,
+                app_id="partial_app",
+                cat_file_path=cat_file,
+            )
+            self.assertFalse(is_boot_final, "Completed bootstrap must switch catalog to incremental mode")
+            self.assertEqual(final_wm, "2026-08-01T12:00:00Z")
+
+    def test_sqlite_error_propagation_not_silently_swallowed(self) -> None:
+        """Regression test for Review 5124265563 Blocker 2:
+
+        SQLite database errors must propagate as AuthorityStoreError and not be silently caught with 'pass'.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            corrupted_db = tmppath / "catalog_authority.sqlite3"
+            corrupted_db.write_bytes(b"INVALID_HEADER_GARBAGE_BYTES")
+
+            cat_file = tmppath / "historical_catalog.json"
+            cat_file.write_text(json.dumps({
+                "schema_version": "2.3.0",
+                "app_id": "err_app",
+                "watermark": "2026-08-01T00:00:00Z",
+                "app_versions": {
+                    "android": {
+                        "1.0.0": {
+                            "version": "1.0.0",
+                            "lifetime_affected_users": 5,
+                            "installation_ids": ["u1", "u2", "u3", "u4", "u5"],
+                        }
+                    }
+                }
+            }), encoding="utf-8")
+
+            # 1. Opening corrupted authority store via IssueHistoricalCatalog must raise AuthorityStoreError
+            with self.assertRaises(AuthorityStoreError):
+                IssueHistoricalCatalog(cat_file, app_id="err_app", authority_store_path=corrupted_db)
+
+            # 2. should_trigger_catalog_bootstrap with corrupted DB must raise AuthorityStoreError
+            with self.assertRaises(AuthorityStoreError):
+                should_trigger_catalog_bootstrap(
+                    cat_data={
+                        "watermark": "2026-08-01T00:00:00Z",
+                        "app_versions": {"android": {"1.0.0": {"version": "1.0.0", "lifetime_affected_users": 5}}},
+                    },
+                    cat_file_exists=True,
+                    authority_store_path=corrupted_db,
+                    app_id="err_app",
+                    cat_file_path=cat_file,
+                )
+
+    def test_cli_main_authority_store_error_handling(self) -> None:
+        """Regression test for Review 5124265563 Blocker 3:
+
+        AuthorityStoreError must be imported at module level in fetch_bigquery
+        and handled without NameError in CLI main() exit path.
+        """
+        import crash_trend.fetch_bigquery as fbq
+        from unittest.mock import patch
+
+        # 1. Verify AuthorityStoreError is bound at module level
+        self.assertTrue(hasattr(fbq, "AuthorityStoreError"))
+        self.assertIs(fbq.AuthorityStoreError, AuthorityStoreError)
+
+        # 2. Simulate transform_bq_to_v2 raising AuthorityStoreError inside main()
+        with patch.object(fbq, "transform_bq_to_v2", side_effect=AuthorityStoreError("disk I/O error")):
+            with patch.object(fbq, "list_crash_tables", return_value=["table_android"]):
+                with patch.object(fbq, "make_client"):
+                    with patch("sys.argv", ["fetch_bigquery.py", "--app", "demo", "--days", "7"]):
+                        with patch.object(fbq, "get_app", return_value={"name": "demo", "firebase_project": "proj"}):
+                            # main() must exit via sys.exit with message and NOT crash with NameError
+                            with self.assertRaises(SystemExit) as ctx:
+                                fbq.main()
+                            self.assertIn("Catalog Authority Store", str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

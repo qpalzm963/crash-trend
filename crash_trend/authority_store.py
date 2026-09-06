@@ -197,11 +197,11 @@ class CatalogAuthorityStore:
                     records,
                 )
 
-                # Mark version authority status
+                # Ensure version authority status row exists with updated timestamp
                 cur.execute(
                     """
                     INSERT INTO version_authority_status (app_id, platform, app_version, bootstrap_complete, updated_at)
-                    VALUES (?, ?, ?, 1, ?)
+                    VALUES (?, ?, ?, 0, ?)
                     ON CONFLICT(app_id, platform, app_version) DO UPDATE SET
                         updated_at = excluded.updated_at
                     """,
@@ -254,7 +254,7 @@ class CatalogAuthorityStore:
         platform: str,
         app_version: str,
     ) -> bool:
-        """Returns True if the authority store has verifiable authority records for this version."""
+        """Returns True if the authority store has verified complete authority (bootstrap_complete == 1)."""
         eff_app = str(app_id or self.app_id or "default").strip()
         pf = self._normalize_pf(platform)
         ver = str(app_version or "").strip()
@@ -265,18 +265,11 @@ class CatalogAuthorityStore:
             with self._connection() as conn:
                 cur = conn.cursor()
                 cur.execute(
-                    "SELECT 1 FROM release_installations WHERE app_id = ? AND platform = ? AND app_version = ? LIMIT 1",
-                    (eff_app, pf, ver),
-                )
-                if cur.fetchone():
-                    return True
-
-                cur.execute(
                     "SELECT bootstrap_complete FROM version_authority_status WHERE app_id = ? AND platform = ? AND app_version = ?",
                     (eff_app, pf, ver),
                 )
                 row = cur.fetchone()
-                return bool(row and row[0])
+                return bool(row and int(row[0]) == 1)
         except sqlite3.Error as e:
             raise AuthorityStoreError(
                 f"Failed to check authority for app '{eff_app}', {pf} version '{ver}': {e}"

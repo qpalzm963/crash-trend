@@ -27,6 +27,15 @@ except ImportError:
     bigquery = None  # type: ignore
 
 try:
+    from crash_trend.authority_store import AuthorityStoreError
+except ImportError:
+    try:
+        from authority_store import AuthorityStoreError
+    except ImportError:
+        class AuthorityStoreError(Exception):  # type: ignore
+            pass
+
+try:
     from crash_trend.config import ROOT, app_argparser, get_app, load_config, out_dir, write_json
     from crash_trend.schema_v2 import (
         AppDashboardV2Data,
@@ -997,16 +1006,6 @@ def transform_bq_to_v2(
                         if k not in seen_vc_keys:
                             seen_vc_keys.add(k)
                             raw_version_catalog_rows.append({**vr, "platform": pf})
-
-    try:
-        from crash_trend.authority_store import AuthorityStoreError
-    except ImportError:
-        try:
-            from authority_store import AuthorityStoreError
-        except ImportError:
-            class AuthorityStoreError(Exception):  # type: ignore
-                pass
-
     try:
         try:
             from crash_trend.lifecycle import enrich_app_data_with_lifecycle
