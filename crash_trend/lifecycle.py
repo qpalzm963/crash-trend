@@ -291,10 +291,37 @@ class IssueHistoricalCatalog:
         self.app_versions: Dict[str, Dict[str, Dict[str, Any]]] = {"android": {}, "ios": {}}
         self.updated_at: Optional[str] = None
         self.watermark: Optional[str] = None
+        # Track distinct installation UUIDs per platform and version for authoritative deduplication
+        self._version_installations: Dict[str, Dict[str, Set[str]]] = {"android": {}, "ios": {}}
 
     def _canonical_key(self, platform: str, issue_id: str) -> str:
         pf = "ios" if platform == "ios" else "android"
         return f"{pf}:{issue_id}"
+
+    def advance_watermark(self, candidate_ts: Optional[str]) -> None:
+        """Advances catalog watermark if candidate_ts is newer than current watermark."""
+        if not candidate_ts:
+            return
+        ts_str = str(candidate_ts).strip()
+        if not ts_str:
+            return
+        if not self.watermark:
+            self.watermark = ts_str
+            return
+        try:
+            c_clean = ts_str.replace("Z", "+00:00")
+            w_clean = self.watermark.replace("Z", "+00:00")
+            dt_cand = dt.datetime.fromisoformat(c_clean)
+            dt_curr = dt.datetime.fromisoformat(w_clean)
+            if dt_cand.tzinfo is None:
+                dt_cand = dt_cand.replace(tzinfo=dt.timezone.utc)
+            if dt_curr.tzinfo is None:
+                dt_curr = dt_curr.replace(tzinfo=dt.timezone.utc)
+            if dt_cand > dt_curr:
+                self.watermark = ts_str
+        except Exception:
+            if ts_str > self.watermark:
+                self.watermark = ts_str
 
     def load(self) -> None:
         """Loads existing catalog file from disk if present."""
@@ -314,10 +341,18 @@ class IssueHistoricalCatalog:
                     for pf_or_ver, val in loaded_vers.items():
                         if pf_or_ver in ("android", "ios") and isinstance(val, dict):
                             self.app_versions.setdefault(pf_or_ver, {}).update(val)
+                            for v_name, v_info in val.items():
+                                if isinstance(v_info, dict):
+                                    ids = v_info.get("installation_ids") or v_info.get("user_ids")
+                                    if ids:
+                                        self._version_installations.setdefault(pf_or_ver, {}).setdefault(v_name, set()).update(str(x) for x in ids if x)
                         elif isinstance(val, dict):
                             # Backward compat: flat dict -> assign to android by default
                             pf = val.get("platform", "android")
                             self.app_versions.setdefault(pf, {})[pf_or_ver] = val
+                            ids = val.get("installation_ids") or val.get("user_ids")
+                            if ids:
+                                self._version_installations.setdefault(pf, {}).setdefault(pf_or_ver, set()).update(str(x) for x in ids if x)
 
                 self.updated_at = data.get("updated_at")
                 self.watermark = data.get("watermark")
@@ -333,10 +368,20 @@ class IssueHistoricalCatalog:
         self.catalog_path.parent.mkdir(parents=True, exist_ok=True)
         now_iso = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
         self.updated_at = now_iso
+        self.watermark = self.watermark or now_iso
+
+        # Sync tracked installation IDs into app_versions before serialization
+        for pf, vers in self.app_versions.items():
+            for v_name, v_info in vers.items():
+                if isinstance(v_info, dict):
+                    inst_set = self._version_installations.get(pf, {}).get(v_name)
+                    if inst_set:
+                        v_info["installation_ids"] = sorted(list(inst_set))
+
         payload: Dict[str, Any] = {
             "schema_version": "2.3.0",
             "updated_at": now_iso,
-            "watermark": self.watermark or now_iso,
+            "watermark": self.watermark,
             "issues": self.issues,
             "app_versions": self.app_versions,
         }
@@ -378,6 +423,8 @@ class IssueHistoricalCatalog:
             rel_date = v.get("release_date") or existing.get("release_date")
             first_seen = v.get("first_seen") or existing.get("first_seen")
             last_seen = v.get("last_seen") or existing.get("last_seen")
+            if last_seen:
+                self.advance_watermark(last_seen)
 
             is_suff = is_version_sample_sufficient({
                 "adoption_rate": adoption,
@@ -393,13 +440,15 @@ class IssueHistoricalCatalog:
             lifetime_fatal = max(int(existing.get("lifetime_fatal") or 0), int(v.get("lifetime_fatal") or 0))
             lifetime_anr = max(int(existing.get("lifetime_anr") or 0), int(v.get("lifetime_anr") or 0))
 
-            # Update recent health dictionary per window
+            # Update recent health dictionary per window (strictly window-scoped, NEVER leaking lifetime counts)
             recent_health = dict(existing.get("recent_health") or {})
             if window is not None:
                 w_key = str(window)
                 clean_w = w_key.rstrip("d")
                 fat_val = v.get("fatal_events") if v.get("fatal_events") is not None else (v.get("fatal_count") if v.get("fatal_count") is not None else (v.get("lifetime_fatal") or 0))
                 anr_val = v.get("anr_events") if v.get("anr_events") is not None else (v.get("anr_count") if v.get("anr_count") is not None else (v.get("lifetime_anr") or 0))
+                fat_int = int(fat_val)
+                anr_int = int(anr_val)
                 w_data = {
                     "crash_events": int(events),
                     "affected_users": int(users),
@@ -407,10 +456,10 @@ class IssueHistoricalCatalog:
                     "crash_free_users_rate": v.get("crash_free_users_rate"),
                     "crash_free_sessions_rate": v.get("crash_free_sessions_rate"),
                     "adoption_rate": adoption,
-                    "fatal_events": int(fat_val),
-                    "fatal_count": int(fat_val),
-                    "anr_events": int(anr_val),
-                    "anr_count": int(anr_val),
+                    "fatal_events": fat_int,
+                    "fatal_count": fat_int,
+                    "anr_events": anr_int,
+                    "anr_count": anr_int,
                     "new_issues_count": int(v.get("new_issues_count", 0)),
                     "active_issues_count": int(v.get("new_issues_count", 0)),
                     "sample_sufficient": is_suff,
@@ -534,8 +583,9 @@ class IssueHistoricalCatalog:
                     v_obj["first_seen"] = min(v_obj["first_seen"], ts_first) if v_obj.get("first_seen") else ts_first
                 if ts_last:
                     v_obj["last_seen"] = max(v_obj["last_seen"], ts_last) if v_obj.get("last_seen") else ts_last
+                    self.advance_watermark(ts_last)
 
-    def update_from_catalog_rows(self, rows: Iterable[dict]) -> None:
+    def update_from_catalog_rows(self, rows: Iterable[dict], is_incremental: bool = False) -> None:
         """Ingests broad catalog query rows (issue_id, app_version, first_seen_ts, last_seen_ts, events, users, fatal, anr)."""
         now_iso = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
         for row in rows:
@@ -567,29 +617,66 @@ class IssueHistoricalCatalog:
             })
 
             ts_first = row.get("first_seen_timestamp") or row.get("first_seen")
-            ts_last = row.get("last_seen_timestamp") or row.get("last_seen")
+            ts_last = row.get("last_seen_timestamp") or row.get("last_seen") or row.get("event_timestamp")
             if ts_first:
                 v_obj["first_seen"] = min(v_obj["first_seen"], ts_first) if v_obj.get("first_seen") else ts_first
             if ts_last:
                 v_obj["last_seen"] = max(v_obj["last_seen"], ts_last) if v_obj.get("last_seen") else ts_last
+                self.advance_watermark(ts_last)
 
             ev_count = row.get("crash_events") if row.get("crash_events") is not None else (row.get("lifetime_crashes") if row.get("lifetime_crashes") is not None else row.get("events"))
             if ev_count is not None:
-                v_obj["lifetime_crashes"] = max(v_obj.get("lifetime_crashes", 0), int(ev_count))
+                if is_incremental:
+                    v_obj["lifetime_crashes"] = int(v_obj.get("lifetime_crashes") or 0) + int(ev_count)
+                else:
+                    v_obj["lifetime_crashes"] = max(int(v_obj.get("lifetime_crashes") or 0), int(ev_count))
                 v_obj["crash_events"] = v_obj["lifetime_crashes"]
-            usr_count = row.get("affected_users") if row.get("affected_users") is not None else (row.get("lifetime_affected_users") if row.get("lifetime_affected_users") is not None else (row.get("lifetime_users") if row.get("lifetime_users") is not None else row.get("users")))
-            if usr_count is not None:
-                v_obj["lifetime_affected_users"] = max(v_obj.get("lifetime_affected_users", 0), int(usr_count))
-            fat_count = row.get("fatal_events") if row.get("fatal_events") is not None else row.get("lifetime_fatal")
-            if fat_count is not None:
-                v_obj["lifetime_fatal"] = max(v_obj.get("lifetime_fatal", 0), int(fat_count))
-            anr_count = row.get("anr_events") if row.get("anr_events") is not None else row.get("lifetime_anr")
-            if anr_count is not None:
-                v_obj["lifetime_anr"] = max(v_obj.get("lifetime_anr", 0), int(anr_count))
-            iss_count = row.get("issues_count") if row.get("issues_count") is not None else row.get("lifetime_issues")
-            if iss_count is not None:
-                v_obj["lifetime_issues"] = max(v_obj.get("lifetime_issues", 0), int(iss_count))
 
+            fat_count = row.get("fatal_events") if row.get("fatal_events") is not None else (row.get("fatal_count") if row.get("fatal_count") is not None else row.get("lifetime_fatal"))
+            if fat_count is not None:
+                if is_incremental:
+                    v_obj["lifetime_fatal"] = int(v_obj.get("lifetime_fatal") or 0) + int(fat_count)
+                else:
+                    v_obj["lifetime_fatal"] = max(int(v_obj.get("lifetime_fatal") or 0), int(fat_count))
+
+            anr_count = row.get("anr_events") if row.get("anr_events") is not None else (row.get("anr_count") if row.get("anr_count") is not None else row.get("lifetime_anr"))
+            if anr_count is not None:
+                if is_incremental:
+                    v_obj["lifetime_anr"] = int(v_obj.get("lifetime_anr") or 0) + int(anr_count)
+                else:
+                    v_obj["lifetime_anr"] = max(int(v_obj.get("lifetime_anr") or 0), int(anr_count))
+
+            # Deduplication for affected users
+            inst_set = self._version_installations.setdefault(pf, {}).setdefault(ver, set())
+            if not inst_set and v_obj.get("installation_ids"):
+                inst_set.update(str(x) for x in v_obj["installation_ids"] if x)
+            elif not inst_set and v_obj.get("user_ids"):
+                inst_set.update(str(x) for x in v_obj["user_ids"] if x)
+
+            raw_insts = row.get("installation_ids") or row.get("user_ids") or row.get("installations")
+            if raw_insts:
+                if isinstance(raw_insts, (list, set, tuple)):
+                    inst_set.update(str(x) for x in raw_insts if x)
+                else:
+                    inst_set.add(str(raw_insts))
+            if row.get("installation_uuid"):
+                inst_set.add(str(row["installation_uuid"]))
+
+            usr_count = row.get("affected_users") if row.get("affected_users") is not None else (row.get("lifetime_affected_users") if row.get("lifetime_affected_users") is not None else (row.get("lifetime_users") if row.get("lifetime_users") is not None else row.get("users")))
+
+            if inst_set:
+                v_obj["lifetime_affected_users"] = len(inst_set)
+                v_obj["installation_ids"] = sorted(list(inst_set))
+                v_obj["affected_users"] = len(inst_set)
+            elif usr_count is not None:
+                if is_incremental:
+                    v_obj["lifetime_affected_users"] = max(int(v_obj.get("lifetime_affected_users") or 0), int(usr_count))
+                else:
+                    v_obj["lifetime_affected_users"] = max(int(v_obj.get("lifetime_affected_users") or 0), int(usr_count))
+                v_obj["affected_users"] = v_obj["lifetime_affected_users"]
+
+            # Deduplication for issues count
+            iss_count = row.get("issues_count") if row.get("issues_count") is not None else row.get("lifetime_issues")
             if iid:
                 canonical_key = self._canonical_key(pf, iid)
                 existing = self.issues.get(canonical_key)
@@ -618,6 +705,19 @@ class IssueHistoricalCatalog:
                         "versions_seen": [ver],
                         "last_updated": now_iso,
                     }
+
+            known_ver_issues = {
+                iss_obj.get("issue_id")
+                for iss_obj in self.issues.values()
+                if iss_obj.get("platform") == pf and ver in iss_obj.get("versions_seen", []) and iss_obj.get("issue_id")
+            }
+            if known_ver_issues:
+                v_obj["lifetime_issues"] = max(len(known_ver_issues), int(v_obj.get("lifetime_issues") or 0))
+            elif iss_count is not None:
+                if is_incremental:
+                    v_obj["lifetime_issues"] = max(int(v_obj.get("lifetime_issues") or 0), int(iss_count))
+                else:
+                    v_obj["lifetime_issues"] = max(int(v_obj.get("lifetime_issues") or 0), int(iss_count))
 
     def calculate_version_status(
         self,
@@ -916,23 +1016,25 @@ class IssueHistoricalCatalog:
                             rate_prev = p_ev / p_se
                             crash_rate_diff = round((rate_curr - rate_prev) / rate_prev, 4) if rate_prev > 0 else 0.0
 
-                            c_fat = int(c_w.get("fatal_events") if c_w.get("fatal_events") is not None else (c_w.get("fatal_count") or 0))
-                            p_fat = int(p_w.get("fatal_events") if p_w.get("fatal_events") is not None else (p_w.get("fatal_count") or 0))
-                            r_fat_curr = c_fat / c_se
-                            r_fat_prev = p_fat / p_se
-                            if r_fat_prev > 0:
-                                fatal_rate_diff = round((r_fat_curr - r_fat_prev) / r_fat_prev, 4)
-                            elif r_fat_curr == 0 and r_fat_prev == 0:
-                                fatal_rate_diff = 0.0
+                            c_fat = c_w.get("fatal_events") if c_w.get("fatal_events") is not None else c_w.get("fatal_count")
+                            p_fat = p_w.get("fatal_events") if p_w.get("fatal_events") is not None else p_w.get("fatal_count")
+                            if c_fat is not None and p_fat is not None:
+                                r_fat_curr = int(c_fat) / c_se
+                                r_fat_prev = int(p_fat) / p_se
+                                if r_fat_prev > 0:
+                                    fatal_rate_diff = round((r_fat_curr - r_fat_prev) / r_fat_prev, 4)
+                                elif r_fat_curr == 0 and r_fat_prev == 0:
+                                    fatal_rate_diff = 0.0
 
-                            c_anr = int(c_w.get("anr_events") if c_w.get("anr_events") is not None else (c_w.get("anr_count") or 0))
-                            p_anr = int(p_w.get("anr_events") if p_w.get("anr_events") is not None else (p_w.get("anr_count") or 0))
-                            r_anr_curr = c_anr / c_se
-                            r_anr_prev = p_anr / p_se
-                            if r_anr_prev > 0:
-                                anr_rate_diff = round((r_anr_curr - r_anr_prev) / r_anr_prev, 4)
-                            elif r_anr_curr == 0 and r_anr_prev == 0:
-                                anr_rate_diff = 0.0
+                            c_anr = c_w.get("anr_events") if c_w.get("anr_events") is not None else c_w.get("anr_count")
+                            p_anr = p_w.get("anr_events") if p_w.get("anr_events") is not None else p_w.get("anr_count")
+                            if c_anr is not None and p_anr is not None:
+                                r_anr_curr = int(c_anr) / c_se
+                                r_anr_prev = int(p_anr) / p_se
+                                if r_anr_prev > 0:
+                                    anr_rate_diff = round((r_anr_curr - r_anr_prev) / r_anr_prev, 4)
+                                elif r_anr_curr == 0 and r_anr_prev == 0:
+                                    anr_rate_diff = 0.0
                     else:
                         c_sess = v_info.get("sessions_total")
                         p_sess = prev_info.get("sessions_total")
@@ -946,23 +1048,31 @@ class IssueHistoricalCatalog:
                                 rate_prev = int(p_ev) / p_se
                                 crash_rate_diff = round((rate_curr - rate_prev) / rate_prev, 4) if rate_prev > 0 else 0.0
 
-                            c_fat = int(v_info.get("fatal_events") if v_info.get("fatal_events") is not None else (v_info.get("fatal_count") if v_info.get("fatal_count") is not None else (v_info.get("lifetime_fatal") or 0)))
-                            p_fat = int(prev_info.get("fatal_events") if prev_info.get("fatal_events") is not None else (prev_info.get("fatal_count") if prev_info.get("fatal_count") is not None else (prev_info.get("lifetime_fatal") or 0)))
-                            r_fat_curr = c_fat / c_se
-                            r_fat_prev = p_fat / p_se
-                            if r_fat_prev > 0:
-                                fatal_rate_diff = round((r_fat_curr - r_fat_prev) / r_fat_prev, 4)
-                            elif r_fat_curr == 0 and r_fat_prev == 0:
-                                fatal_rate_diff = 0.0
+                            # Fallback: strictly require window-scoped fatal_events / fatal_count matching sessions.
+                            # NEVER fall back to lifetime_fatal or lifetime_anr!
+                            c_fat = v_info.get("fatal_events") if v_info.get("fatal_events") is not None else v_info.get("fatal_count")
+                            p_fat = prev_info.get("fatal_events") if prev_info.get("fatal_events") is not None else prev_info.get("fatal_count")
+                            if c_fat is not None and p_fat is not None:
+                                r_fat_curr = int(c_fat) / c_se
+                                r_fat_prev = int(p_fat) / p_se
+                                if r_fat_prev > 0:
+                                    fatal_rate_diff = round((r_fat_curr - r_fat_prev) / r_fat_prev, 4)
+                                elif r_fat_curr == 0 and r_fat_prev == 0:
+                                    fatal_rate_diff = 0.0
+                            else:
+                                fatal_rate_diff = None
 
-                            c_anr = int(v_info.get("anr_events") if v_info.get("anr_events") is not None else (v_info.get("anr_count") if v_info.get("anr_count") is not None else (v_info.get("lifetime_anr") or 0)))
-                            p_anr = int(prev_info.get("anr_events") if prev_info.get("anr_events") is not None else (prev_info.get("anr_count") if prev_info.get("anr_count") is not None else (prev_info.get("lifetime_anr") or 0)))
-                            r_anr_curr = c_anr / c_se
-                            r_anr_prev = p_anr / p_se
-                            if r_anr_prev > 0:
-                                anr_rate_diff = round((r_anr_curr - r_anr_prev) / r_anr_prev, 4)
-                            elif r_anr_curr == 0 and r_anr_prev == 0:
-                                anr_rate_diff = 0.0
+                            c_anr = v_info.get("anr_events") if v_info.get("anr_events") is not None else v_info.get("anr_count")
+                            p_anr = prev_info.get("anr_events") if prev_info.get("anr_events") is not None else prev_info.get("anr_count")
+                            if c_anr is not None and p_anr is not None:
+                                r_anr_curr = int(c_anr) / c_se
+                                r_anr_prev = int(p_anr) / p_se
+                                if r_anr_prev > 0:
+                                    anr_rate_diff = round((r_anr_curr - r_anr_prev) / r_anr_prev, 4)
+                                elif r_anr_curr == 0 and r_anr_prev == 0:
+                                    anr_rate_diff = 0.0
+                            else:
+                                anr_rate_diff = None
 
                     cfu_curr = v_info.get("crash_free_users_rate")
                     if cfu_curr is None:
@@ -1149,6 +1259,8 @@ def enrich_app_data_with_lifecycle(
     out_dir: Optional[Path] = None,
     catalog_rows: Optional[Iterable[dict]] = None,
     version_catalog_rows: Optional[Iterable[dict]] = None,
+    is_bootstrap: bool = False,
+    is_incremental: Optional[bool] = None,
 ) -> dict:
     """Enriches app_data top_issues, all periods snapshots, and builds persistent release_catalog,
     strictly isolating Android and iOS version sequences and latest versions.
@@ -1167,11 +1279,14 @@ def enrich_app_data_with_lifecycle(
         cat = IssueHistoricalCatalog(catalog_path=cat_path, app_id=effective_app_id)
         cat.load()
 
+    if is_incremental is None:
+        is_incremental = False
+
     if catalog_rows:
-        cat.update_from_catalog_rows(catalog_rows)
+        cat.update_from_catalog_rows(catalog_rows, is_incremental=is_incremental)
 
     if version_catalog_rows:
-        cat.update_from_catalog_rows(version_catalog_rows)
+        cat.update_from_catalog_rows(version_catalog_rows, is_incremental=is_incremental)
 
     # Ingest app_versions from current version_health into catalog
     vh = app_data.get("version_health") or []

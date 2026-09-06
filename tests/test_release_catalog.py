@@ -482,6 +482,103 @@ class TestReleaseCatalog(unittest.TestCase):
             cat2.load()
             self.assertEqual(cat2.watermark, "2026-08-15T00:00:00Z")
 
+    def test_bootstrap_then_incremental_lifetime_accumulation_and_watermark(self) -> None:
+        """Test bootstrap -> incremental run #1 -> incremental run #2 verifying:
+        - Lifetime crashes accumulate across incremental syncs
+        - Duplicate installations across runs are deduplicated (never double-counted)
+        - Watermark advances forward on each batch
+        - Full persistence and reload preserve exact state (Review 5124094818).
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cat_file = Path(tmpdir) / "historical_catalog.json"
+            cat = IssueHistoricalCatalog(cat_file, app_id="test_app")
+
+            # 1. Bootstrap run: cold-start with 1000 crashes, 50 fatal, 10 ANR, 500 installations
+            inst_boot = [f"uuid_{i}" for i in range(500)]
+            cat.update_from_catalog_rows([
+                {
+                    "app_version": "1.0.0",
+                    "platform": "android",
+                    "crash_events": 1000,
+                    "fatal_events": 50,
+                    "anr_events": 10,
+                    "installation_ids": inst_boot,
+                    "first_seen": "2026-08-01T00:00:00Z",
+                    "last_seen": "2026-08-01T12:00:00Z",
+                    "issues_count": 5,
+                }
+            ], is_incremental=False)
+            cat.save()
+
+            v_boot = cat.app_versions["android"]["1.0.0"]
+            self.assertEqual(v_boot["lifetime_crashes"], 1000)
+            self.assertEqual(v_boot["lifetime_fatal"], 50)
+            self.assertEqual(v_boot["lifetime_anr"], 10)
+            self.assertEqual(v_boot["lifetime_affected_users"], 500)
+            self.assertEqual(cat.watermark, "2026-08-01T12:00:00Z")
+
+            # 2. Incremental run #1: 10 new crashes, 2 fatal, 1 ANR
+            # 3 installations: uuid_1 & uuid_2 are returning (duplicates), uuid_500 is new
+            inst_inc1 = ["uuid_1", "uuid_2", "uuid_500"]
+            cat.update_from_catalog_rows([
+                {
+                    "app_version": "1.0.0",
+                    "platform": "android",
+                    "crash_events": 10,
+                    "fatal_events": 2,
+                    "anr_events": 1,
+                    "installation_ids": inst_inc1,
+                    "last_seen": "2026-08-10T15:00:00Z",
+                }
+            ], is_incremental=True)
+            cat.save()
+
+            v_inc1 = cat.app_versions["android"]["1.0.0"]
+            # Lifetime crashes accumulate: 1000 + 10 = 1010
+            self.assertEqual(v_inc1["lifetime_crashes"], 1010)
+            self.assertEqual(v_inc1["lifetime_fatal"], 52)
+            self.assertEqual(v_inc1["lifetime_anr"], 11)
+            # Unique users deduplicated: only uuid_500 is new -> 501 (not 500 + 3 = 503)
+            self.assertEqual(v_inc1["lifetime_affected_users"], 501)
+            # Watermark advanced
+            self.assertEqual(cat.watermark, "2026-08-10T15:00:00Z")
+
+            # 3. Incremental run #2: 5 new crashes, 1 fatal, 0 ANR
+            # 2 installations: uuid_500 is returning from run #1, uuid_501 is new
+            inst_inc2 = ["uuid_500", "uuid_501"]
+            cat.update_from_catalog_rows([
+                {
+                    "app_version": "1.0.0",
+                    "platform": "android",
+                    "crash_events": 5,
+                    "fatal_events": 1,
+                    "anr_events": 0,
+                    "installation_ids": inst_inc2,
+                    "last_seen": "2026-08-20T18:00:00Z",
+                }
+            ], is_incremental=True)
+            cat.save()
+
+            v_inc2 = cat.app_versions["android"]["1.0.0"]
+            # Lifetime crashes accumulate: 1010 + 5 = 1015
+            self.assertEqual(v_inc2["lifetime_crashes"], 1015)
+            self.assertEqual(v_inc2["lifetime_fatal"], 53)
+            self.assertEqual(v_inc2["lifetime_anr"], 11)
+            # Unique users deduplicated: only uuid_501 is new -> 502
+            self.assertEqual(v_inc2["lifetime_affected_users"], 502)
+            # Watermark advanced
+            self.assertEqual(cat.watermark, "2026-08-20T18:00:00Z")
+
+            # 4. Reload from disk into a brand new catalog instance
+            cat_reloaded = IssueHistoricalCatalog(cat_file, app_id="test_app")
+            cat_reloaded.load()
+            self.assertEqual(cat_reloaded.watermark, "2026-08-20T18:00:00Z")
+            v_reloaded = cat_reloaded.app_versions["android"]["1.0.0"]
+            self.assertEqual(v_reloaded["lifetime_crashes"], 1015)
+            self.assertEqual(v_reloaded["lifetime_fatal"], 53)
+            self.assertEqual(v_reloaded["lifetime_anr"], 11)
+            self.assertEqual(v_reloaded["lifetime_affected_users"], 502)
+
     def test_latest_version_decoupled_from_windowed_crash_ranking(self) -> None:
         """Test that persistent catalog 2.0.0 is marked as latest even if 30d Top-N only has 1.9.0 (Review 5124070522)."""
         cat = IssueHistoricalCatalog("test_app")
@@ -615,6 +712,41 @@ class TestReleaseCatalog(unittest.TestCase):
         self.assertIsNone(vp_no_exp["anr_rate_change_pct"])
         self.assertIsNone(vp_no_exp["fatal_change_pct"])
         self.assertIsNone(vp_no_exp["anr_change_pct"])
+
+    def test_fatal_anr_fallback_returns_none_when_matching_window_missing(self) -> None:
+        """Test that when sessions_total exists but no matching recent_health window fatal/anr exists,
+        fallback does NOT divide lifetime_fatal/lifetime_anr by sessions, returning None (Review 5124094818)."""
+        cat = IssueHistoricalCatalog("test_app_fallback")
+        # 1.0.0 and 1.1.0 have top-level sessions_total, but NO window recent_health fatal_events
+        cat.update_app_versions([
+            {
+                "version": "1.0.0",
+                "platform": "android",
+                "sessions_total": 10000,
+                "crash_events": 100,
+                "lifetime_fatal": 20,
+                "lifetime_anr": 10,
+                # No fatal_events / fatal_count provided
+            },
+            {
+                "version": "1.1.0",
+                "platform": "android",
+                "sessions_total": 12000,
+                "crash_events": 80,
+                "lifetime_fatal": 10,
+                "lifetime_anr": 5,
+                # No fatal_events / fatal_count provided
+            },
+        ])
+        catalog = cat.build_release_catalog(platform="android")
+        v110 = next(x for x in catalog if x["version"] == "1.1.0")
+        vp = v110["vs_previous"]
+        self.assertIsNotNone(vp)
+        self.assertIsNotNone(vp["crash_rate_change_pct"])
+        self.assertIsNone(vp["fatal_rate_change_pct"])
+        self.assertIsNone(vp["anr_rate_change_pct"])
+        self.assertIsNone(vp["fatal_change_pct"])
+        self.assertIsNone(vp["anr_change_pct"])
 
     def test_release_date_vs_first_seen_semantic_separation(self) -> None:
         """Test strict semantic separation: release_date is NEVER faked as first_seen."""

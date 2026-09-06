@@ -384,6 +384,9 @@ class CatalogVersionHistory(TypedDict):
     lifetime_fatal: NotRequired[int]
     lifetime_anr: NotRequired[int]
     recent_health: NotRequired[Dict[str, Any]]
+    installation_ids: NotRequired[List[str]]
+    user_ids: NotRequired[List[str]]
+    issue_ids: NotRequired[List[str]]
 
 
 class HistoricalCatalogData(TypedDict):

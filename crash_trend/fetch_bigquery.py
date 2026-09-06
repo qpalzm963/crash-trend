@@ -825,6 +825,8 @@ def transform_bq_to_v2(
     app_config: dict,
     days: int = 30,
     end_time: Optional[dt.datetime] = None,
+    is_bootstrap: bool = False,
+    is_incremental: Optional[bool] = None,
 ) -> AppDashboardV2Data:
     """把 BigQuery 查詢結果字典轉換為嚴格符合 Schema V2 的 AppDashboardV2Data。"""
     end_dt = end_time.astimezone(dt.timezone.utc) if end_time else dt.datetime.now(dt.timezone.utc)
@@ -998,6 +1000,8 @@ def transform_bq_to_v2(
             app_name=app_id,
             catalog_rows=raw_catalog_rows,
             version_catalog_rows=raw_version_catalog_rows,
+            is_bootstrap=is_bootstrap,
+            is_incremental=is_incremental,
         )
     except ImportError:
         try:
@@ -1007,6 +1011,8 @@ def transform_bq_to_v2(
                 app_name=app_id,
                 catalog_rows=raw_catalog_rows,
                 version_catalog_rows=raw_version_catalog_rows,
+                is_bootstrap=is_bootstrap,
+                is_incremental=is_incremental,
             )
         except ImportError:
             pass
@@ -1043,7 +1049,7 @@ def main() -> None:
         tables = list_crash_tables(client, project, dataset, app_config={**app, "app_id": args.app})
     except Exception as e:
         write_json(out_dir(args.app) / "crashlytics_bq.json", {**result, "errors": {"dataset": str(e)[:800]}})
-        app_v2_data = transform_bq_to_v2(result, {**app, "app_id": args.app}, days=args.days)
+        app_v2_data = transform_bq_to_v2(result, {**app, "app_id": args.app}, days=args.days, is_bootstrap=is_bootstrap)
         app_v2_data["sources"]["crashlytics_bq"] = {
             "status": "error",
             "last_sync_timestamp": None,
@@ -1059,7 +1065,7 @@ def main() -> None:
 
     if not tables:
         write_json(out_dir(args.app) / "crashlytics_bq.json", result)
-        app_v2_data = transform_bq_to_v2(result, {**app, "app_id": args.app}, days=args.days)
+        app_v2_data = transform_bq_to_v2(result, {**app, "app_id": args.app}, days=args.days, is_bootstrap=is_bootstrap)
         app_v2_data["sources"]["crashlytics_bq"] = {
             "status": "unavailable",
             "last_sync_timestamp": None,
@@ -1147,7 +1153,7 @@ def main() -> None:
 
     write_json(out_dir(args.app) / "crashlytics_bq.json", result)
 
-    app_v2_data = transform_bq_to_v2(result, {**app, "app_id": args.app}, days=args.days)
+    app_v2_data = transform_bq_to_v2(result, {**app, "app_id": args.app}, days=args.days, is_bootstrap=is_bootstrap)
     val_errors = validate_app_dashboard_v2(app_v2_data)
     if val_errors:
         print(f"  [警告] Schema V2 驗證出現 {len(val_errors)} 個錯誤：", file=sys.stderr)
