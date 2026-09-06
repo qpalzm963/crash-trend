@@ -323,6 +323,24 @@ class IssueHistoricalCatalog:
             if ts_str > self.watermark:
                 self.watermark = ts_str
 
+    @staticmethod
+    def _is_ts_le(ts: Optional[str], watermark: Optional[str]) -> bool:
+        """Returns True if ts <= watermark (comparing ISO datetimes with timezone awareness)."""
+        if not ts or not watermark:
+            return False
+        try:
+            t_clean = str(ts).strip().replace("Z", "+00:00")
+            w_clean = str(watermark).strip().replace("Z", "+00:00")
+            dt_t = dt.datetime.fromisoformat(t_clean)
+            dt_w = dt.datetime.fromisoformat(w_clean)
+            if dt_t.tzinfo is None:
+                dt_t = dt_t.replace(tzinfo=dt.timezone.utc)
+            if dt_w.tzinfo is None:
+                dt_w = dt_w.replace(tzinfo=dt.timezone.utc)
+            return dt_t <= dt_w
+        except Exception:
+            return str(ts).strip() <= str(watermark).strip()
+
     def load(self) -> None:
         """Loads existing catalog file from disk if present."""
         if self.catalog_path and self.catalog_path.is_file():
@@ -588,6 +606,8 @@ class IssueHistoricalCatalog:
     def update_from_catalog_rows(self, rows: Iterable[dict], is_incremental: bool = False) -> None:
         """Ingests broad catalog query rows (issue_id, app_version, first_seen_ts, last_seen_ts, events, users, fatal, anr)."""
         now_iso = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+        initial_watermark = self.watermark
+
         for row in rows:
             iid = row.get("issue_id")
             ver = str(row.get("app_version") or row.get("version") or "").strip()
@@ -622,27 +642,39 @@ class IssueHistoricalCatalog:
                 v_obj["first_seen"] = min(v_obj["first_seen"], ts_first) if v_obj.get("first_seen") else ts_first
             if ts_last:
                 v_obj["last_seen"] = max(v_obj["last_seen"], ts_last) if v_obj.get("last_seen") else ts_last
-                self.advance_watermark(ts_last)
 
-            ev_count = row.get("crash_events") if row.get("crash_events") is not None else (row.get("lifetime_crashes") if row.get("lifetime_crashes") is not None else row.get("events"))
+            # Watermark Boundary Idempotency: in incremental mode, if ts_last <= initial_watermark,
+            # this batch/row was already included in the catalog up to watermark and must not be double-added.
+            is_already_processed = bool(is_incremental and initial_watermark and ts_last and self._is_ts_le(ts_last, initial_watermark))
+
+            ev_count = row.get("crash_events") if row.get("crash_events") is not None else (
+                row.get("lifetime_crashes") if row.get("lifetime_crashes") is not None else (None if iid else row.get("events"))
+            )
             if ev_count is not None:
                 if is_incremental:
-                    v_obj["lifetime_crashes"] = int(v_obj.get("lifetime_crashes") or 0) + int(ev_count)
+                    if not is_already_processed:
+                        v_obj["lifetime_crashes"] = int(v_obj.get("lifetime_crashes") or 0) + int(ev_count)
                 else:
                     v_obj["lifetime_crashes"] = max(int(v_obj.get("lifetime_crashes") or 0), int(ev_count))
                 v_obj["crash_events"] = v_obj["lifetime_crashes"]
 
-            fat_count = row.get("fatal_events") if row.get("fatal_events") is not None else (row.get("fatal_count") if row.get("fatal_count") is not None else row.get("lifetime_fatal"))
+            fat_count = row.get("fatal_events") if row.get("fatal_events") is not None else (
+                row.get("fatal_count") if row.get("fatal_count") is not None else (None if iid else row.get("lifetime_fatal"))
+            )
             if fat_count is not None:
                 if is_incremental:
-                    v_obj["lifetime_fatal"] = int(v_obj.get("lifetime_fatal") or 0) + int(fat_count)
+                    if not is_already_processed:
+                        v_obj["lifetime_fatal"] = int(v_obj.get("lifetime_fatal") or 0) + int(fat_count)
                 else:
                     v_obj["lifetime_fatal"] = max(int(v_obj.get("lifetime_fatal") or 0), int(fat_count))
 
-            anr_count = row.get("anr_events") if row.get("anr_events") is not None else (row.get("anr_count") if row.get("anr_count") is not None else row.get("lifetime_anr"))
+            anr_count = row.get("anr_events") if row.get("anr_events") is not None else (
+                row.get("anr_count") if row.get("anr_count") is not None else (None if iid else row.get("lifetime_anr"))
+            )
             if anr_count is not None:
                 if is_incremental:
-                    v_obj["lifetime_anr"] = int(v_obj.get("lifetime_anr") or 0) + int(anr_count)
+                    if not is_already_processed:
+                        v_obj["lifetime_anr"] = int(v_obj.get("lifetime_anr") or 0) + int(anr_count)
                 else:
                     v_obj["lifetime_anr"] = max(int(v_obj.get("lifetime_anr") or 0), int(anr_count))
 
@@ -662,7 +694,11 @@ class IssueHistoricalCatalog:
             if row.get("installation_uuid"):
                 inst_set.add(str(row["installation_uuid"]))
 
-            usr_count = row.get("affected_users") if row.get("affected_users") is not None else (row.get("lifetime_affected_users") if row.get("lifetime_affected_users") is not None else (row.get("lifetime_users") if row.get("lifetime_users") is not None else row.get("users")))
+            usr_count = row.get("affected_users") if row.get("affected_users") is not None else (
+                row.get("lifetime_affected_users") if row.get("lifetime_affected_users") is not None else (
+                    row.get("lifetime_users") if row.get("lifetime_users") is not None else row.get("users")
+                )
+            )
 
             if inst_set:
                 v_obj["lifetime_affected_users"] = len(inst_set)
@@ -670,7 +706,8 @@ class IssueHistoricalCatalog:
                 v_obj["affected_users"] = len(inst_set)
             elif usr_count is not None:
                 if is_incremental:
-                    v_obj["lifetime_affected_users"] = max(int(v_obj.get("lifetime_affected_users") or 0), int(usr_count))
+                    if not is_already_processed:
+                        v_obj["lifetime_affected_users"] = max(int(v_obj.get("lifetime_affected_users") or 0), int(usr_count))
                 else:
                     v_obj["lifetime_affected_users"] = max(int(v_obj.get("lifetime_affected_users") or 0), int(usr_count))
                 v_obj["affected_users"] = v_obj["lifetime_affected_users"]
@@ -715,9 +752,13 @@ class IssueHistoricalCatalog:
                 v_obj["lifetime_issues"] = max(len(known_ver_issues), int(v_obj.get("lifetime_issues") or 0))
             elif iss_count is not None:
                 if is_incremental:
-                    v_obj["lifetime_issues"] = max(int(v_obj.get("lifetime_issues") or 0), int(iss_count))
+                    if not is_already_processed:
+                        v_obj["lifetime_issues"] = max(int(v_obj.get("lifetime_issues") or 0), int(iss_count))
                 else:
                     v_obj["lifetime_issues"] = max(int(v_obj.get("lifetime_issues") or 0), int(iss_count))
+
+            if ts_last:
+                self.advance_watermark(ts_last)
 
     def calculate_version_status(
         self,
@@ -1283,7 +1324,9 @@ def enrich_app_data_with_lifecycle(
         is_incremental = False
 
     if catalog_rows:
-        cat.update_from_catalog_rows(catalog_rows, is_incremental=is_incremental)
+        # catalog_rows contains issue-level distribution (e.g. from 90-day lifecycle_catalog)
+        # to update issue first/last seen and versions_seen; it is non-incremental for version totals.
+        cat.update_from_catalog_rows(catalog_rows, is_incremental=False)
 
     if version_catalog_rows:
         cat.update_from_catalog_rows(version_catalog_rows, is_incremental=is_incremental)

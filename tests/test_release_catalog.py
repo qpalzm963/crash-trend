@@ -457,19 +457,25 @@ class TestReleaseCatalog(unittest.TestCase):
         self.assertNotIn("WHERE event_timestamp IS NOT NULL", inc_sql)
         self.assertNotIn("LIMIT 500", inc_sql)
 
-        # Bootstrap template: full historical scan for initial bootstrap, NO LIMIT 500
+        # Bootstrap template: full historical scan for initial bootstrap, NO LIMIT 500, includes installation_ids
         boot_sql = SQLS["version_catalog_bootstrap"]
         self.assertIn("WHERE event_timestamp IS NOT NULL", boot_sql)
         self.assertNotIn("DATE_SUB", boot_sql)
         self.assertNotIn("LIMIT 500", boot_sql)
+        self.assertIn("ARRAY_AGG(DISTINCT installation_uuid IGNORE NULLS) AS installation_ids", boot_sql)
 
-        # Dynamic builder handles bootstrap, watermark, and catalog_days
+        # Base version_catalog template includes installation_ids
+        self.assertIn("ARRAY_AGG(DISTINCT installation_uuid IGNORE NULLS) AS installation_ids", SQLS["version_catalog"])
+
+        # Dynamic builder handles bootstrap, watermark, and catalog_days with strict > and installation_ids
         custom_inc = build_version_catalog_sql("my_table", watermark="2026-08-01T00:00:00Z")
-        self.assertIn("event_timestamp >= TIMESTAMP('2026-08-01T00:00:00Z')", custom_inc)
+        self.assertIn("event_timestamp > TIMESTAMP('2026-08-01T00:00:00Z')", custom_inc)
         self.assertNotIn("LIMIT 500", custom_inc)
+        self.assertIn("ARRAY_AGG(DISTINCT installation_uuid IGNORE NULLS) AS installation_ids", custom_inc)
 
         custom_boot = build_version_catalog_sql("my_table", is_bootstrap=True)
         self.assertIn("WHERE event_timestamp IS NOT NULL", custom_boot)
+        self.assertIn("ARRAY_AGG(DISTINCT installation_uuid IGNORE NULLS) AS installation_ids", custom_boot)
 
         # Watermark persistence in IssueHistoricalCatalog
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -541,6 +547,29 @@ class TestReleaseCatalog(unittest.TestCase):
             # Unique users deduplicated: only uuid_500 is new -> 501 (not 500 + 3 = 503)
             self.assertEqual(v_inc1["lifetime_affected_users"], 501)
             # Watermark advanced
+            self.assertEqual(cat.watermark, "2026-08-10T15:00:00Z")
+
+            # 2.1. Replay run #1 (boundary idempotency check):
+            # Same batch re-executed at watermark boundary (last_seen <= watermark).
+            # Must NOT double-increment lifetime crashes, fatal, or anr!
+            cat.update_from_catalog_rows([
+                {
+                    "app_version": "1.0.0",
+                    "platform": "android",
+                    "crash_events": 10,
+                    "fatal_events": 2,
+                    "anr_events": 1,
+                    "installation_ids": inst_inc1,
+                    "last_seen": "2026-08-10T15:00:00Z",
+                }
+            ], is_incremental=True)
+            cat.save()
+
+            v_replay = cat.app_versions["android"]["1.0.0"]
+            self.assertEqual(v_replay["lifetime_crashes"], 1010, "Replayed batch must not double-count crashes")
+            self.assertEqual(v_replay["lifetime_fatal"], 52, "Replayed batch must not double-count fatal")
+            self.assertEqual(v_replay["lifetime_anr"], 11, "Replayed batch must not double-count anr")
+            self.assertEqual(v_replay["lifetime_affected_users"], 501)
             self.assertEqual(cat.watermark, "2026-08-10T15:00:00Z")
 
             # 3. Incremental run #2: 5 new crashes, 1 fatal, 0 ANR
@@ -856,6 +885,138 @@ class TestReleaseCatalog(unittest.TestCase):
 
         # Check data contains release_catalog
         self.assertIn('release_catalog', html)
+
+    def test_transform_bq_to_v2_incremental_production_wiring_and_idempotency(self) -> None:
+        """Test transform_bq_to_v2 integration with bootstrap -> incremental run #1 -> replay -> run #2:
+        - BigQuery queries provide installation_ids for deduplication
+        - Production wiring propagates is_incremental and advances watermark
+        - Replay at watermark boundary is idempotent
+        """
+        app_cfg = {"app_id": "test_app", "platforms": ["android"]}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+
+            # 1. Bootstrap run (cold-start)
+            inst_boot = [f"uuid_{i}" for i in range(500)]
+            bq_boot = {
+                "tables": {
+                    "android": {
+                        "overview": [],
+                        "top_issues": [],
+                        "version_catalog": [
+                            {
+                                "app_version": "1.0.0",
+                                "platform": "android",
+                                "first_seen": "2026-08-01T00:00:00Z",
+                                "last_seen": "2026-08-01T12:00:00Z",
+                                "crash_events": 1000,
+                                "affected_users": 500,
+                                "installation_ids": inst_boot,
+                                "fatal_events": 50,
+                                "anr_events": 10,
+                                "issues_count": 5,
+                            }
+                        ],
+                    }
+                }
+            }
+
+            v2_boot = transform_bq_to_v2(bq_boot, app_cfg, is_bootstrap=True, out_dir=tmppath)
+            cat_boot_item = next(x for x in v2_boot["release_catalog"] if x["version"] == "1.0.0")
+            self.assertEqual(cat_boot_item["lifetime_crashes"], 1000)
+            self.assertEqual(cat_boot_item["lifetime_affected_users"], 500)
+            self.assertEqual(cat_boot_item["lifetime_fatal"], 50)
+            self.assertEqual(cat_boot_item["lifetime_anr"], 10)
+
+            # Verify watermark on disk
+            cat_file = tmppath / "test_app" / "historical_catalog.json"
+            self.assertTrue(cat_file.is_file())
+            cat_disk = json.loads(cat_file.read_text(encoding="utf-8"))
+            self.assertEqual(cat_disk["watermark"], "2026-08-01T12:00:00Z")
+
+            # 2. Incremental run #1: 10 new crashes, 2 fatal, 1 ANR
+            # 3 installations: uuid_1 & uuid_2 are returning, uuid_500 is new
+            inst_inc1 = ["uuid_1", "uuid_2", "uuid_500"]
+            bq_inc1 = {
+                "tables": {
+                    "android": {
+                        "overview": [],
+                        "top_issues": [],
+                        "version_catalog": [
+                            {
+                                "app_version": "1.0.0",
+                                "platform": "android",
+                                "first_seen": "2026-08-01T00:00:00Z",
+                                "last_seen": "2026-08-10T15:00:00Z",
+                                "crash_events": 10,
+                                "affected_users": 3,
+                                "installation_ids": inst_inc1,
+                                "fatal_events": 2,
+                                "anr_events": 1,
+                                "issues_count": 5,
+                            }
+                        ],
+                    }
+                }
+            }
+
+            v2_inc1 = transform_bq_to_v2(bq_inc1, app_cfg, is_incremental=True, out_dir=tmppath)
+            cat_inc1_item = next(x for x in v2_inc1["release_catalog"] if x["version"] == "1.0.0")
+            self.assertEqual(cat_inc1_item["lifetime_crashes"], 1010)
+            self.assertEqual(cat_inc1_item["lifetime_affected_users"], 501)
+            self.assertEqual(cat_inc1_item["lifetime_fatal"], 52)
+            self.assertEqual(cat_inc1_item["lifetime_anr"], 11)
+
+            cat_disk = json.loads(cat_file.read_text(encoding="utf-8"))
+            self.assertEqual(cat_disk["watermark"], "2026-08-10T15:00:00Z")
+
+            # 3. Replay run #1 (idempotency check at watermark boundary)
+            v2_replay = transform_bq_to_v2(bq_inc1, app_cfg, is_incremental=True, out_dir=tmppath)
+            cat_replay_item = next(x for x in v2_replay["release_catalog"] if x["version"] == "1.0.0")
+            self.assertEqual(cat_replay_item["lifetime_crashes"], 1010, "Idempotent replay must not double count crashes")
+            self.assertEqual(cat_replay_item["lifetime_affected_users"], 501, "Idempotent replay must not double count users")
+            self.assertEqual(cat_replay_item["lifetime_fatal"], 52)
+            self.assertEqual(cat_replay_item["lifetime_anr"], 11)
+
+            cat_disk = json.loads(cat_file.read_text(encoding="utf-8"))
+            self.assertEqual(cat_disk["watermark"], "2026-08-10T15:00:00Z")
+
+            # 4. Incremental run #2: 5 new crashes, 1 fatal, 0 ANR
+            # 2 installations: uuid_500 is returning, uuid_501 is new
+            inst_inc2 = ["uuid_500", "uuid_501"]
+            bq_inc2 = {
+                "tables": {
+                    "android": {
+                        "overview": [],
+                        "top_issues": [],
+                        "version_catalog": [
+                            {
+                                "app_version": "1.0.0",
+                                "platform": "android",
+                                "first_seen": "2026-08-01T00:00:00Z",
+                                "last_seen": "2026-08-20T18:00:00Z",
+                                "crash_events": 5,
+                                "affected_users": 2,
+                                "installation_ids": inst_inc2,
+                                "fatal_events": 1,
+                                "anr_events": 0,
+                                "issues_count": 5,
+                            }
+                        ],
+                    }
+                }
+            }
+
+            v2_inc2 = transform_bq_to_v2(bq_inc2, app_cfg, is_incremental=True, out_dir=tmppath)
+            cat_inc2_item = next(x for x in v2_inc2["release_catalog"] if x["version"] == "1.0.0")
+            self.assertEqual(cat_inc2_item["lifetime_crashes"], 1015)
+            self.assertEqual(cat_inc2_item["lifetime_affected_users"], 502)
+            self.assertEqual(cat_inc2_item["lifetime_fatal"], 53)
+            self.assertEqual(cat_inc2_item["lifetime_anr"], 11)
+
+            cat_disk = json.loads(cat_file.read_text(encoding="utf-8"))
+            self.assertEqual(cat_disk["watermark"], "2026-08-20T18:00:00Z")
 
 
 if __name__ == "__main__":
