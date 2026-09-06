@@ -490,6 +490,132 @@ class TestCatalogAuthorityStore(unittest.TestCase):
                                 fbq.main()
                             self.assertIn("Catalog Authority Store", str(ctx.exception))
 
+    def test_sqlite_partial_count_matches_users_without_bootstrap_status_triggers_bootstrap(self) -> None:
+        """Regression test for Review 5124280881 Blocker 1:
+
+        Even if sqlite_count == lifetime_affected_users, if per-version bootstrap_complete == 0,
+        _has_verifiable_installation_authority and should_trigger_catalog_bootstrap must return True
+        (triggering full historical bootstrap) rather than falsely trusting partial unverified authority.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            db_path = tmppath / "catalog_authority.sqlite3"
+            cat_file = tmppath / "historical_catalog.json"
+
+            store = CatalogAuthorityStore(db_path, app_id="test_app")
+            # add_installations inserts 2 UUIDs, keeping bootstrap_complete=0 by default
+            added = store.add_installations("test_app", "android", "1.0.0", ["u1", "u2"])
+            self.assertEqual(added, 2)
+            self.assertEqual(store.count_installations("test_app", "android", "1.0.0"), 2)
+            self.assertFalse(store.has_version_authority("test_app", "android", "1.0.0"))
+
+            cat_data = {
+                "schema_version": "2.3.0",
+                "app_id": "test_app",
+                "watermark": "2026-08-01T00:00:00Z",
+                "bootstrap_complete": True,
+                "authority": {
+                    "backend": "sqlite",
+                    "state_version": 1,
+                    "bootstrap_complete": True,
+                },
+                "app_versions": {
+                    "android": {
+                        "1.0.0": {
+                            "version": "1.0.0",
+                            "platform": "android",
+                            "lifetime_crashes": 10,
+                            "lifetime_affected_users": 2,
+                            "affected_users": 2,
+                        }
+                    }
+                },
+            }
+            cat_file.write_text(json.dumps(cat_data), encoding="utf-8")
+
+            # 1. Authority incomplete (bootstrap_complete=0 in SQLite): MUST trigger full bootstrap
+            is_boot, wm = should_trigger_catalog_bootstrap(
+                cat_data=cat_data,
+                cat_file_exists=True,
+                authority_store=store,
+                app_id="test_app",
+                cat_file_path=cat_file,
+            )
+            self.assertTrue(
+                is_boot,
+                "Partial SQLite data without per-version bootstrap_complete=1 must trigger bootstrap even if count==users",
+            )
+            self.assertIsNone(wm)
+
+            # 2. Once marked complete (e.g. after full bootstrap), should_trigger_catalog_bootstrap returns False
+            store.mark_version_bootstrapped("test_app", "android", "1.0.0", True)
+            self.assertTrue(store.has_version_authority("test_app", "android", "1.0.0"))
+
+            is_boot2, wm2 = should_trigger_catalog_bootstrap(
+                cat_data=cat_data,
+                cat_file_exists=True,
+                authority_store=store,
+                app_id="test_app",
+                cat_file_path=cat_file,
+            )
+            self.assertFalse(is_boot2)
+            self.assertEqual(wm2, "2026-08-01T00:00:00Z")
+            store.close()
+
+    def test_bootstrap_zero_users_null_uuids_marks_complete_no_bootstrap_loop(self) -> None:
+        """Regression test for Review 5124280881 Blocker 2:
+
+        Full bootstrap on a version with crash events but all installation UUIDs NULL (affected_users=0)
+        must mark per-version bootstrap_complete=1 in SQLite so subsequent runs do not enter an
+        infinite bootstrap loop.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            db_path = tmppath / "catalog_authority.sqlite3"
+            cat_file = tmppath / "historical_catalog.json"
+
+            cat = IssueHistoricalCatalog(cat_file, app_id="test_app", authority_store_path=db_path)
+            cat.update_from_catalog_rows(
+                [
+                    {
+                        "app_version": "1.0.0",
+                        "platform": "android",
+                        "first_seen": "2026-08-01T00:00:00Z",
+                        "last_seen": "2026-08-01T12:00:00Z",
+                        "crash_events": 100,
+                        "affected_users": 0,
+                        "installation_ids": [],
+                    }
+                ],
+                is_bootstrap=True,
+                advance_watermark=True,
+            )
+
+            # Check that per-version authority is established as complete with 0 users
+            self.assertEqual(cat.authority_store.count_installations("test_app", "android", "1.0.0"), 0)
+            self.assertTrue(cat.authority_store.has_version_authority("test_app", "android", "1.0.0"))
+            self.assertEqual(cat.app_versions["android"]["1.0.0"]["lifetime_affected_users"], 0)
+            self.assertEqual(cat.app_versions["android"]["1.0.0"]["crash_events"], 100)
+
+            cat.save()
+            cat.close()
+
+            # Inspect saved catalog JSON
+            saved_json = json.loads(cat_file.read_text(encoding="utf-8"))
+            self.assertTrue(saved_json["bootstrap_complete"])
+            self.assertEqual(saved_json["app_versions"]["android"]["1.0.0"]["lifetime_affected_users"], 0)
+
+            # should_trigger_catalog_bootstrap must recognize this version as complete and NOT loop back to bootstrap
+            is_boot, wm = should_trigger_catalog_bootstrap(
+                cat_data=saved_json,
+                cat_file_exists=True,
+                authority_store_path=db_path,
+                app_id="test_app",
+                cat_file_path=cat_file,
+            )
+            self.assertFalse(is_boot, "Zero-user bootstrapped version must NOT trigger infinite bootstrap loop")
+            self.assertEqual(wm, "2026-08-01T12:00:00Z")
+
 
 if __name__ == "__main__":
     unittest.main()

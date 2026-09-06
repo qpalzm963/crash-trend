@@ -499,11 +499,15 @@ class IssueHistoricalCatalog:
 
                     # Query exact deduplicated count from SQLite authority store
                     exact_count = self.authority_store.count_installations(eff_app, pf, v_name)
-                    existing_users = max(
-                        int(v_info.get("lifetime_affected_users") or 0),
-                        int(v_info.get("affected_users") or 0),
-                    )
-                    final_users = max(existing_users, exact_count)
+                    has_auth = self.authority_store.has_version_authority(eff_app, pf, v_name)
+                    if has_auth:
+                        final_users = exact_count
+                    else:
+                        existing_users = max(
+                            int(v_info.get("lifetime_affected_users") or 0),
+                            int(v_info.get("affected_users") or 0),
+                        )
+                        final_users = max(existing_users, exact_count)
                     v_info["lifetime_affected_users"] = final_users
                     v_info["affected_users"] = final_users
 
@@ -840,12 +844,22 @@ class IssueHistoricalCatalog:
                 int(v_obj.get("affected_users") or 0),
             )
 
-            if sqlite_count > 0:
-                if effective_bootstrap:
-                    # Bootstrap run: exact count from authority store is authoritative
+            if effective_bootstrap:
+                # Bootstrap run: exact count from authority store is authoritative for all scanned versions,
+                # even if affected_users == 0 (e.g. all installation UUIDs are NULL).
+                if sqlite_count > 0:
                     final_users = sqlite_count
                     self.authority_store.mark_version_bootstrapped(eff_app, pf, ver, True)
-                elif sqlite_count >= existing_users:
+                elif int(usr_count or 0) == 0:
+                    # Genuinely 0 users scanned during bootstrap (e.g. all UUIDs NULL)
+                    final_users = 0
+                    self.authority_store.mark_version_bootstrapped(eff_app, pf, ver, True)
+                else:
+                    # Caller passed aggregate users without SQLite installation IDs (e.g. mock test)
+                    final_users = max(existing_users, int(usr_count or 0))
+                    self.authority_store.mark_version_bootstrapped(eff_app, pf, ver, False)
+            elif sqlite_count > 0:
+                if sqlite_count >= existing_users:
                     # Complete exact deduplication: sqlite_count is fully established
                     final_users = sqlite_count
                     self.authority_store.mark_version_bootstrapped(eff_app, pf, ver, True)
@@ -1475,21 +1489,13 @@ def _has_verifiable_installation_authority(
 
     # 1. Check SQLite authority store if available (do NOT catch AuthorityStoreError: let it propagate)
     if store is not None and ver:
-        sqlite_count = store.count_installations(eff_app, pf, ver)
         has_auth = store.has_version_authority(eff_app, pf, ver)
+        if not has_auth:
+            return False
+        sqlite_count = store.count_installations(eff_app, pf, ver)
         if users > 0:
-            if sqlite_count >= users:
-                return True
-            # Incomplete authority: SQLite count does not cover known aggregate users
-            return False
-        elif crashes > 0:
-            if sqlite_count > 0 or has_auth:
-                return True
-            return False
-        else:
-            if has_auth:
-                return True
-            return False
+            return sqlite_count >= users
+        return True
 
     # 2. Check legacy JSON installation_ids
     ids = v.get("installation_ids") or v.get("user_ids")
