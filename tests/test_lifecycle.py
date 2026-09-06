@@ -30,6 +30,7 @@ from pathlib import Path
 
 from crash_trend.analyze_gemini import calculate_priority
 from crash_trend.build_dashboard import build_html
+from crash_trend.config import ROOT
 from crash_trend.fetch_sessions import enrich_app_dashboard_with_sessions
 from crash_trend.lifecycle import (
     IssueHistoricalCatalog,
@@ -425,6 +426,16 @@ class TestDashboardUIContractLifecycle(unittest.TestCase):
 
 class TestProductionPipelineAndEvidenceTiming(unittest.TestCase):
     """Verifies that Sessions evidence injected after BigQuery properly promotes resolved state (Must Fix 1 & 2)."""
+
+    def setUp(self):
+        demo_cat = ROOT / "out" / "demo" / "historical_catalog.json"
+        if demo_cat.is_file():
+            demo_cat.unlink()
+
+    def tearDown(self):
+        demo_cat = ROOT / "out" / "demo" / "historical_catalog.json"
+        if demo_cat.is_file():
+            demo_cat.unlink()
 
     def test_production_pipeline_order_sessions_enables_resolved(self):
         # 1. Simulate BigQuery output where latest release 1.0.10 has 0 crashes and is absent from Crashlytics

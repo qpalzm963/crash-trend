@@ -52,17 +52,22 @@ def get_latest_app_version(
     platform: Optional[str] = None,
     catalog: Optional["IssueHistoricalCatalog"] = None,
 ) -> str | None:
-    """Extracts the true latest app version from version_health, distributions, or catalog.
+    """Extracts the true latest app version from authoritative catalog or app data.
     Strictly filters by platform ('android' or 'ios') if specified to prevent cross-platform pollution.
 
     Priority:
-    1. version_health item where status == 'latest' (filtered by platform)
-    2. Max semver version among version_health items (filtered by platform)
-    3. Max semver version in distributions.app_versions (filtered by platform)
-    4. Max semver version in catalog.app_versions for this platform (if catalog supplied)
-    5. None (do NOT infer from top_issues.last_seen_version to avoid false positives)
+    1. If catalog is provided, combine catalog.get_known_app_versions(platform) with any valid versions in app_data,
+       and return max_version across the union. This guarantees latest release resolution is decoupled from
+       window-limited Top-N crash ranking (Blocker #2).
+    2. If catalog is not provided:
+       a. Max semver version among version_health items (filtered by platform)
+       b. Max semver version in distributions.app_versions (filtered by platform)
+    3. None (do NOT infer from top_issues.last_seen_version to avoid false positives)
     """
     if not isinstance(app_data, dict):
+        if catalog:
+            cat_versions = catalog.get_known_app_versions(platform=platform)
+            return max_version(cat_versions) if cat_versions else None
         return None
 
     vh = app_data.get("version_health") or []
@@ -74,15 +79,7 @@ def get_latest_app_version(
         if platform is None or v_pf is None or v_pf == platform or v_pf == "all":
             filtered_vh.append(v)
 
-    latest_candidates = [
-        str(v["version"]).strip() for v in filtered_vh if v.get("status") == "latest" and v.get("version")
-    ]
-    if latest_candidates:
-        return max_version(latest_candidates)
-
     vh_versions = [str(v.get("version")).strip() for v in filtered_vh if v.get("version")]
-    if vh_versions:
-        return max_version(vh_versions)
 
     dist_versions = app_data.get("distributions", {}).get("app_versions") or []
     dist_v_list = []
@@ -93,13 +90,17 @@ def get_latest_app_version(
         if platform is None or v_pf is None or v_pf == platform or v_pf == "all":
             dist_v_list.append(str(v["app_version"]).strip())
 
-    if dist_v_list:
-        return max_version(dist_v_list)
-
     if catalog:
         cat_versions = catalog.get_known_app_versions(platform=platform)
-        if cat_versions:
-            return max_version(cat_versions)
+        all_candidates = set(cat_versions) | set(vh_versions) | set(dist_v_list)
+        if all_candidates:
+            return max_version(list(all_candidates))
+
+    if vh_versions:
+        return max_version(vh_versions)
+
+    if dist_v_list:
+        return max_version(dist_v_list)
 
     return None
 
@@ -289,6 +290,7 @@ class IssueHistoricalCatalog:
         # Grouped by platform: self.app_versions[platform][version]
         self.app_versions: Dict[str, Dict[str, Dict[str, Any]]] = {"android": {}, "ios": {}}
         self.updated_at: Optional[str] = None
+        self.watermark: Optional[str] = None
 
     def _canonical_key(self, platform: str, issue_id: str) -> str:
         pf = "ios" if platform == "ios" else "android"
@@ -318,6 +320,7 @@ class IssueHistoricalCatalog:
                             self.app_versions.setdefault(pf, {})[pf_or_ver] = val
 
                 self.updated_at = data.get("updated_at")
+                self.watermark = data.get("watermark")
                 if data.get("app_id") and not self.app_id:
                     self.app_id = data["app_id"]
             except Exception:
@@ -333,6 +336,7 @@ class IssueHistoricalCatalog:
         payload: Dict[str, Any] = {
             "schema_version": "2.3.0",
             "updated_at": now_iso,
+            "watermark": self.watermark or now_iso,
             "issues": self.issues,
             "app_versions": self.app_versions,
         }
@@ -394,6 +398,8 @@ class IssueHistoricalCatalog:
             if window is not None:
                 w_key = str(window)
                 clean_w = w_key.rstrip("d")
+                fat_val = v.get("fatal_events") if v.get("fatal_events") is not None else (v.get("fatal_count") if v.get("fatal_count") is not None else (v.get("lifetime_fatal") or 0))
+                anr_val = v.get("anr_events") if v.get("anr_events") is not None else (v.get("anr_count") if v.get("anr_count") is not None else (v.get("lifetime_anr") or 0))
                 w_data = {
                     "crash_events": int(events),
                     "affected_users": int(users),
@@ -401,10 +407,10 @@ class IssueHistoricalCatalog:
                     "crash_free_users_rate": v.get("crash_free_users_rate"),
                     "crash_free_sessions_rate": v.get("crash_free_sessions_rate"),
                     "adoption_rate": adoption,
-                    "fatal_events": int(v.get("fatal_events", 0)),
-                    "fatal_count": int(v.get("fatal_events", 0)),
-                    "anr_events": int(v.get("anr_events", 0)),
-                    "anr_count": int(v.get("anr_events", 0)),
+                    "fatal_events": int(fat_val),
+                    "fatal_count": int(fat_val),
+                    "anr_events": int(anr_val),
+                    "anr_count": int(anr_val),
                     "new_issues_count": int(v.get("new_issues_count", 0)),
                     "active_issues_count": int(v.get("new_issues_count", 0)),
                     "sample_sufficient": is_suff,
@@ -704,6 +710,10 @@ class IssueHistoricalCatalog:
 
             latest_v = get_latest_app_version(app_data, platform=pf, catalog=self) or sorted_vers[-1]
             pf_issues = [iss for iss in self.issues.values() if iss.get("platform") == pf]
+            version_sufficiency_map: Dict[str, bool] = {
+                v_name: is_version_sample_sufficient(self.app_versions.get(pf, {}).get(v_name))
+                for v_name in sorted_vers
+            }
 
             for idx, ver in enumerate(sorted_vers):
                 v_prev = sorted_vers[idx - 1] if idx > 0 else None
@@ -741,7 +751,6 @@ class IssueHistoricalCatalog:
                 resolved_ids: List[str] = []
 
                 ver_key_val = version_key(ver)
-                is_ver_sufficient = is_version_sample_sufficient(v_info)
 
                 for iss in pf_issues:
                     iid = iss.get("issue_id", "")
@@ -754,13 +763,24 @@ class IssueHistoricalCatalog:
                     elif ver in iss_vers:
                         if v_prev and v_prev in iss_vers:
                             persistent_ids.append(iid)
-                        elif iss.get("reappeared_version") == ver or (iss_f_ver and version_key(iss_f_ver) < ver_key_val):
-                            regressed_ids.append(iid)
+                        elif iss_f_ver and version_key(iss_f_ver) < ver_key_val:
+                            # Intermediate versions between first_seen_version and current version
+                            intermediate = [
+                                v for v in sorted_vers
+                                if version_key(iss_f_ver) < version_key(v) < ver_key_val
+                            ]
+                            absent_intermediate = [v for v in intermediate if v not in iss_vers]
+                            # Only proven absent if version sample was sufficient
+                            proven_absent = [v for v in absent_intermediate if version_sufficiency_map.get(v, False)]
+                            if proven_absent:
+                                regressed_ids.append(iid)
+                            else:
+                                persistent_ids.append(iid)
                         else:
                             persistent_ids.append(iid)
                     else:
-                        # ver not in iss_vers: only count as resolved if it was active in immediate previous version
-                        if v_prev and v_prev in iss_vers and is_ver_sufficient:
+                        # ver not in iss_vers: only count as resolved if it was active in immediate previous version AND current ver has sufficient sample
+                        if v_prev and v_prev in iss_vers and version_sufficiency_map.get(ver, False):
                             resolved_ids.append(iid)
 
                 issue_lifecycle: ReleaseIssueLifecycle = {
@@ -874,6 +894,8 @@ class IssueHistoricalCatalog:
 
                     # Find matching window for normalized exposure comparison
                     crash_rate_diff: Optional[float] = None
+                    fatal_rate_diff: Optional[float] = None
+                    anr_rate_diff: Optional[float] = None
                     comp_w = None
                     for candidate_w in ("30", "90", "7"):
                         c_w = recent_health.get(candidate_w)
@@ -893,15 +915,54 @@ class IssueHistoricalCatalog:
                             rate_curr = c_ev / c_se
                             rate_prev = p_ev / p_se
                             crash_rate_diff = round((rate_curr - rate_prev) / rate_prev, 4) if rate_prev > 0 else 0.0
+
+                            c_fat = int(c_w.get("fatal_events") if c_w.get("fatal_events") is not None else (c_w.get("fatal_count") or 0))
+                            p_fat = int(p_w.get("fatal_events") if p_w.get("fatal_events") is not None else (p_w.get("fatal_count") or 0))
+                            r_fat_curr = c_fat / c_se
+                            r_fat_prev = p_fat / p_se
+                            if r_fat_prev > 0:
+                                fatal_rate_diff = round((r_fat_curr - r_fat_prev) / r_fat_prev, 4)
+                            elif r_fat_curr == 0 and r_fat_prev == 0:
+                                fatal_rate_diff = 0.0
+
+                            c_anr = int(c_w.get("anr_events") if c_w.get("anr_events") is not None else (c_w.get("anr_count") or 0))
+                            p_anr = int(p_w.get("anr_events") if p_w.get("anr_events") is not None else (p_w.get("anr_count") or 0))
+                            r_anr_curr = c_anr / c_se
+                            r_anr_prev = p_anr / p_se
+                            if r_anr_prev > 0:
+                                anr_rate_diff = round((r_anr_curr - r_anr_prev) / r_anr_prev, 4)
+                            elif r_anr_curr == 0 and r_anr_prev == 0:
+                                anr_rate_diff = 0.0
                     else:
                         c_sess = v_info.get("sessions_total")
                         p_sess = prev_info.get("sessions_total")
                         c_ev = v_info.get("crash_events")
                         p_ev = prev_info.get("crash_events")
-                        if c_sess and p_sess and c_sess > 0 and p_sess > 0 and c_ev is not None and p_ev is not None:
-                            rate_curr = int(c_ev) / c_sess
-                            rate_prev = int(p_ev) / p_sess
-                            crash_rate_diff = round((rate_curr - rate_prev) / rate_prev, 4) if rate_prev > 0 else 0.0
+                        if c_sess and p_sess and int(c_sess) > 0 and int(p_sess) > 0:
+                            c_se = int(c_sess)
+                            p_se = int(p_sess)
+                            if c_ev is not None and p_ev is not None:
+                                rate_curr = int(c_ev) / c_se
+                                rate_prev = int(p_ev) / p_se
+                                crash_rate_diff = round((rate_curr - rate_prev) / rate_prev, 4) if rate_prev > 0 else 0.0
+
+                            c_fat = int(v_info.get("fatal_events") if v_info.get("fatal_events") is not None else (v_info.get("fatal_count") if v_info.get("fatal_count") is not None else (v_info.get("lifetime_fatal") or 0)))
+                            p_fat = int(prev_info.get("fatal_events") if prev_info.get("fatal_events") is not None else (prev_info.get("fatal_count") if prev_info.get("fatal_count") is not None else (prev_info.get("lifetime_fatal") or 0)))
+                            r_fat_curr = c_fat / c_se
+                            r_fat_prev = p_fat / p_se
+                            if r_fat_prev > 0:
+                                fatal_rate_diff = round((r_fat_curr - r_fat_prev) / r_fat_prev, 4)
+                            elif r_fat_curr == 0 and r_fat_prev == 0:
+                                fatal_rate_diff = 0.0
+
+                            c_anr = int(v_info.get("anr_events") if v_info.get("anr_events") is not None else (v_info.get("anr_count") if v_info.get("anr_count") is not None else (v_info.get("lifetime_anr") or 0)))
+                            p_anr = int(prev_info.get("anr_events") if prev_info.get("anr_events") is not None else (prev_info.get("anr_count") if prev_info.get("anr_count") is not None else (prev_info.get("lifetime_anr") or 0)))
+                            r_anr_curr = c_anr / c_se
+                            r_anr_prev = p_anr / p_se
+                            if r_anr_prev > 0:
+                                anr_rate_diff = round((r_anr_curr - r_anr_prev) / r_anr_prev, 4)
+                            elif r_anr_curr == 0 and r_anr_prev == 0:
+                                anr_rate_diff = 0.0
 
                     cfu_curr = v_info.get("crash_free_users_rate")
                     if cfu_curr is None:
@@ -919,16 +980,6 @@ class IssueHistoricalCatalog:
                     cfu_diff: Optional[float] = None
                     if cfu_curr is not None and cfu_prev is not None:
                         cfu_diff = round(cfu_curr - cfu_prev, 4)
-
-                    fatal_change: Optional[float] = None
-                    prev_fatal = int(prev_info.get("lifetime_fatal") or 0)
-                    if prev_fatal > 0:
-                        fatal_change = round((lt_fatal - prev_fatal) / prev_fatal, 4)
-
-                    anr_change: Optional[float] = None
-                    prev_anr = int(prev_info.get("lifetime_anr") or 0)
-                    if prev_anr > 0:
-                        anr_change = round((lt_anr - prev_anr) / prev_anr, 4)
 
                     prev_introduced_cnt = len([i for i in pf_issues if i.get("first_seen_version") == v_prev])
                     new_issues_diff = len(introduced_ids) - prev_introduced_cnt
@@ -953,10 +1004,10 @@ class IssueHistoricalCatalog:
                         "previous_version": v_prev,
                         "crash_rate_change_pct": crash_rate_diff,
                         "crash_free_users_diff": cfu_diff,
-                        "fatal_change_pct": fatal_change,
-                        "fatal_rate_change_pct": fatal_change,
-                        "anr_change_pct": anr_change,
-                        "anr_rate_change_pct": anr_change,
+                        "fatal_change_pct": fatal_rate_diff,
+                        "fatal_rate_change_pct": fatal_rate_diff,
+                        "anr_change_pct": anr_rate_diff,
+                        "anr_rate_change_pct": anr_rate_diff,
                         "new_issues_diff": new_issues_diff,
                         "new_issues_count": new_issues_diff,
                         "stability": stability,

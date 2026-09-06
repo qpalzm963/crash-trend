@@ -12,10 +12,11 @@ from typing import Any, Dict, List
 import unittest
 
 from crash_trend.build_dashboard import build_html
-from crash_trend.fetch_bigquery import SQLS, transform_bq_to_v2
+from crash_trend.fetch_bigquery import SQLS, build_version_catalog_sql, transform_bq_to_v2
 from crash_trend.lifecycle import (
     IssueHistoricalCatalog,
     enrich_app_data_with_lifecycle,
+    get_latest_app_version,
 )
 from crash_trend.schema_v2 import (
     ReleaseCatalogItem,
@@ -448,12 +449,172 @@ class TestReleaseCatalog(unittest.TestCase):
         self.assertEqual(cat_item["lifetime_crashes"], 100)
         self.assertEqual(cat_item["lifetime_affected_users"], 40)
 
-    def test_version_catalog_sql_scans_all_time_partitions(self) -> None:
-        """Test that SQLS['version_catalog'] uses true lifetime query without 90-day filter."""
-        sql = SQLS["version_catalog"]
-        self.assertIn("event_timestamp IS NOT NULL", sql)
-        self.assertNotIn("INTERVAL 90 DAY", sql)
-        self.assertNotIn("_TABLE_SUFFIX", sql)
+    def test_version_catalog_incremental_query_and_bootstrap_separation(self) -> None:
+        """Test that version_catalog uses incremental query by default and bootstrap for cold starts (Review 5124070522)."""
+        # Incremental template: uses bounded catalog_days filter, does NOT do full-scan, NO LIMIT 500
+        inc_sql = SQLS["version_catalog"]
+        self.assertIn("DATE_SUB(CURRENT_DATE(), INTERVAL {catalog_days} DAY)", inc_sql)
+        self.assertNotIn("WHERE event_timestamp IS NOT NULL", inc_sql)
+        self.assertNotIn("LIMIT 500", inc_sql)
+
+        # Bootstrap template: full historical scan for initial bootstrap, NO LIMIT 500
+        boot_sql = SQLS["version_catalog_bootstrap"]
+        self.assertIn("WHERE event_timestamp IS NOT NULL", boot_sql)
+        self.assertNotIn("DATE_SUB", boot_sql)
+        self.assertNotIn("LIMIT 500", boot_sql)
+
+        # Dynamic builder handles bootstrap, watermark, and catalog_days
+        custom_inc = build_version_catalog_sql("my_table", watermark="2026-08-01T00:00:00Z")
+        self.assertIn("event_timestamp >= TIMESTAMP('2026-08-01T00:00:00Z')", custom_inc)
+        self.assertNotIn("LIMIT 500", custom_inc)
+
+        custom_boot = build_version_catalog_sql("my_table", is_bootstrap=True)
+        self.assertIn("WHERE event_timestamp IS NOT NULL", custom_boot)
+
+        # Watermark persistence in IssueHistoricalCatalog
+        with tempfile.TemporaryDirectory() as tmpdir:
+            c_file = Path(tmpdir) / "catalog.json"
+            cat = IssueHistoricalCatalog(c_file, app_id="test_app")
+            cat.watermark = "2026-08-15T00:00:00Z"
+            cat.save()
+
+            cat2 = IssueHistoricalCatalog(c_file, app_id="test_app")
+            cat2.load()
+            self.assertEqual(cat2.watermark, "2026-08-15T00:00:00Z")
+
+    def test_latest_version_decoupled_from_windowed_crash_ranking(self) -> None:
+        """Test that persistent catalog 2.0.0 is marked as latest even if 30d Top-N only has 1.9.0 (Review 5124070522)."""
+        cat = IssueHistoricalCatalog("test_app")
+        cat.update_app_versions([
+            {"version": "1.9.0", "platform": "android", "crash_events": 100, "lifetime_crashes": 100},
+            {"version": "2.0.0", "platform": "android", "crash_events": 0, "lifetime_crashes": 0},
+        ])
+
+        # Current 30d window only has 1.9.0, falsely labeling it 'latest' because it has top crash count
+        app_data = {
+            "version_health": [
+                {"version": "1.9.0", "platform": "android", "crash_events": 100, "status": "latest"},
+            ],
+            "distributions": {
+                "app_versions": [
+                    {"app_version": "1.9.0", "platform": "android", "events": 100},
+                ]
+            },
+            "periods": {},
+        }
+
+        # get_latest_app_version must resolve 2.0.0 from authoritative catalog, NOT 1.9.0 from windowed crash ranking
+        latest = get_latest_app_version(app_data, platform="android", catalog=cat)
+        self.assertEqual(latest, "2.0.0")
+
+        # build_release_catalog must also mark 2.0.0 as latest
+        catalog = cat.build_release_catalog(app_data=app_data, platform="android")
+        v200 = next(x for x in catalog if x["version"] == "2.0.0")
+        v190 = next(x for x in catalog if x["version"] == "1.9.0")
+        self.assertEqual(v200["status"], "latest")
+        self.assertEqual(v190["status"], "active")
+
+    def test_release_regression_requires_proven_absence_sample_sufficiency(self) -> None:
+        """Test that intermediate release without sufficient sample does NOT falsely trigger regression (Review 5124070522)."""
+        cat = IssueHistoricalCatalog("test_app")
+        # 1.0.0: sufficient sample
+        # 1.1.0: insufficient sample (only 2 crashes, no sessions)
+        # 1.2.0: sufficient sample
+        cat.update_app_versions([
+            {"version": "1.0.0", "platform": "android", "crash_events": 100, "sessions_total": 5000, "sample_sufficient": True},
+            {"version": "1.1.0", "platform": "android", "crash_events": 2, "sessions_total": 50, "sample_sufficient": False},
+            {"version": "1.2.0", "platform": "android", "crash_events": 80, "sessions_total": 4000, "sample_sufficient": True},
+        ])
+
+        # Issue was seen in 1.0.0 and 1.2.0, absent in 1.1.0
+        cat.issues["android:iss_test"] = {
+            "issue_id": "iss_test",
+            "platform": "android",
+            "first_seen_version": "1.0.0",
+            "versions_seen": ["1.0.0", "1.2.0"],
+        }
+
+        catalog = cat.build_release_catalog(platform="android")
+        v120 = next(x for x in catalog if x["version"] == "1.2.0")
+        lc_120 = v120["issue_lifecycle"]
+
+        # Because 1.1.0 had insufficient sample, it could not prove absence; hence issue is persistent, NOT regressed!
+        self.assertNotIn("iss_test", lc_120["regressed"])
+        self.assertIn("iss_test", lc_120["persistent"])
+
+        # Now simulate 1.1.0 having sufficient sample
+        cat.app_versions["android"]["1.1.0"]["sample_sufficient"] = True
+        cat.app_versions["android"]["1.1.0"]["crash_events"] = 500
+        cat.app_versions["android"]["1.1.0"]["sessions_total"] = 20000
+
+        catalog2 = cat.build_release_catalog(platform="android")
+        v120_new = next(x for x in catalog2 if x["version"] == "1.2.0")
+        lc_120_new = v120_new["issue_lifecycle"]
+
+        # Now with 1.1.0 proven absent, 1.2.0 correctly triggers regression!
+        self.assertIn("iss_test", lc_120_new["regressed"])
+        self.assertNotIn("iss_test", lc_120_new["persistent"])
+
+    def test_fatal_anr_rate_change_normalized_and_none_without_exposure(self) -> None:
+        """Test that fatal/ANR comparison computes rate over sessions, and returns None without exposure (Review 5124070522)."""
+        cat = IssueHistoricalCatalog("test_app")
+        # Case A: with sessions exposure
+        cat.update_app_versions([
+            {
+                "version": "1.0.0",
+                "platform": "android",
+                "sessions_total": 10000,
+                "fatal_events": 20,
+                "anr_events": 10,
+                "crash_events": 100,
+            },
+            {
+                "version": "1.1.0",
+                "platform": "android",
+                "sessions_total": 10000,
+                "fatal_events": 10,
+                "anr_events": 5,
+                "crash_events": 50,
+            },
+        ], window="30")
+
+        cat_items = cat.build_release_catalog(platform="android")
+        v110 = next(x for x in cat_items if x["version"] == "1.1.0")
+        vp = v110["vs_previous"]
+        self.assertIsNotNone(vp)
+        self.assertEqual(vp["fatal_rate_change_pct"], -0.5)
+        self.assertEqual(vp["anr_rate_change_pct"], -0.5)
+
+        # Case B: without sessions exposure (e.g. sessions_total is None or 0)
+        cat_no_exp = IssueHistoricalCatalog("test_app2")
+        cat_no_exp.update_app_versions([
+            {
+                "version": "1.0.0",
+                "platform": "android",
+                "sessions_total": None,
+                "lifetime_fatal": 20,
+                "lifetime_anr": 10,
+                "fatal_events": 20,
+                "anr_events": 10,
+            },
+            {
+                "version": "1.1.0",
+                "platform": "android",
+                "sessions_total": None,
+                "lifetime_fatal": 10,
+                "lifetime_anr": 5,
+                "fatal_events": 10,
+                "anr_events": 5,
+            },
+        ])
+        cat_items_no_exp = cat_no_exp.build_release_catalog(platform="android")
+        v110_no_exp = next(x for x in cat_items_no_exp if x["version"] == "1.1.0")
+        vp_no_exp = v110_no_exp["vs_previous"]
+        self.assertIsNotNone(vp_no_exp)
+        self.assertIsNone(vp_no_exp["fatal_rate_change_pct"])
+        self.assertIsNone(vp_no_exp["anr_rate_change_pct"])
+        self.assertIsNone(vp_no_exp["fatal_change_pct"])
+        self.assertIsNone(vp_no_exp["anr_change_pct"])
 
     def test_release_date_vs_first_seen_semantic_separation(self) -> None:
         """Test strict semantic separation: release_date is NEVER faked as first_seen."""

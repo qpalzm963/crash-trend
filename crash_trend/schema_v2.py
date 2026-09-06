@@ -389,6 +389,7 @@ class CatalogVersionHistory(TypedDict):
 class HistoricalCatalogData(TypedDict):
     schema_version: str
     updated_at: str
+    watermark: NotRequired[Optional[str]]
     app_id: NotRequired[Optional[str]]
     issues: Dict[str, CatalogIssueHistory]
     app_versions: Dict[str, Dict[str, CatalogVersionHistory]]

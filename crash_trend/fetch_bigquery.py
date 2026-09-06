@@ -183,8 +183,24 @@ SQLS: Dict[str, str] = {
         GROUP BY 1, 2
         ORDER BY events DESC
         LIMIT 3000""",
-    # 5.6. 版本生命週期與歷史目錄（以權威 COUNT(DISTINCT installation_uuid) 提取版本 Lifetime 統計）
+    # 5.6. 版本生命週期與歷史目錄（增量查詢：限縮於 catalog_days 或 watermark，不全表掃描，無 LIMIT 500）
     "version_catalog": """
+        SELECT
+            application.display_version AS app_version,
+            MIN(event_timestamp) AS first_seen,
+            MAX(event_timestamp) AS last_seen,
+            COUNT(*) AS crash_events,
+            COUNT(DISTINCT installation_uuid) AS affected_users,
+            COUNTIF(error_type = 'FATAL' OR (error_type IS NULL AND is_fatal IS TRUE)) AS fatal_events,
+            COUNTIF(error_type = 'ANR') AS anr_events,
+            COUNT(DISTINCT issue_id) AS issues_count
+        FROM `{table}`
+        WHERE event_timestamp >= TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL {catalog_days} DAY))
+          AND event_timestamp < TIMESTAMP_ADD(TIMESTAMP(CURRENT_DATE()), INTERVAL 1 DAY)
+        GROUP BY 1
+        ORDER BY crash_events DESC""",
+    # 5.7. 版本目錄歷史全量 Bootstrap（初次冷啟動或顯式重建時掃描所有歷史分區，無 LIMIT 500）
+    "version_catalog_bootstrap": """
         SELECT
             application.display_version AS app_version,
             MIN(event_timestamp) AS first_seen,
@@ -197,8 +213,7 @@ SQLS: Dict[str, str] = {
         FROM `{table}`
         WHERE event_timestamp IS NOT NULL
         GROUP BY 1
-        ORDER BY crash_events DESC
-        LIMIT 500""",
+        ORDER BY crash_events DESC""",
     # 6. 維度分布：機型
     "by_device": """
         SELECT
@@ -256,6 +271,45 @@ def build_custom_keys_sql(table: str, days: int, keys: List[str]) -> Optional[st
         GROUP BY 1, 2
         ORDER BY events DESC
         LIMIT 60"""
+
+
+def build_version_catalog_sql(
+    table: str,
+    watermark: Optional[str] = None,
+    catalog_days: int = 90,
+    is_bootstrap: bool = False,
+) -> str:
+    """動態組裝版本目錄查詢 SQL。
+    - is_bootstrap=True：全量掃描歷史分區（WHERE event_timestamp IS NOT NULL），用於初次 cold-start 或顯式 rebuild。
+    - is_bootstrap=False：增量更新，依 watermark（若有）或 catalog_days 邊界查詢，防範每次全表掃描。
+    """
+    if is_bootstrap:
+        where_clause = "WHERE event_timestamp IS NOT NULL"
+    elif watermark:
+        where_clause = (
+            f"WHERE event_timestamp >= TIMESTAMP('{watermark}')\n"
+            f"          AND event_timestamp < TIMESTAMP_ADD(TIMESTAMP(CURRENT_DATE()), INTERVAL 1 DAY)"
+        )
+    else:
+        where_clause = (
+            f"WHERE event_timestamp >= TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL {catalog_days} DAY))\n"
+            f"          AND event_timestamp < TIMESTAMP_ADD(TIMESTAMP(CURRENT_DATE()), INTERVAL 1 DAY)"
+        )
+
+    return f"""
+        SELECT
+            application.display_version AS app_version,
+            MIN(event_timestamp) AS first_seen,
+            MAX(event_timestamp) AS last_seen,
+            COUNT(*) AS crash_events,
+            COUNT(DISTINCT installation_uuid) AS affected_users,
+            COUNTIF(error_type = 'FATAL' OR (error_type IS NULL AND is_fatal IS TRUE)) AS fatal_events,
+            COUNTIF(error_type = 'ANR') AS anr_events,
+            COUNT(DISTINCT issue_id) AS issues_count
+        FROM `{table}`
+        {where_clause}
+        GROUP BY 1
+        ORDER BY crash_events DESC"""
 
 
 # ---------------------------------------------------------------------------
@@ -965,11 +1019,24 @@ def transform_bq_to_v2(
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    args = app_argparser("查詢 Crashlytics BigQuery export").parse_args()
+    parser = app_argparser("查詢 Crashlytics BigQuery export")
+    parser.add_argument("--bootstrap", action="store_true", help="執行全量歷史掃描以初始化或重建 Version Catalog")
+    parser.add_argument("--watermark", type=str, default=None, help="增量查詢起始時間戳（預設自動讀取 catalog 或 catalog_days）")
+    args = parser.parse_args()
     app = get_app(args.app)
     project = app["firebase_project"]
     dataset = app.get("bq_dataset", "firebase_crashlytics")
     result: dict = {"project": project, "dataset": dataset, "tables": {}, "errors": {}}
+
+    cat_file = out_dir(args.app) / "historical_catalog.json"
+    is_bootstrap = bool(args.bootstrap or not cat_file.is_file())
+    watermark = args.watermark
+    if not is_bootstrap and not watermark and cat_file.is_file():
+        try:
+            cat_data = json.loads(cat_file.read_text(encoding="utf-8"))
+            watermark = cat_data.get("watermark")
+        except Exception:
+            pass
 
     try:
         client = make_client(project)
@@ -1034,6 +1101,10 @@ def main() -> None:
         for table in tables:
             fq = f"{project}.{dataset}.{table}"
             table_sqls = dict(sqls)
+            if is_bootstrap:
+                table_sqls["version_catalog"] = SQLS["version_catalog_bootstrap"]
+            elif watermark:
+                table_sqls["version_catalog"] = build_version_catalog_sql(fq, watermark=watermark, catalog_days=max_period, is_bootstrap=False)
             if keys:
                 ck_sql = build_custom_keys_sql(fq, p_days, keys)
                 if ck_sql:
