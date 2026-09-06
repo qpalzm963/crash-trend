@@ -1,6 +1,6 @@
 # crash-trend
 
-**Firebase Crashlytics 趨勢分析與 Dashboard V2.5** — 將 Crashlytics BigQuery、Firebase Sessions 與可選的 Crashlytics MCP 資料整合成可排序的修復優先級、AI 分析、Pipeline Health、週期報表與自包含式 Dashboard。
+**Firebase Crashlytics 趨勢分析與 Dashboard V2.6** — 將 Crashlytics BigQuery、Firebase Sessions 與可選的 Crashlytics MCP 資料整合成可排序的修復優先級、AI 分析、Pipeline Health、Persistent Release Catalog、週期報表與自包含式 Dashboard。
 
 ![dashboard](docs/screenshot.png)
 
@@ -20,20 +20,21 @@ crash-trend 將這些工作整理成一條可重複執行的資料管線：
 ```text
 Crashlytics BigQuery ──┐
 Firebase Sessions ─────┼─→ fetch / enrich ─→ normalize ─→ deterministic priority (P0~P3)
-Crashlytics MCP ───────┘                                  │
-                                                         ├─→ AI Task Router
-                                                         │    ├─ lightweight triage
-                                                         │    └─ deep analysis
-                                                         │
-                                                         ├─→ dashboard.html
-                                                         ├─→ pipeline health
-                                                         ├─→ surge detection
-                                                         └─→ monthly chat report
+Crashlytics MCP ───────┘        │                         │
+                                │                         ├─→ AI Task Router
+                                │                         │    ├─ lightweight triage
+                                │                         │    └─ deep analysis
+                                │                         │
+                                ├─→ SQLite Authority ─────┼─→ Persistent Release Catalog
+                                │    (exact dedupe/salt)  ├─→ dashboard.html
+                                │                         ├─→ pipeline health
+                                │                         ├─→ surge detection
+                                └─────────────────────────┴─→ monthly chat report
 ```
 
 ---
 
-## Dashboard V2.5 核心能力
+## Dashboard V2.6 核心能力
 
 ### Crash Intelligence Dashboard
 
@@ -49,6 +50,36 @@ Crashlytics MCP ───────┘                                  │
 - Firebase Sessions 可選，用來計算 Crash-free Users / Sessions。
 - 支援期間去重 Affected Users、每日趨勢、版本與裝置分布。
 - Sessions 未啟用或不可用時會明確顯示 `Unavailable` / `未開啟`，不以假 `0%` 代替缺失資料。
+
+### Persistent Release Catalog（發佈版本目錄與跨視窗健康度）
+
+- 獨立於單期 7d / 30d / 90d 快照的長期發布版本追蹤，嚴格依平台（Android / iOS）隔離。
+- **近期健康度（Recent Health）**：提供 7 天、30 天、90 天視窗數據對照，搭配 `sample_sufficient` 樣本作收斂保護。
+- **前後版本對比（Previous Release Comparison: `vs_previous`）**：計算歸一化暴險率（Normalized Exposure: crash / fatal / ANR per 1,000 sessions）變化與整體穩定度評級（`improving` / `stable` / `degrading` / `baseline`）。
+- **Issue 生命週期統計（`issue_lifecycle`）**：自動分類該版本引入（introduced）、持續存在（persistent）、舊疾回歸（regressed）與已修復（resolved）的 Issue 數量與清單。
+
+### SQLite Authority Store 精確去重與隱私防護
+
+- **去重權威儲存**：採用本機 SQLite (`out/catalog_authority.sqlite3`) 專責管理設備級精確去重，徹底將大量 raw UUID 從 JSON 解耦。
+- **Zero PII 加鹽雜湊**：裝置識別碼在寫入資料庫前，一律以 `app_id` 作為 Salt 進行 SHA-256 確定性加鹽雜湊（`SHA-256(f"{app_id}:{raw_uuid}")`），不儲存任何明文識別碼。
+- **高效並行與安全**：啟用 SQLite WAL（Write-Ahead Logging）模式、`synchronous = NORMAL` 與 `busy_timeout = 5000`，確保背景執行緒與排程穩定寫入。
+- **JSON 去重解耦**：`historical_catalog.json` 與 `dashboard_v2.json` 絕不包含 raw installation IDs，僅記錄去重後的計數值與 authority metadata。
+
+### 三大解耦契約架構 (Three Distinct Contracts)
+
+系統嚴格劃分三種獨立契約，確保責任邊界清晰與儲存效能最佳化：
+
+| 契約名稱 | 儲存檔案 | 核心職責 | 格式與特性 |
+| :--- | :--- | :--- | :--- |
+| **Dashboard JSON Contract** | `out/dashboard_v2.json` | 供前端 Web UI 呈現的聚合資料容器（Bundle） | 包含多週期快照、KPI、趨勢、問題排行與發佈版本目錄 |
+| **Historical Catalog JSON Contract** | `out/historical_catalog.json` | 跨視窗版本演進與 Issue 生命週期累積狀態 | 儲存版本時間戳、水線、生命週期與去重後指標，**零 raw IDs** |
+| **SQLite Authority Store Contract** | `out/catalog_authority.sqlite3` | 受影響用戶去重的唯一事實來源（Single Source of Truth） | 本機 SQLite DB，儲存加鹽雜湊集合與版本權威狀態 |
+
+### 資料管線生命週期（Migration / Bootstrap / Incremental）
+
+- **Migration（舊版相容升級）**：載入包含 legacy `installation_ids` 的舊版 catalog 時，自動將 UUID 匯入 SQLite Authority Store，計算精確去重值，並從記憶體與 JSON 輸出中永久清除 raw IDs。若舊有 ID 數量不足，則安全保底並標記需全量 bootstrap。
+- **Bootstrap（全量初始化）**：初次執行或未具備完整權威時，執行 BigQuery 全量版本掃描（`version_catalog_bootstrap`），建立完整去重集合。零崩潰/零用戶之版本亦顯式標記 `bootstrap_complete`，防止增量同步時重複誤判。
+- **Incremental（增量同步）**：以 `watermark`（事件時間戳）為基準只拉取新資料，透過 SQLite `INSERT OR IGNORE` 進行冪等追加去重，自動更新水線與版本生命週期指標。
 
 ### Deterministic Priority Score
 
@@ -399,6 +430,7 @@ crash_trend/
   ai_telemetry.py        # AI request / quota / token telemetry
   analyze_ai.py          # Provider-neutral AI 分析入口
   analyze_gemini.py      # Priority Score、triage gating 與分析核心
+  authority_store.py     # SQLite-backed Catalog Authority Store（去重權威儲存）
   build_dashboard.py     # 自包含 Dashboard HTML 產生器
   check_surge.py         # Crash 趨勢暴增偵測
   config.py              # apps.yaml 載入與資料源設定
@@ -406,7 +438,7 @@ crash_trend/
   fetch_issue_details.py # Issue detail / stack trace enrichment
   fetch_sessions.py      # Firebase Sessions / Crash-free metrics
   fetch_stacktraces.py   # Firebase MCP stacktrace cache
-  lifecycle.py           # Issue lifecycle / 狀態處理
+  lifecycle.py           # Issue & Release Catalog lifecycle / 狀態與比較處理
   normalize.py           # Canonical normalization / 歷史資料整理
   pipeline_health.py     # Run Summary、Stage status、錯誤資訊消毒
   pipeline_run.py        # 端到端 Pipeline Orchestrator
@@ -449,8 +481,10 @@ requirements.txt
 ```text
 dashboard.html
 out/
-  pipeline_run.json
-  dashboard_v2.json
+  pipeline_run.json           # 管線健康度與 stage 審計
+  dashboard_v2.json           # Dashboard V2 Bundle（前端渲染契約）
+  historical_catalog.json     # 跨週期版本目錄與 Issue 生命週期累積狀態契約
+  catalog_authority.sqlite3   # SQLite 受影響用戶去重權威儲存（不含 PII 的加鹽雜湊）
   <app>/...
 reports/
 logs/
