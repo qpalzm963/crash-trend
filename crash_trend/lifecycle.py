@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Literal, Optional, Tuple
 
 try:
+    from crash_trend.authority_store import AuthorityStoreError, CatalogAuthorityStore
     from crash_trend.config import ROOT, get_app, load_config, out_dir
     from crash_trend.schema_v2 import (
         HistoricalCatalogData,
@@ -33,6 +34,7 @@ try:
     )
     from crash_trend.versions import max_version, min_version, version_key
 except ImportError:
+    from authority_store import AuthorityStoreError, CatalogAuthorityStore  # type: ignore
     from config import ROOT, get_app, load_config, out_dir  # type: ignore
     from schema_v2 import (  # type: ignore
         HistoricalCatalogData,
@@ -282,8 +284,21 @@ def detect_issue_lifecycle(
 class IssueHistoricalCatalog:
     """Manages cross-window persistent version catalog per application with platform isolation."""
 
-    def __init__(self, catalog_path: Optional[Path] = None, app_id: Optional[str] = None):
-        self.catalog_path = catalog_path
+    def __init__(
+        self,
+        catalog_path: Optional[Union[str, Path]] = None,
+        app_id: Optional[str] = None,
+        authority_store: Optional[CatalogAuthorityStore] = None,
+        authority_store_path: Optional[Union[str, Path]] = None,
+    ):
+        # Support flexible argument passing: IssueHistoricalCatalog("app_name") or IssueHistoricalCatalog(Path(...))
+        if catalog_path is not None and app_id is None:
+            c_str = str(catalog_path)
+            if not c_str.endswith(".json") and "/" not in c_str and "\\" not in c_str:
+                app_id = c_str
+                catalog_path = None
+
+        self.catalog_path = Path(catalog_path) if catalog_path is not None else None
         self.app_id = app_id
         # Keyed canonically by f"{platform}:{issue_id}"
         self.issues: Dict[str, Dict[str, Any]] = {}
@@ -293,8 +308,42 @@ class IssueHistoricalCatalog:
         self.watermark: Optional[str] = None
         self.bootstrap_complete: bool = False
         self.authority_state_version: int = 1
-        # Track distinct installation UUIDs per platform and version for authoritative deduplication
+        self.authority_metadata: Dict[str, Any] = {
+            "backend": "sqlite",
+            "state_version": 1,
+            "bootstrap_complete": False,
+        }
+
+        # Initialize SQLite Authority Store
+        if authority_store is not None:
+            self.authority_store = authority_store
+        elif authority_store_path is not None:
+            self.authority_store = CatalogAuthorityStore(authority_store_path, app_id=app_id)
+        elif self.catalog_path is not None:
+            db_path = self.catalog_path.parent / "catalog_authority.sqlite3"
+            self.authority_store = CatalogAuthorityStore(db_path, app_id=app_id)
+        else:
+            self.authority_store = CatalogAuthorityStore(":memory:", app_id=app_id)
+
+        # In-memory transient tracker for backwards compatibility with raw callers
         self._version_installations: Dict[str, Dict[str, Set[str]]] = {"android": {}, "ios": {}}
+
+    def close(self) -> None:
+        """Closes the underlying SQLite authority store."""
+        if hasattr(self, "authority_store") and self.authority_store is not None:
+            self.authority_store.close()
+
+    def __enter__(self) -> "IssueHistoricalCatalog":
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
 
     def _canonical_key(self, platform: str, issue_id: str) -> str:
         pf = "ios" if platform == "ios" else "android"
@@ -344,66 +393,131 @@ class IssueHistoricalCatalog:
             return str(ts).strip() <= str(watermark).strip()
 
     def load(self) -> None:
-        """Loads existing catalog file from disk if present."""
+        """Loads existing catalog file from disk if present and migrates any legacy JSON installation IDs to SQLite."""
         if self.catalog_path and self.catalog_path.is_file():
             try:
                 data = json.loads(self.catalog_path.read_text(encoding="utf-8"))
-                loaded_issues = data.get("issues", {})
-                for k, iss in loaded_issues.items():
-                    if isinstance(iss, dict):
-                        pf = "ios" if iss.get("platform") == "ios" else "android"
-                        iid = iss.get("issue_id", k)
-                        canonical = self._canonical_key(pf, iid)
-                        self.issues[canonical] = iss
+            except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+                return
 
-                loaded_vers = data.get("app_versions", {})
-                if isinstance(loaded_vers, dict):
-                    for pf_or_ver, val in loaded_vers.items():
-                        if pf_or_ver in ("android", "ios") and isinstance(val, dict):
-                            self.app_versions.setdefault(pf_or_ver, {}).update(val)
-                            for v_name, v_info in val.items():
-                                if isinstance(v_info, dict):
-                                    ids = v_info.get("installation_ids") or v_info.get("user_ids")
-                                    if ids:
-                                        self._version_installations.setdefault(pf_or_ver, {}).setdefault(v_name, set()).update(str(x) for x in ids if x)
-                        elif isinstance(val, dict):
-                            # Backward compat: flat dict -> assign to android by default
-                            pf = val.get("platform", "android")
-                            self.app_versions.setdefault(pf, {})[pf_or_ver] = val
-                            ids = val.get("installation_ids") or val.get("user_ids")
-                            if ids:
-                                self._version_installations.setdefault(pf, {}).setdefault(pf_or_ver, set()).update(str(x) for x in ids if x)
+            loaded_issues = data.get("issues", {})
+            for k, iss in loaded_issues.items():
+                if isinstance(iss, dict):
+                    pf = "ios" if iss.get("platform") == "ios" else "android"
+                    iid = iss.get("issue_id", k)
+                    canonical = self._canonical_key(pf, iid)
+                    self.issues[canonical] = iss
 
-                self.updated_at = data.get("updated_at")
-                self.watermark = data.get("watermark")
+            loaded_vers = data.get("app_versions", {})
+            legacy_ids_to_migrate: List[Tuple[str, str, List[Any]]] = []
+
+            if isinstance(loaded_vers, dict):
+                for pf_or_ver, val in loaded_vers.items():
+                    if pf_or_ver in ("android", "ios") and isinstance(val, dict):
+                        self.app_versions.setdefault(pf_or_ver, {}).update(val)
+                        for v_name, v_info in val.items():
+                            if isinstance(v_info, dict):
+                                ids = v_info.get("installation_ids") or v_info.get("user_ids")
+                                if ids:
+                                    legacy_ids_to_migrate.append((pf_or_ver, v_name, list(ids)))
+                    elif isinstance(val, dict):
+                        # Backward compat: flat dict -> assign to android by default
+                        pf = val.get("platform", "android")
+                        self.app_versions.setdefault(pf, {})[pf_or_ver] = val
+                        ids = val.get("installation_ids") or val.get("user_ids")
+                        if ids:
+                            legacy_ids_to_migrate.append((pf, pf_or_ver, list(ids)))
+
+            self.updated_at = data.get("updated_at")
+            self.watermark = data.get("watermark")
+            if data.get("app_id") and not self.app_id:
+                self.app_id = data["app_id"]
+                if hasattr(self.authority_store, "app_id") and not self.authority_store.app_id:
+                    self.authority_store.app_id = self.app_id
+
+            auth_data = data.get("authority")
+            if isinstance(auth_data, dict):
+                self.authority_metadata.update(auth_data)
+                self.bootstrap_complete = bool(auth_data.get("bootstrap_complete", False))
+            else:
                 self.bootstrap_complete = bool(data.get("bootstrap_complete", False))
-                self.authority_state_version = data.get("authority_state_version", 1)
-                if data.get("app_id") and not self.app_id:
-                    self.app_id = data["app_id"]
-            except Exception:
-                pass
+
+            self.authority_state_version = int(data.get("authority_state_version", 1))
+
+            # Migrate legacy JSON installation_ids into SQLite authority store
+            if legacy_ids_to_migrate:
+                eff_app = self.app_id or "default"
+                all_migrated_versions_complete = True
+                for pf, v_name, ids in legacy_ids_to_migrate:
+                    self.authority_store.add_installations(eff_app, pf, v_name, ids)
+                    v_obj = self.app_versions.get(pf, {}).get(v_name)
+                    if isinstance(v_obj, dict):
+                        # Remove raw IDs from memory
+                        v_obj.pop("installation_ids", None)
+                        v_obj.pop("user_ids", None)
+                        exact_count = self.authority_store.count_installations(eff_app, pf, v_name)
+                        existing_users = max(
+                            int(v_obj.get("lifetime_affected_users") or 0),
+                            int(v_obj.get("affected_users") or 0),
+                        )
+                        if existing_users > 0 and exact_count < existing_users:
+                            # Incomplete authority: IDs present but fewer than existing aggregate users
+                            all_migrated_versions_complete = False
+                            self.authority_store.mark_version_bootstrapped(eff_app, pf, v_name, False)
+                            v_obj["lifetime_affected_users"] = existing_users
+                            v_obj["affected_users"] = existing_users
+                        else:
+                            v_obj["lifetime_affected_users"] = exact_count
+                            v_obj["affected_users"] = exact_count
+                            self.authority_store.mark_version_bootstrapped(eff_app, pf, v_name, True)
+
+                if all_migrated_versions_complete:
+                    self.authority_store.mark_bootstrap_complete(eff_app, True)
+                    self.bootstrap_complete = True
+                    self.authority_metadata["bootstrap_complete"] = True
+                else:
+                    self.authority_store.mark_bootstrap_complete(eff_app, False)
+                    self.bootstrap_complete = False
+                    self.authority_metadata["bootstrap_complete"] = False
 
     def save(self) -> None:
-        """Saves current catalog file to disk strictly conforming to Schema V2.3."""
+        """Saves current catalog file to disk strictly conforming to Schema V2.3 without raw installation IDs."""
         if not self.catalog_path:
             return
         self.catalog_path.parent.mkdir(parents=True, exist_ok=True)
         now_iso = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
         self.updated_at = now_iso
-        # Watermark is strictly owned by genuine version_catalog ingestion; do NOT fake with now_iso
+        eff_app = self.app_id or "default"
 
-        # Sync tracked installation IDs into app_versions before serialization
+        # Sync exact deduplicated counts from SQLite authority store into app_versions
         for pf, vers in self.app_versions.items():
             for v_name, v_info in vers.items():
                 if isinstance(v_info, dict):
-                    inst_set = self._version_installations.get(pf, {}).get(v_name)
-                    if inst_set:
-                        v_info["installation_ids"] = sorted(list(inst_set))
+                    # Never serialize raw installation_ids or user_ids into JSON
+                    v_info.pop("installation_ids", None)
+                    v_info.pop("user_ids", None)
+
+                    # Query exact deduplicated count from SQLite authority store
+                    exact_count = self.authority_store.count_installations(eff_app, pf, v_name)
+                    has_auth = self.authority_store.has_version_authority(eff_app, pf, v_name)
+                    if has_auth:
+                        final_users = exact_count
                     else:
-                        v_info.setdefault("installation_ids", [])
+                        existing_users = max(
+                            int(v_info.get("lifetime_affected_users") or 0),
+                            int(v_info.get("affected_users") or 0),
+                        )
+                        final_users = max(existing_users, exact_count)
+                    v_info["lifetime_affected_users"] = final_users
+                    v_info["affected_users"] = final_users
 
         payload: Dict[str, Any] = {
             "schema_version": "2.3.0",
+            "authority": {
+                "backend": "sqlite",
+                "state_version": self.authority_store.get_state_version(),
+                "bootstrap_complete": getattr(self, "bootstrap_complete", False),
+            },
             "authority_state_version": getattr(self, "authority_state_version", 1),
             "bootstrap_complete": getattr(self, "bootstrap_complete", False),
             "updated_at": now_iso,
@@ -618,12 +732,16 @@ class IssueHistoricalCatalog:
         is_incremental: bool = False,
         advance_watermark: bool = True,
         checkpoint_watermark: Optional[str] = None,
+        is_bootstrap: Optional[bool] = None,
     ) -> None:
         """Ingests broad catalog query rows (issue_id, app_version, first_seen_ts, last_seen_ts, events, users, fatal, anr)."""
         now_iso = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
         eval_watermark = checkpoint_watermark if checkpoint_watermark is not None else self.watermark
+        eff_app = self.app_id or "default"
+        effective_bootstrap = is_bootstrap if is_bootstrap is not None else (not is_incremental)
         if advance_watermark and not is_incremental:
             self.bootstrap_complete = True
+            self.authority_store.mark_bootstrap_complete(eff_app, True)
 
         for row in rows:
             iid = row.get("issue_id")
@@ -695,21 +813,25 @@ class IssueHistoricalCatalog:
                 else:
                     v_obj["lifetime_anr"] = max(int(v_obj.get("lifetime_anr") or 0), int(anr_count))
 
-            # Deduplication for affected users
+            # Deduplication for affected users using SQLite Authority Store
             inst_set = self._version_installations.setdefault(pf, {}).setdefault(ver, set())
-            if not inst_set and v_obj.get("installation_ids"):
-                inst_set.update(str(x) for x in v_obj["installation_ids"] if x)
-            elif not inst_set and v_obj.get("user_ids"):
-                inst_set.update(str(x) for x in v_obj["user_ids"] if x)
-
             raw_insts = row.get("installation_ids") or row.get("user_ids") or row.get("installations")
+            new_ids: List[str] = []
             if raw_insts:
                 if isinstance(raw_insts, (list, set, tuple)):
-                    inst_set.update(str(x) for x in raw_insts if x)
+                    new_ids.extend(str(x) for x in raw_insts if x)
                 else:
-                    inst_set.add(str(raw_insts))
+                    new_ids.append(str(raw_insts))
             if row.get("installation_uuid"):
-                inst_set.add(str(row["installation_uuid"]))
+                new_ids.append(str(row["installation_uuid"]))
+
+            if new_ids:
+                inst_set.update(new_ids)
+                self.authority_store.add_installations(
+                    eff_app, pf, ver, new_ids, first_seen=ts_first, last_seen=ts_last
+                )
+
+            sqlite_count = self.authority_store.count_installations(eff_app, pf, ver)
 
             usr_count = row.get("affected_users") if row.get("affected_users") is not None else (
                 row.get("lifetime_affected_users") if row.get("lifetime_affected_users") is not None else (
@@ -721,19 +843,46 @@ class IssueHistoricalCatalog:
                 int(v_obj.get("lifetime_affected_users") or 0),
                 int(v_obj.get("affected_users") or 0),
             )
-            if inst_set:
-                # Monotonic guarantee: lifetime_affected_users must NEVER decrease from a previously established aggregate count,
-                # even if an incremental batch only contains a subset of installation IDs (e.g. legacy version lacking full historical IDs).
-                v_obj["lifetime_affected_users"] = max(existing_users, len(inst_set))
-                v_obj["installation_ids"] = sorted(list(inst_set))
-                v_obj["affected_users"] = v_obj["lifetime_affected_users"]
-            elif usr_count is not None:
-                if is_incremental:
-                    if not is_already_processed:
-                        v_obj["lifetime_affected_users"] = max(existing_users, int(usr_count))
+
+            if effective_bootstrap:
+                # Bootstrap run: exact count from authority store is authoritative for all scanned versions,
+                # even if affected_users == 0 (e.g. all installation UUIDs are NULL).
+                if sqlite_count > 0:
+                    final_users = sqlite_count
+                    self.authority_store.mark_version_bootstrapped(eff_app, pf, ver, True)
+                elif int(usr_count or 0) == 0:
+                    # Genuinely 0 users scanned during bootstrap (e.g. all UUIDs NULL)
+                    final_users = 0
+                    self.authority_store.mark_version_bootstrapped(eff_app, pf, ver, True)
                 else:
-                    v_obj["lifetime_affected_users"] = max(existing_users, int(usr_count))
-                v_obj["affected_users"] = v_obj["lifetime_affected_users"]
+                    # Caller passed aggregate users without SQLite installation IDs (e.g. mock test)
+                    final_users = max(existing_users, int(usr_count or 0))
+                    self.authority_store.mark_version_bootstrapped(eff_app, pf, ver, False)
+            elif sqlite_count > 0:
+                if sqlite_count >= existing_users:
+                    # Complete exact deduplication: sqlite_count is fully established
+                    final_users = sqlite_count
+                    self.authority_store.mark_version_bootstrapped(eff_app, pf, ver, True)
+                else:
+                    # Partial / incomplete authority: preserve existing monotonic users without claiming exact authority
+                    final_users = existing_users
+                    if usr_count is not None and not is_already_processed:
+                        final_users = max(final_users, int(usr_count))
+                    self.authority_store.mark_version_bootstrapped(eff_app, pf, ver, False)
+                    self.bootstrap_complete = False
+                    self.authority_metadata["bootstrap_complete"] = False
+                    self.authority_store.mark_bootstrap_complete(eff_app, False)
+            else:
+                # No SQLite installations ingested (e.g. caller passed aggregate users)
+                final_users = existing_users
+                if usr_count is not None and not is_already_processed:
+                    final_users = max(final_users, int(usr_count))
+
+            v_obj["lifetime_affected_users"] = final_users
+            v_obj["affected_users"] = final_users
+            # Purge raw installation_ids and user_ids from memory dictionary
+            v_obj.pop("installation_ids", None)
+            v_obj.pop("user_ids", None)
 
             # Deduplication for issues count
             iss_count = row.get("issues_count") if row.get("issues_count") is not None else row.get("lifetime_issues")
@@ -1316,21 +1465,45 @@ def bootstrap_catalog_from_disk(
     return cat
 
 
-def _has_verifiable_installation_authority(v: dict) -> bool:
+def _has_verifiable_installation_authority(
+    v: dict,
+    app_id: Optional[str] = None,
+    platform: Optional[str] = None,
+    store: Optional[CatalogAuthorityStore] = None,
+) -> bool:
     """Verifies that a version entity possesses authoritative installation UUID state.
 
-    A version lacks installation authority if:
-    1. It recorded affected users or crash events, but lacks non-empty installation_ids / user_ids.
-    2. It does not have the installation_ids or user_ids field defined in its schema.
+    Authority is verified if either:
+    1. The SQLite authority store contains complete records (count >= lifetime_affected_users)
+       or bootstrap status for (app_id, platform, ver), OR
+    2. The version entity contains legacy installation_ids / user_ids matching or exceeding lifetime_affected_users.
     """
     if not isinstance(v, dict):
         return False
-    ids = v.get("installation_ids") or v.get("user_ids")
+    ver = str(v.get("version") or "").strip()
+    pf = v.get("platform") or platform or "android"
+    eff_app = app_id or "default"
+
     users = int(v.get("lifetime_affected_users") or v.get("affected_users") or 0)
     crashes = int(v.get("lifetime_crashes") or v.get("crash_events") or 0)
 
-    # If the version has recorded crash events or affected users, it MUST have non-empty installation IDs
-    if users > 0 or crashes > 0:
+    # 1. Check SQLite authority store if available (do NOT catch AuthorityStoreError: let it propagate)
+    if store is not None and ver:
+        has_auth = store.has_version_authority(eff_app, pf, ver)
+        if not has_auth:
+            return False
+        sqlite_count = store.count_installations(eff_app, pf, ver)
+        if users > 0:
+            return sqlite_count >= users
+        return True
+
+    # 2. Check legacy JSON installation_ids
+    ids = v.get("installation_ids") or v.get("user_ids")
+    if users > 0:
+        if isinstance(ids, (list, set, tuple)) and len(ids) >= users:
+            return True
+        return False
+    elif crashes > 0:
         return bool(ids)
 
     # For zero-crash/zero-user placeholder versions, the installation_ids field must at least be explicitly present
@@ -1342,6 +1515,10 @@ def should_trigger_catalog_bootstrap(
     cat_file_exists: bool,
     explicit_bootstrap: bool = False,
     explicit_watermark: Optional[str] = None,
+    authority_store: Optional[CatalogAuthorityStore] = None,
+    authority_store_path: Optional[Path] = None,
+    app_id: Optional[str] = None,
+    cat_file_path: Optional[Path] = None,
 ) -> Tuple[bool, Optional[str]]:
     """Evaluates whether a catalog requires a full historical bootstrap.
 
@@ -1351,7 +1528,7 @@ def should_trigger_catalog_bootstrap(
     3. Catalog file exists, but lacks a valid watermark (pre-watermark legacy catalog).
     4. Catalog file explicitly records bootstrap_complete as False.
     5. Catalog file has app_versions, but ANY persisted version lacks verifiable installation authority state
-       (preventing corrupted / reduced lifetime counts in partially-migrated catalogs).
+       in either the SQLite authority store or legacy JSON format.
 
     Returns:
         (is_bootstrap: bool, watermark: Optional[str])
@@ -1369,29 +1546,48 @@ def should_trigger_catalog_bootstrap(
     if cat_data.get("bootstrap_complete") is False:
         return True, None
 
-    # Check authority state in app_versions: every persisted version must possess verifiable installation authority state.
-    # If ANY version lacks installation authority (e.g. partial migration where only newer versions have installation_ids),
-    # a full historical bootstrap must be triggered.
-    app_vers = cat_data.get("app_versions")
-    if not isinstance(app_vers, dict) or not app_vers:
+    if isinstance(cat_data.get("authority"), dict) and cat_data["authority"].get("bootstrap_complete") is False:
         return True, None
 
-    all_v_objs = []
-    for pf_or_ver, val in app_vers.items():
-        if isinstance(val, dict):
-            if pf_or_ver in ("android", "ios"):
-                all_v_objs.extend(v for v in val.values() if isinstance(v, dict))
-            else:
-                all_v_objs.append(val)
+    eff_app = app_id or (cat_data.get("app_id") if isinstance(cat_data, dict) else None) or "default"
+    store = authority_store
+    opened_store_to_close: Optional[CatalogAuthorityStore] = None
 
-    if not all_v_objs:
-        return True, None
+    if store is None:
+        if authority_store_path is not None and Path(authority_store_path).is_file():
+            # If authority store exists on disk, open it. Any AuthorityStoreError will propagate upwards.
+            store = CatalogAuthorityStore(authority_store_path, app_id=eff_app)
+            opened_store_to_close = store
+        elif cat_file_path is not None and (Path(cat_file_path).parent / "catalog_authority.sqlite3").is_file():
+            store = CatalogAuthorityStore(Path(cat_file_path).parent / "catalog_authority.sqlite3", app_id=eff_app)
+            opened_store_to_close = store
 
-    for v in all_v_objs:
-        if not _has_verifiable_installation_authority(v):
+    try:
+        app_vers = cat_data.get("app_versions")
+        if not isinstance(app_vers, dict) or not app_vers:
             return True, None
 
-    return False, watermark
+        all_v_objs: List[Tuple[str, dict]] = []
+        for pf_or_ver, val in app_vers.items():
+            if isinstance(val, dict):
+                if pf_or_ver in ("android", "ios"):
+                    for v_dict in val.values():
+                        if isinstance(v_dict, dict):
+                            all_v_objs.append((pf_or_ver, v_dict))
+                else:
+                    all_v_objs.append((val.get("platform", "android"), val))
+
+        if not all_v_objs:
+            return True, None
+
+        for pf, v in all_v_objs:
+            if not _has_verifiable_installation_authority(v, app_id=eff_app, platform=pf, store=store):
+                return True, None
+
+        return False, watermark
+    finally:
+        if opened_store_to_close is not None:
+            opened_store_to_close.close()
 
 
 def enrich_app_data_with_lifecycle(
@@ -1443,6 +1639,7 @@ def enrich_app_data_with_lifecycle(
             is_incremental=is_incremental,
             advance_watermark=True,
             checkpoint_watermark=initial_checkpoint,
+            is_bootstrap=is_bootstrap,
         )
 
     # Ingest app_versions from current version_health into catalog
@@ -1652,6 +1849,8 @@ def enrich_app_data_with_lifecycle(
                 snap["release_catalog"] = release_catalog
 
     cat.save()
+    if catalog is None:
+        cat.close()
     return app_data
 
 

@@ -1176,7 +1176,7 @@ class TestReleaseCatalog(unittest.TestCase):
                         "1.0.0": {
                             "version": "1.0.0",
                             "crash_events": 100,
-                            "affected_users": 50,
+                            "affected_users": 2,
                             "installation_ids": ["uuid_1", "uuid_2"],
                         }
                     }
@@ -1323,16 +1323,35 @@ class TestReleaseCatalog(unittest.TestCase):
             self.assertEqual(v1["affected_users"], 500)
             # Lifetime crashes incremented: 1000 + 5 = 1005
             self.assertEqual(v1["lifetime_crashes"], 1005)
-            # New installation IDs tracked
-            self.assertEqual(v1["installation_ids"], ["uuid_inc_1", "uuid_inc_2"])
+            # installation_ids purged from dict and tracked via authority store
+            self.assertNotIn("installation_ids", v1)
+            self.assertEqual(cat.authority_store.count_installations("test_app", "android", "1.0.0"), 2)
 
             # 3. Save catalog and verify serialization
             cat.save()
+            # Verify installation_ids is not present in serialized JSON
+            disk_data = json.loads(cat_file.read_text(encoding="utf-8"))
+            self.assertNotIn("installation_ids", disk_data["app_versions"]["android"]["1.0.0"])
+            self.assertIn("authority", disk_data)
+
             reloaded_cat = IssueHistoricalCatalog(catalog_path=cat_file, app_id="test_app")
             reloaded_cat.load()
             reloaded_v1 = reloaded_cat.app_versions["android"]["1.0.0"]
             self.assertEqual(reloaded_v1["lifetime_affected_users"], 500)
-            self.assertEqual(reloaded_v1["installation_ids"], ["uuid_inc_1", "uuid_inc_2"])
+            self.assertNotIn("installation_ids", reloaded_v1)
+            self.assertEqual(reloaded_cat.authority_store.count_installations("test_app", "android", "1.0.0"), 2)
+            self.assertFalse(reloaded_cat.bootstrap_complete, "Incomplete authority must keep bootstrap_complete False")
+            self.assertFalse(disk_data.get("bootstrap_complete", False))
+            self.assertFalse(disk_data.get("authority", {}).get("bootstrap_complete", False))
+
+            # Subsequent sync attempts must continue triggering full historical bootstrap until bootstrap finishes
+            is_boot_after, _ = should_trigger_catalog_bootstrap(
+                cat_data=disk_data,
+                cat_file_exists=True,
+                authority_store=reloaded_cat.authority_store,
+                app_id="test_app",
+            )
+            self.assertTrue(is_boot_after, "Incomplete authority must continue to trigger bootstrap")
 
 
 if __name__ == "__main__":
