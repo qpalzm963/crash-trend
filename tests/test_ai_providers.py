@@ -431,20 +431,24 @@ class TestAIProviders(unittest.TestCase):
         import subprocess
         import sys
         result = subprocess.run(
-            [sys.executable, "-m", "crash_trend.analyze_ai", "--help"],
+            [sys.executable, "-X", "utf8", "-m", "crash_trend.analyze_ai", "--help"],
             cwd=str(ROOT),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
         self.assertEqual(result.returncode, 0, f"Subprocess failed with stderr: {result.stderr}")
         self.assertIn("AI 智慧分析與策略建議", result.stdout)
 
         # Also test direct script execution
         result_direct = subprocess.run(
-            [sys.executable, str(ROOT / "crash_trend" / "analyze_ai.py"), "--help"],
+            [sys.executable, "-X", "utf8", str(ROOT / "crash_trend" / "analyze_ai.py"), "--help"],
             cwd=str(ROOT),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
         self.assertEqual(result_direct.returncode, 0, f"Direct script execution failed: {result_direct.stderr}")
 

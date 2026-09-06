@@ -183,6 +183,39 @@ SQLS: Dict[str, str] = {
         GROUP BY 1, 2
         ORDER BY events DESC
         LIMIT 3000""",
+    # 5.6. 版本生命週期與歷史目錄（增量查詢：限縮於 catalog_days 或 watermark，不全表掃描，無 LIMIT 500）
+    "version_catalog": """
+        SELECT
+            application.display_version AS app_version,
+            MIN(event_timestamp) AS first_seen,
+            MAX(event_timestamp) AS last_seen,
+            COUNT(*) AS crash_events,
+            COUNT(DISTINCT installation_uuid) AS affected_users,
+            ARRAY_AGG(DISTINCT installation_uuid IGNORE NULLS) AS installation_ids,
+            COUNTIF(error_type = 'FATAL' OR (error_type IS NULL AND is_fatal IS TRUE)) AS fatal_events,
+            COUNTIF(error_type = 'ANR') AS anr_events,
+            COUNT(DISTINCT issue_id) AS issues_count
+        FROM `{table}`
+        WHERE event_timestamp >= TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL {catalog_days} DAY))
+          AND event_timestamp < TIMESTAMP_ADD(TIMESTAMP(CURRENT_DATE()), INTERVAL 1 DAY)
+        GROUP BY 1
+        ORDER BY crash_events DESC""",
+    # 5.7. 版本目錄歷史全量 Bootstrap（初次冷啟動或顯式重建時掃描所有歷史分區，無 LIMIT 500）
+    "version_catalog_bootstrap": """
+        SELECT
+            application.display_version AS app_version,
+            MIN(event_timestamp) AS first_seen,
+            MAX(event_timestamp) AS last_seen,
+            COUNT(*) AS crash_events,
+            COUNT(DISTINCT installation_uuid) AS affected_users,
+            ARRAY_AGG(DISTINCT installation_uuid IGNORE NULLS) AS installation_ids,
+            COUNTIF(error_type = 'FATAL' OR (error_type IS NULL AND is_fatal IS TRUE)) AS fatal_events,
+            COUNTIF(error_type = 'ANR') AS anr_events,
+            COUNT(DISTINCT issue_id) AS issues_count
+        FROM `{table}`
+        WHERE event_timestamp IS NOT NULL
+        GROUP BY 1
+        ORDER BY crash_events DESC""",
     # 6. 維度分布：機型
     "by_device": """
         SELECT
@@ -240,6 +273,46 @@ def build_custom_keys_sql(table: str, days: int, keys: List[str]) -> Optional[st
         GROUP BY 1, 2
         ORDER BY events DESC
         LIMIT 60"""
+
+
+def build_version_catalog_sql(
+    table: str,
+    watermark: Optional[str] = None,
+    catalog_days: int = 90,
+    is_bootstrap: bool = False,
+) -> str:
+    """動態組裝版本目錄查詢 SQL。
+    - is_bootstrap=True：全量掃描歷史分區（WHERE event_timestamp IS NOT NULL），用於初次 cold-start 或顯式 rebuild。
+    - is_bootstrap=False：增量更新，依 watermark（若有）或 catalog_days 邊界查詢，防範每次全表掃描。
+    """
+    if is_bootstrap:
+        where_clause = "WHERE event_timestamp IS NOT NULL"
+    elif watermark:
+        where_clause = (
+            f"WHERE event_timestamp > TIMESTAMP('{watermark}')\n"
+            f"          AND event_timestamp < TIMESTAMP_ADD(TIMESTAMP(CURRENT_DATE()), INTERVAL 1 DAY)"
+        )
+    else:
+        where_clause = (
+            f"WHERE event_timestamp >= TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL {catalog_days} DAY))\n"
+            f"          AND event_timestamp < TIMESTAMP_ADD(TIMESTAMP(CURRENT_DATE()), INTERVAL 1 DAY)"
+        )
+
+    return f"""
+        SELECT
+            application.display_version AS app_version,
+            MIN(event_timestamp) AS first_seen,
+            MAX(event_timestamp) AS last_seen,
+            COUNT(*) AS crash_events,
+            COUNT(DISTINCT installation_uuid) AS affected_users,
+            ARRAY_AGG(DISTINCT installation_uuid IGNORE NULLS) AS installation_ids,
+            COUNTIF(error_type = 'FATAL' OR (error_type IS NULL AND is_fatal IS TRUE)) AS fatal_events,
+            COUNTIF(error_type = 'ANR') AS anr_events,
+            COUNT(DISTINCT issue_id) AS issues_count
+        FROM `{table}`
+        {where_clause}
+        GROUP BY 1
+        ORDER BY crash_events DESC"""
 
 
 # ---------------------------------------------------------------------------
@@ -755,6 +828,10 @@ def transform_bq_to_v2(
     app_config: dict,
     days: int = 30,
     end_time: Optional[dt.datetime] = None,
+    is_bootstrap: bool = False,
+    is_incremental: Optional[bool] = None,
+    out_dir: Optional[Path] = None,
+    catalog: Optional[Any] = None,
 ) -> AppDashboardV2Data:
     """把 BigQuery 查詢結果字典轉換為嚴格符合 Schema V2 的 AppDashboardV2Data。"""
     end_dt = end_time.astimezone(dt.timezone.utc) if end_time else dt.datetime.now(dt.timezone.utc)
@@ -877,31 +954,75 @@ def transform_bq_to_v2(
     }
 
     raw_catalog_rows: List[dict] = []
-    tables_map = (bq_result or {}).get("tables") or {}
-    for table_name, t_data in tables_map.items():
-        if isinstance(t_data, dict):
-            pf = extract_platform_from_table(table_name)
-            lc_rows = t_data.get("lifecycle_catalog")
-            if lc_rows:
-                for r in lc_rows:
-                    raw_catalog_rows.append({**r, "platform": pf})
-            else:
-                for iv in t_data.get("issue_versions") or []:
-                    raw_catalog_rows.append({
-                        "issue_id": iv.get("issue_id"),
-                        "app_version": iv.get("app_version"),
-                        "events": iv.get("events", 0),
-                        "users": iv.get("users", 0),
-                        "platform": pf,
-                    })
+    raw_version_catalog_rows: List[dict] = []
+
+    candidate_tables: List[Dict[str, dict]] = []
+    if (bq_result or {}).get("tables"):
+        candidate_tables.append(bq_result["tables"])
+    if isinstance((bq_result or {}).get("periods"), dict):
+        for p_data in bq_result["periods"].values():
+            if isinstance(p_data, dict) and p_data.get("tables"):
+                candidate_tables.append(p_data["tables"])
+
+    seen_lc_keys = set()
+    seen_vc_keys = set()
+
+    for tables_map in candidate_tables:
+        for table_name, t_data in tables_map.items():
+            if isinstance(t_data, dict):
+                pf = extract_platform_from_table(table_name)
+                lc_rows = t_data.get("lifecycle_catalog")
+                if lc_rows:
+                    for r in lc_rows:
+                        k = (pf, str(r.get("issue_id")), str(r.get("app_version")))
+                        if k not in seen_lc_keys:
+                            seen_lc_keys.add(k)
+                            raw_catalog_rows.append({**r, "platform": pf})
+                else:
+                    for iv in t_data.get("issue_versions") or []:
+                        k = (pf, str(iv.get("issue_id")), str(iv.get("app_version")))
+                        if k not in seen_lc_keys:
+                            seen_lc_keys.add(k)
+                            raw_catalog_rows.append({
+                                "issue_id": iv.get("issue_id"),
+                                "app_version": iv.get("app_version"),
+                                "events": iv.get("events", 0),
+                                "users": iv.get("users", 0),
+                                "platform": pf,
+                            })
+                vc_rows = t_data.get("version_catalog")
+                if vc_rows:
+                    for vr in vc_rows:
+                        k = (pf, str(vr.get("app_version") or vr.get("version")))
+                        if k not in seen_vc_keys:
+                            seen_vc_keys.add(k)
+                            raw_version_catalog_rows.append({**vr, "platform": pf})
 
     try:
         from crash_trend.lifecycle import enrich_app_data_with_lifecycle
-        enrich_app_data_with_lifecycle(result_data, app_name=app_id, catalog_rows=raw_catalog_rows)
+        enrich_app_data_with_lifecycle(
+            result_data,
+            catalog=catalog,
+            app_name=app_id,
+            out_dir=out_dir,
+            catalog_rows=raw_catalog_rows,
+            version_catalog_rows=raw_version_catalog_rows,
+            is_bootstrap=is_bootstrap,
+            is_incremental=is_incremental,
+        )
     except ImportError:
         try:
             from lifecycle import enrich_app_data_with_lifecycle
-            enrich_app_data_with_lifecycle(result_data, app_name=app_id, catalog_rows=raw_catalog_rows)
+            enrich_app_data_with_lifecycle(
+                result_data,
+                catalog=catalog,
+                app_name=app_id,
+                out_dir=out_dir,
+                catalog_rows=raw_catalog_rows,
+                version_catalog_rows=raw_version_catalog_rows,
+                is_bootstrap=is_bootstrap,
+                is_incremental=is_incremental,
+            )
         except ImportError:
             pass
 
@@ -913,18 +1034,43 @@ def transform_bq_to_v2(
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    args = app_argparser("查詢 Crashlytics BigQuery export").parse_args()
+    parser = app_argparser("查詢 Crashlytics BigQuery export")
+    parser.add_argument("--bootstrap", action="store_true", help="執行全量歷史掃描以初始化或重建 Version Catalog")
+    parser.add_argument("--watermark", type=str, default=None, help="增量查詢起始時間戳（預設自動讀取 catalog 或 catalog_days）")
+    args = parser.parse_args()
     app = get_app(args.app)
     project = app["firebase_project"]
     dataset = app.get("bq_dataset", "firebase_crashlytics")
     result: dict = {"project": project, "dataset": dataset, "tables": {}, "errors": {}}
+
+    cat_file = out_dir(args.app) / "historical_catalog.json"
+    cat_data = None
+    if cat_file.is_file():
+        try:
+            cat_data = json.loads(cat_file.read_text(encoding="utf-8"))
+        except Exception:
+            cat_data = None
+
+    try:
+        from crash_trend.lifecycle import should_trigger_catalog_bootstrap
+    except ImportError:
+        from lifecycle import should_trigger_catalog_bootstrap
+
+    is_bootstrap, watermark = should_trigger_catalog_bootstrap(
+        cat_data=cat_data,
+        cat_file_exists=cat_file.is_file(),
+        explicit_bootstrap=bool(args.bootstrap),
+        explicit_watermark=args.watermark,
+    )
+
+    is_incremental = bool(not is_bootstrap and watermark)
 
     try:
         client = make_client(project)
         tables = list_crash_tables(client, project, dataset, app_config={**app, "app_id": args.app})
     except Exception as e:
         write_json(out_dir(args.app) / "crashlytics_bq.json", {**result, "errors": {"dataset": str(e)[:800]}})
-        app_v2_data = transform_bq_to_v2(result, {**app, "app_id": args.app}, days=args.days)
+        app_v2_data = transform_bq_to_v2(result, {**app, "app_id": args.app}, days=args.days, is_bootstrap=is_bootstrap, is_incremental=is_incremental)
         app_v2_data["sources"]["crashlytics_bq"] = {
             "status": "error",
             "last_sync_timestamp": None,
@@ -940,7 +1086,7 @@ def main() -> None:
 
     if not tables:
         write_json(out_dir(args.app) / "crashlytics_bq.json", result)
-        app_v2_data = transform_bq_to_v2(result, {**app, "app_id": args.app}, days=args.days)
+        app_v2_data = transform_bq_to_v2(result, {**app, "app_id": args.app}, days=args.days, is_bootstrap=is_bootstrap, is_incremental=is_incremental)
         app_v2_data["sources"]["crashlytics_bq"] = {
             "status": "unavailable",
             "last_sync_timestamp": None,
@@ -982,6 +1128,10 @@ def main() -> None:
         for table in tables:
             fq = f"{project}.{dataset}.{table}"
             table_sqls = dict(sqls)
+            if is_bootstrap:
+                table_sqls["version_catalog"] = SQLS["version_catalog_bootstrap"]
+            elif watermark:
+                table_sqls["version_catalog"] = build_version_catalog_sql(fq, watermark=watermark, catalog_days=max_period, is_bootstrap=False)
             if keys:
                 ck_sql = build_custom_keys_sql(fq, p_days, keys)
                 if ck_sql:
@@ -992,6 +1142,9 @@ def main() -> None:
                     continue
                 if name == "lifecycle_catalog" and p_days != max_period:
                     # lifecycle_catalog queries full 90-day retention and only needs to be queried once per table
+                    continue
+                if name == "version_catalog" and p_days != max_period:
+                    # version_catalog queries full 90-day retention and only needs to be queried once per table
                     continue
                 tasks.append((p_days, table, name, sql))
 
@@ -1021,7 +1174,7 @@ def main() -> None:
 
     write_json(out_dir(args.app) / "crashlytics_bq.json", result)
 
-    app_v2_data = transform_bq_to_v2(result, {**app, "app_id": args.app}, days=args.days)
+    app_v2_data = transform_bq_to_v2(result, {**app, "app_id": args.app}, days=args.days, is_bootstrap=is_bootstrap, is_incremental=is_incremental)
     val_errors = validate_app_dashboard_v2(app_v2_data)
     if val_errors:
         print(f"  [警告] Schema V2 驗證出現 {len(val_errors)} 個錯誤：", file=sys.stderr)
