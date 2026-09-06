@@ -999,20 +999,17 @@ def transform_bq_to_v2(
                             raw_version_catalog_rows.append({**vr, "platform": pf})
 
     try:
-        from crash_trend.lifecycle import enrich_app_data_with_lifecycle
-        enrich_app_data_with_lifecycle(
-            result_data,
-            catalog=catalog,
-            app_name=app_id,
-            out_dir=out_dir,
-            catalog_rows=raw_catalog_rows,
-            version_catalog_rows=raw_version_catalog_rows,
-            is_bootstrap=is_bootstrap,
-            is_incremental=is_incremental,
-        )
+        from crash_trend.authority_store import AuthorityStoreError
     except ImportError:
         try:
-            from lifecycle import enrich_app_data_with_lifecycle
+            from authority_store import AuthorityStoreError
+        except ImportError:
+            class AuthorityStoreError(Exception):  # type: ignore
+                pass
+
+    try:
+        try:
+            from crash_trend.lifecycle import enrich_app_data_with_lifecycle
             enrich_app_data_with_lifecycle(
                 result_data,
                 catalog=catalog,
@@ -1024,7 +1021,27 @@ def transform_bq_to_v2(
                 is_incremental=is_incremental,
             )
         except ImportError:
-            pass
+            try:
+                from lifecycle import enrich_app_data_with_lifecycle
+                enrich_app_data_with_lifecycle(
+                    result_data,
+                    catalog=catalog,
+                    app_name=app_id,
+                    out_dir=out_dir,
+                    catalog_rows=raw_catalog_rows,
+                    version_catalog_rows=raw_version_catalog_rows,
+                    is_bootstrap=is_bootstrap,
+                    is_incremental=is_incremental,
+                )
+            except ImportError:
+                pass
+    except AuthorityStoreError as e:
+        result_data["sources"]["historical_catalog"] = {
+            "status": "error",
+            "last_sync_timestamp": now_iso,
+            "error_message": f"Authority store error: {e}",
+        }
+        raise
 
     return result_data
 
@@ -1056,11 +1073,15 @@ def main() -> None:
     except ImportError:
         from lifecycle import should_trigger_catalog_bootstrap
 
+    authority_store_file = out_dir(args.app) / "catalog_authority.sqlite3"
     is_bootstrap, watermark = should_trigger_catalog_bootstrap(
         cat_data=cat_data,
         cat_file_exists=cat_file.is_file(),
         explicit_bootstrap=bool(args.bootstrap),
         explicit_watermark=args.watermark,
+        authority_store_path=authority_store_file,
+        app_id=args.app,
+        cat_file_path=cat_file,
     )
 
     is_incremental = bool(not is_bootstrap and watermark)
@@ -1174,7 +1195,18 @@ def main() -> None:
 
     write_json(out_dir(args.app) / "crashlytics_bq.json", result)
 
-    app_v2_data = transform_bq_to_v2(result, {**app, "app_id": args.app}, days=args.days, is_bootstrap=is_bootstrap, is_incremental=is_incremental)
+    try:
+        app_v2_data = transform_bq_to_v2(
+            result,
+            {**app, "app_id": args.app},
+            days=args.days,
+            is_bootstrap=is_bootstrap,
+            is_incremental=is_incremental,
+            out_dir=out_dir(args.app).parent,
+        )
+    except AuthorityStoreError as e:
+        print(f"  [嚴重錯誤] Catalog Authority Store 發生異常：{e}", file=sys.stderr)
+        sys.exit(f"[錯誤] Catalog Authority Store 發生異常：{e}")
     val_errors = validate_app_dashboard_v2(app_v2_data)
     if val_errors:
         print(f"  [警告] Schema V2 驗證出現 {len(val_errors)} 個錯誤：", file=sys.stderr)

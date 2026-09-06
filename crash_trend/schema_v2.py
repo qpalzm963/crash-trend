@@ -389,11 +389,19 @@ class CatalogVersionHistory(TypedDict):
     issue_ids: NotRequired[List[str]]
 
 
+class CatalogAuthorityMetadata(TypedDict):
+    backend: Literal["sqlite"]
+    state_version: int
+    bootstrap_complete: bool
+    store_path: NotRequired[Optional[str]]
+
+
 class HistoricalCatalogData(TypedDict):
     schema_version: str
     updated_at: str
     watermark: NotRequired[Optional[str]]
     app_id: NotRequired[Optional[str]]
+    authority: NotRequired[CatalogAuthorityMetadata]
     bootstrap_complete: NotRequired[bool]
     authority_state_version: NotRequired[int]
     issues: Dict[str, CatalogIssueHistory]
@@ -685,6 +693,18 @@ def validate_historical_catalog(data: dict) -> List[str]:
 
     if "schema_version" in data and str(data["schema_version"]) not in SUPPORTED_SCHEMA_VERSIONS and str(data["schema_version"]) != "1.0":
         errors.append(f"historical catalog schema_version '{data['schema_version']}' is not supported")
+
+    if "authority" in data and data["authority"] is not None:
+        if not isinstance(data["authority"], dict):
+            errors.append("authority in historical catalog must be an object")
+        else:
+            auth = data["authority"]
+            if "backend" in auth and auth["backend"] not in ("sqlite",):
+                errors.append(f"authority backend '{auth['backend']}' is not supported")
+            if "state_version" in auth and not isinstance(auth["state_version"], int):
+                errors.append("authority.state_version must be an integer")
+            if "bootstrap_complete" in auth and not isinstance(auth["bootstrap_complete"], bool):
+                errors.append("authority.bootstrap_complete must be a boolean")
 
     if "issues" in data and isinstance(data["issues"], dict):
         for key, iss in data["issues"].items():
