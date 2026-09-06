@@ -1044,14 +1044,24 @@ def main() -> None:
     result: dict = {"project": project, "dataset": dataset, "tables": {}, "errors": {}}
 
     cat_file = out_dir(args.app) / "historical_catalog.json"
-    is_bootstrap = bool(args.bootstrap or not cat_file.is_file())
-    watermark = args.watermark
-    if not is_bootstrap and not watermark and cat_file.is_file():
+    cat_data = None
+    if cat_file.is_file():
         try:
             cat_data = json.loads(cat_file.read_text(encoding="utf-8"))
-            watermark = cat_data.get("watermark")
         except Exception:
-            pass
+            cat_data = None
+
+    try:
+        from crash_trend.lifecycle import should_trigger_catalog_bootstrap
+    except ImportError:
+        from lifecycle import should_trigger_catalog_bootstrap
+
+    is_bootstrap, watermark = should_trigger_catalog_bootstrap(
+        cat_data=cat_data,
+        cat_file_exists=cat_file.is_file(),
+        explicit_bootstrap=bool(args.bootstrap),
+        explicit_watermark=args.watermark,
+    )
 
     is_incremental = bool(not is_bootstrap and watermark)
 

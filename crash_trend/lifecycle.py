@@ -386,7 +386,7 @@ class IssueHistoricalCatalog:
         self.catalog_path.parent.mkdir(parents=True, exist_ok=True)
         now_iso = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
         self.updated_at = now_iso
-        self.watermark = self.watermark or now_iso
+        # Watermark is strictly owned by genuine version_catalog ingestion; do NOT fake with now_iso
 
         # Sync tracked installation IDs into app_versions before serialization
         for pf, vers in self.app_versions.items():
@@ -441,8 +441,8 @@ class IssueHistoricalCatalog:
             rel_date = v.get("release_date") or existing.get("release_date")
             first_seen = v.get("first_seen") or existing.get("first_seen")
             last_seen = v.get("last_seen") or existing.get("last_seen")
-            if last_seen:
-                self.advance_watermark(last_seen)
+            # NOTE: Watermark is strictly owned by genuine version_catalog ingestion;
+            # window-scoped version_health snapshots MUST NOT advance the incremental checkpoint.
 
             is_suff = is_version_sample_sufficient({
                 "adoption_rate": adoption,
@@ -601,12 +601,19 @@ class IssueHistoricalCatalog:
                     v_obj["first_seen"] = min(v_obj["first_seen"], ts_first) if v_obj.get("first_seen") else ts_first
                 if ts_last:
                     v_obj["last_seen"] = max(v_obj["last_seen"], ts_last) if v_obj.get("last_seen") else ts_last
-                    self.advance_watermark(ts_last)
+                    # NOTE: Watermark is strictly owned by version_catalog ingestion;
+                    # issue-level distributions MUST NOT advance the incremental checkpoint.
 
-    def update_from_catalog_rows(self, rows: Iterable[dict], is_incremental: bool = False) -> None:
+    def update_from_catalog_rows(
+        self,
+        rows: Iterable[dict],
+        is_incremental: bool = False,
+        advance_watermark: bool = True,
+        checkpoint_watermark: Optional[str] = None,
+    ) -> None:
         """Ingests broad catalog query rows (issue_id, app_version, first_seen_ts, last_seen_ts, events, users, fatal, anr)."""
         now_iso = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
-        initial_watermark = self.watermark
+        eval_watermark = checkpoint_watermark if checkpoint_watermark is not None else self.watermark
 
         for row in rows:
             iid = row.get("issue_id")
@@ -643,9 +650,9 @@ class IssueHistoricalCatalog:
             if ts_last:
                 v_obj["last_seen"] = max(v_obj["last_seen"], ts_last) if v_obj.get("last_seen") else ts_last
 
-            # Watermark Boundary Idempotency: in incremental mode, if ts_last <= initial_watermark,
+            # Watermark Boundary Idempotency: in incremental mode, if ts_last <= eval_watermark,
             # this batch/row was already included in the catalog up to watermark and must not be double-added.
-            is_already_processed = bool(is_incremental and initial_watermark and ts_last and self._is_ts_le(ts_last, initial_watermark))
+            is_already_processed = bool(is_incremental and eval_watermark and ts_last and self._is_ts_le(ts_last, eval_watermark))
 
             ev_count = row.get("crash_events") if row.get("crash_events") is not None else (
                 row.get("lifetime_crashes") if row.get("lifetime_crashes") is not None else (None if iid else row.get("events"))
@@ -757,7 +764,7 @@ class IssueHistoricalCatalog:
                 else:
                     v_obj["lifetime_issues"] = max(int(v_obj.get("lifetime_issues") or 0), int(iss_count))
 
-            if ts_last:
+            if advance_watermark and ts_last:
                 self.advance_watermark(ts_last)
 
     def calculate_version_status(
@@ -1293,6 +1300,53 @@ def bootstrap_catalog_from_disk(
     return cat
 
 
+def should_trigger_catalog_bootstrap(
+    cat_data: Optional[dict],
+    cat_file_exists: bool,
+    explicit_bootstrap: bool = False,
+    explicit_watermark: Optional[str] = None,
+) -> Tuple[bool, Optional[str]]:
+    """Evaluates whether a catalog requires a full historical bootstrap.
+
+    Triggers full bootstrap (SQLS["version_catalog_bootstrap"]) if:
+    1. explicit_bootstrap is True (--bootstrap CLI flag passed).
+    2. Catalog file does not exist on disk.
+    3. Catalog file exists, but lacks a valid watermark (pre-watermark legacy catalog).
+    4. Catalog file exists and has app_versions, but lacks installation_ids authority state.
+
+    Returns:
+        (is_bootstrap: bool, watermark: Optional[str])
+    """
+    if explicit_bootstrap:
+        return True, explicit_watermark
+
+    if not cat_file_exists or not isinstance(cat_data, dict):
+        return True, explicit_watermark
+
+    watermark = explicit_watermark or cat_data.get("watermark")
+    if not watermark:
+        return True, None
+
+    # Check authority state in app_versions: if app_versions exist, verify installation_ids are present
+    app_vers = cat_data.get("app_versions")
+    if isinstance(app_vers, dict) and app_vers:
+        all_v_objs = []
+        for pf_or_ver, val in app_vers.items():
+            if isinstance(val, dict):
+                if pf_or_ver in ("android", "ios"):
+                    all_v_objs.extend(v for v in val.values() if isinstance(v, dict))
+                else:
+                    all_v_objs.append(val)
+        if all_v_objs:
+            has_any_installation_ids = any(
+                bool(v.get("installation_ids") or v.get("user_ids")) for v in all_v_objs
+            )
+            if not has_any_installation_ids:
+                return True, None
+
+    return False, watermark
+
+
 def enrich_app_data_with_lifecycle(
     app_data: dict,
     catalog: Optional[IssueHistoricalCatalog] = None,
@@ -1323,13 +1377,23 @@ def enrich_app_data_with_lifecycle(
     if is_incremental is None:
         is_incremental = False
 
+    # Freeze checkpoint before processing any catalog rows in this run
+    initial_checkpoint = cat.watermark
+
     if catalog_rows:
         # catalog_rows contains issue-level distribution (e.g. from 90-day lifecycle_catalog)
-        # to update issue first/last seen and versions_seen; it is non-incremental for version totals.
-        cat.update_from_catalog_rows(catalog_rows, is_incremental=False)
+        # to update issue first/last seen and versions_seen; it is non-incremental for version totals
+        # and MUST NOT advance the global incremental watermark.
+        cat.update_from_catalog_rows(catalog_rows, is_incremental=False, advance_watermark=False)
 
     if version_catalog_rows:
-        cat.update_from_catalog_rows(version_catalog_rows, is_incremental=is_incremental)
+        # version_catalog_rows is authoritative for version totals and watermark progression.
+        cat.update_from_catalog_rows(
+            version_catalog_rows,
+            is_incremental=is_incremental,
+            advance_watermark=True,
+            checkpoint_watermark=initial_checkpoint,
+        )
 
     # Ingest app_versions from current version_health into catalog
     vh = app_data.get("version_health") or []

@@ -17,6 +17,7 @@ from crash_trend.lifecycle import (
     IssueHistoricalCatalog,
     enrich_app_data_with_lifecycle,
     get_latest_app_version,
+    should_trigger_catalog_bootstrap,
 )
 from crash_trend.schema_v2 import (
     ReleaseCatalogItem,
@@ -1017,6 +1018,190 @@ class TestReleaseCatalog(unittest.TestCase):
 
             cat_disk = json.loads(cat_file.read_text(encoding="utf-8"))
             self.assertEqual(cat_disk["watermark"], "2026-08-20T18:00:00Z")
+
+    def test_transform_simultaneous_lifecycle_and_version_catalog_watermark_order(self) -> None:
+        """Regression test for Review 5124155467 Blocker 1:
+        When transform_bq_to_v2 receives BOTH lifecycle_catalog (90d issue rows)
+        and version_catalog (incremental version rows) with old watermark = T0 and new data to T1:
+        - lifecycle_catalog MUST NOT pre-advance watermark or cause version_catalog rows to be skipped
+        - Lifetime crashes, fatal, anr, and users accumulate accurately from version_catalog
+        - Watermark on disk advances to T1 after successful ingestion
+        """
+        app_cfg = {"app_id": "test_app", "platforms": ["android"]}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            cat_file = tmppath / "test_app" / "historical_catalog.json"
+            cat = IssueHistoricalCatalog(catalog_path=cat_file, app_id="test_app")
+
+            # Setup baseline catalog with T0 watermark
+            t0 = "2026-08-01T00:00:00Z"
+            t1 = "2026-08-10T15:00:00Z"
+            inst_boot = [f"uuid_{i}" for i in range(500)]
+            cat.update_from_catalog_rows([
+                {
+                    "app_version": "1.0.0",
+                    "platform": "android",
+                    "first_seen": "2026-07-01T00:00:00Z",
+                    "last_seen": t0,
+                    "crash_events": 1000,
+                    "fatal_events": 50,
+                    "anr_events": 10,
+                    "installation_ids": inst_boot,
+                    "issues_count": 5,
+                }
+            ], is_incremental=False, advance_watermark=True)
+            cat.save()
+
+            self.assertEqual(cat.watermark, t0)
+            self.assertEqual(cat.app_versions["android"]["1.0.0"]["lifetime_crashes"], 1000)
+
+            # Prepare bq_result containing BOTH lifecycle_catalog (issue rows) and version_catalog (version rows)
+            # Both have latest data at T1
+            bq_result = {
+                "tables": {
+                    "android": {
+                        "overview": [],
+                        "top_issues": [],
+                        "lifecycle_catalog": [
+                            {
+                                "issue_id": "iss_test_1",
+                                "app_version": "1.0.0",
+                                "first_seen_timestamp": "2026-07-15T00:00:00Z",
+                                "last_seen_timestamp": t1,
+                                "events": 5,
+                                "users": 3,
+                            }
+                        ],
+                        "version_catalog": [
+                            {
+                                "app_version": "1.0.0",
+                                "platform": "android",
+                                "first_seen": "2026-07-01T00:00:00Z",
+                                "last_seen": t1,
+                                "crash_events": 10,
+                                "fatal_events": 2,
+                                "anr_events": 1,
+                                "affected_users": 2,
+                                "installation_ids": ["uuid_1", "uuid_500"],  # uuid_1 dupe, uuid_500 new
+                                "issues_count": 5,
+                            }
+                        ],
+                    }
+                }
+            }
+
+            # Ingest in incremental mode
+            v2_data = transform_bq_to_v2(bq_result, app_cfg, is_incremental=True, out_dir=tmppath)
+            cat_item = next(x for x in v2_data["release_catalog"] if x["version"] == "1.0.0")
+
+            # Lifetime counts must accumulate (NOT be skipped due to lifecycle_catalog advancing watermark first!)
+            self.assertEqual(cat_item["lifetime_crashes"], 1010, "Lifetime crashes must accumulate from 1000 to 1010")
+            self.assertEqual(cat_item["lifetime_fatal"], 52, "Lifetime fatal must accumulate from 50 to 52")
+            self.assertEqual(cat_item["lifetime_anr"], 11, "Lifetime anr must accumulate from 10 to 11")
+            self.assertEqual(cat_item["lifetime_affected_users"], 501, "Unique users must deduplicate from 500 to 501")
+
+            # Watermark on disk must advance to T1
+            cat_disk = json.loads(cat_file.read_text(encoding="utf-8"))
+            self.assertEqual(cat_disk["watermark"], t1, "Watermark must advance to T1 after successful version_catalog ingestion")
+
+    def test_legacy_catalog_without_watermark_or_installation_ids_triggers_bootstrap(self) -> None:
+        """Regression test for Review 5124155467 Blocker 2:
+        Pre-watermark or pre-installation_ids historical_catalog.json must trigger
+        full historical bootstrap (SQLS['version_catalog_bootstrap']), NOT 90-day rolling window query.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            cat_file = tmppath / "test_app" / "historical_catalog.json"
+            cat_file.parent.mkdir(parents=True, exist_ok=True)
+
+            # Case A: Legacy catalog on disk without watermark or installation_ids
+            legacy_catalog_data = {
+                "schema_version": "2.0.0",
+                "updated_at": "2026-07-01T00:00:00Z",
+                "app_versions": {
+                    "android": {
+                        "1.0.0": {
+                            "version": "1.0.0",
+                            "crash_events": 100,
+                            "affected_users": 50,
+                            "status": "active",
+                            "sample_sufficient": True,
+                            "last_updated": "2026-07-01T00:00:00Z",
+                        }
+                    }
+                },
+                "issues": {},
+            }
+            cat_file.write_text(json.dumps(legacy_catalog_data), encoding="utf-8")
+
+            is_boot, wm = should_trigger_catalog_bootstrap(
+                cat_data=legacy_catalog_data,
+                cat_file_exists=True,
+                explicit_bootstrap=False,
+            )
+            self.assertTrue(is_boot, "Legacy catalog without watermark must trigger bootstrap")
+            self.assertIsNone(wm)
+
+            # Case B: Catalog has a watermark, but lacks installation_ids authority state
+            cat_with_wm_no_ids = {
+                "schema_version": "2.3.0",
+                "watermark": "2026-08-01T00:00:00Z",
+                "app_versions": {
+                    "android": {
+                        "1.0.0": {
+                            "version": "1.0.0",
+                            "crash_events": 100,
+                            "affected_users": 50,
+                            # installation_ids is missing
+                        }
+                    }
+                },
+                "issues": {},
+            }
+            is_boot_b, wm_b = should_trigger_catalog_bootstrap(
+                cat_data=cat_with_wm_no_ids,
+                cat_file_exists=True,
+                explicit_bootstrap=False,
+            )
+            self.assertTrue(is_boot_b, "Catalog with watermark but missing installation_ids must trigger bootstrap")
+            self.assertIsNone(wm_b)
+
+            # Case C: Modern catalog with both watermark and installation_ids
+            modern_catalog = {
+                "schema_version": "2.3.0",
+                "watermark": "2026-08-01T00:00:00Z",
+                "app_versions": {
+                    "android": {
+                        "1.0.0": {
+                            "version": "1.0.0",
+                            "crash_events": 100,
+                            "affected_users": 50,
+                            "installation_ids": ["uuid_1", "uuid_2"],
+                        }
+                    }
+                },
+                "issues": {},
+            }
+            is_boot_c, wm_c = should_trigger_catalog_bootstrap(
+                cat_data=modern_catalog,
+                cat_file_exists=True,
+                explicit_bootstrap=False,
+            )
+            self.assertFalse(is_boot_c, "Modern catalog with watermark and installation_ids must NOT trigger bootstrap")
+            self.assertEqual(wm_c, "2026-08-01T00:00:00Z")
+
+            # Case D: Verify query template selection under bootstrap vs incremental
+            # When is_bootstrap is True, version_catalog SQL must be version_catalog_bootstrap (WHERE event_timestamp IS NOT NULL)
+            table_sqls = dict(SQLS)
+            if is_boot:
+                table_sqls["version_catalog"] = SQLS["version_catalog_bootstrap"]
+            else:
+                table_sqls["version_catalog"] = SQLS["version_catalog"]
+
+            self.assertEqual(table_sqls["version_catalog"], SQLS["version_catalog_bootstrap"])
+            self.assertIn("WHERE event_timestamp IS NOT NULL", table_sqls["version_catalog"])
+            self.assertNotIn("DATE_SUB", table_sqls["version_catalog"])
 
 
 if __name__ == "__main__":
