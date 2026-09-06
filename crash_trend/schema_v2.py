@@ -394,6 +394,8 @@ class HistoricalCatalogData(TypedDict):
     updated_at: str
     watermark: NotRequired[Optional[str]]
     app_id: NotRequired[Optional[str]]
+    bootstrap_complete: NotRequired[bool]
+    authority_state_version: NotRequired[int]
     issues: Dict[str, CatalogIssueHistory]
     app_versions: Dict[str, Dict[str, CatalogVersionHistory]]
 

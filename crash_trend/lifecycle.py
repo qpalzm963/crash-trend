@@ -291,6 +291,8 @@ class IssueHistoricalCatalog:
         self.app_versions: Dict[str, Dict[str, Dict[str, Any]]] = {"android": {}, "ios": {}}
         self.updated_at: Optional[str] = None
         self.watermark: Optional[str] = None
+        self.bootstrap_complete: bool = False
+        self.authority_state_version: int = 1
         # Track distinct installation UUIDs per platform and version for authoritative deduplication
         self._version_installations: Dict[str, Dict[str, Set[str]]] = {"android": {}, "ios": {}}
 
@@ -374,6 +376,8 @@ class IssueHistoricalCatalog:
 
                 self.updated_at = data.get("updated_at")
                 self.watermark = data.get("watermark")
+                self.bootstrap_complete = bool(data.get("bootstrap_complete", False))
+                self.authority_state_version = data.get("authority_state_version", 1)
                 if data.get("app_id") and not self.app_id:
                     self.app_id = data["app_id"]
             except Exception:
@@ -395,9 +399,13 @@ class IssueHistoricalCatalog:
                     inst_set = self._version_installations.get(pf, {}).get(v_name)
                     if inst_set:
                         v_info["installation_ids"] = sorted(list(inst_set))
+                    else:
+                        v_info.setdefault("installation_ids", [])
 
         payload: Dict[str, Any] = {
             "schema_version": "2.3.0",
+            "authority_state_version": getattr(self, "authority_state_version", 1),
+            "bootstrap_complete": getattr(self, "bootstrap_complete", False),
             "updated_at": now_iso,
             "watermark": self.watermark,
             "issues": self.issues,
@@ -614,6 +622,8 @@ class IssueHistoricalCatalog:
         """Ingests broad catalog query rows (issue_id, app_version, first_seen_ts, last_seen_ts, events, users, fatal, anr)."""
         now_iso = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
         eval_watermark = checkpoint_watermark if checkpoint_watermark is not None else self.watermark
+        if advance_watermark and not is_incremental:
+            self.bootstrap_complete = True
 
         for row in rows:
             iid = row.get("issue_id")
@@ -707,16 +717,22 @@ class IssueHistoricalCatalog:
                 )
             )
 
+            existing_users = max(
+                int(v_obj.get("lifetime_affected_users") or 0),
+                int(v_obj.get("affected_users") or 0),
+            )
             if inst_set:
-                v_obj["lifetime_affected_users"] = len(inst_set)
+                # Monotonic guarantee: lifetime_affected_users must NEVER decrease from a previously established aggregate count,
+                # even if an incremental batch only contains a subset of installation IDs (e.g. legacy version lacking full historical IDs).
+                v_obj["lifetime_affected_users"] = max(existing_users, len(inst_set))
                 v_obj["installation_ids"] = sorted(list(inst_set))
-                v_obj["affected_users"] = len(inst_set)
+                v_obj["affected_users"] = v_obj["lifetime_affected_users"]
             elif usr_count is not None:
                 if is_incremental:
                     if not is_already_processed:
-                        v_obj["lifetime_affected_users"] = max(int(v_obj.get("lifetime_affected_users") or 0), int(usr_count))
+                        v_obj["lifetime_affected_users"] = max(existing_users, int(usr_count))
                 else:
-                    v_obj["lifetime_affected_users"] = max(int(v_obj.get("lifetime_affected_users") or 0), int(usr_count))
+                    v_obj["lifetime_affected_users"] = max(existing_users, int(usr_count))
                 v_obj["affected_users"] = v_obj["lifetime_affected_users"]
 
             # Deduplication for issues count
@@ -1300,6 +1316,27 @@ def bootstrap_catalog_from_disk(
     return cat
 
 
+def _has_verifiable_installation_authority(v: dict) -> bool:
+    """Verifies that a version entity possesses authoritative installation UUID state.
+
+    A version lacks installation authority if:
+    1. It recorded affected users or crash events, but lacks non-empty installation_ids / user_ids.
+    2. It does not have the installation_ids or user_ids field defined in its schema.
+    """
+    if not isinstance(v, dict):
+        return False
+    ids = v.get("installation_ids") or v.get("user_ids")
+    users = int(v.get("lifetime_affected_users") or v.get("affected_users") or 0)
+    crashes = int(v.get("lifetime_crashes") or v.get("crash_events") or 0)
+
+    # If the version has recorded crash events or affected users, it MUST have non-empty installation IDs
+    if users > 0 or crashes > 0:
+        return bool(ids)
+
+    # For zero-crash/zero-user placeholder versions, the installation_ids field must at least be explicitly present
+    return ("installation_ids" in v) or ("user_ids" in v)
+
+
 def should_trigger_catalog_bootstrap(
     cat_data: Optional[dict],
     cat_file_exists: bool,
@@ -1312,7 +1349,9 @@ def should_trigger_catalog_bootstrap(
     1. explicit_bootstrap is True (--bootstrap CLI flag passed).
     2. Catalog file does not exist on disk.
     3. Catalog file exists, but lacks a valid watermark (pre-watermark legacy catalog).
-    4. Catalog file exists and has app_versions, but lacks installation_ids authority state.
+    4. Catalog file explicitly records bootstrap_complete as False.
+    5. Catalog file has app_versions, but ANY persisted version lacks verifiable installation authority state
+       (preventing corrupted / reduced lifetime counts in partially-migrated catalogs).
 
     Returns:
         (is_bootstrap: bool, watermark: Optional[str])
@@ -1327,22 +1366,30 @@ def should_trigger_catalog_bootstrap(
     if not watermark:
         return True, None
 
-    # Check authority state in app_versions: if app_versions exist, verify installation_ids are present
+    if cat_data.get("bootstrap_complete") is False:
+        return True, None
+
+    # Check authority state in app_versions: every persisted version must possess verifiable installation authority state.
+    # If ANY version lacks installation authority (e.g. partial migration where only newer versions have installation_ids),
+    # a full historical bootstrap must be triggered.
     app_vers = cat_data.get("app_versions")
-    if isinstance(app_vers, dict) and app_vers:
-        all_v_objs = []
-        for pf_or_ver, val in app_vers.items():
-            if isinstance(val, dict):
-                if pf_or_ver in ("android", "ios"):
-                    all_v_objs.extend(v for v in val.values() if isinstance(v, dict))
-                else:
-                    all_v_objs.append(val)
-        if all_v_objs:
-            has_any_installation_ids = any(
-                bool(v.get("installation_ids") or v.get("user_ids")) for v in all_v_objs
-            )
-            if not has_any_installation_ids:
-                return True, None
+    if not isinstance(app_vers, dict) or not app_vers:
+        return True, None
+
+    all_v_objs = []
+    for pf_or_ver, val in app_vers.items():
+        if isinstance(val, dict):
+            if pf_or_ver in ("android", "ios"):
+                all_v_objs.extend(v for v in val.values() if isinstance(v, dict))
+            else:
+                all_v_objs.append(val)
+
+    if not all_v_objs:
+        return True, None
+
+    for v in all_v_objs:
+        if not _has_verifiable_installation_authority(v):
+            return True, None
 
     return False, watermark
 
@@ -1373,6 +1420,9 @@ def enrich_app_data_with_lifecycle(
             cat_path = effective_out / effective_app_id / "historical_catalog.json"
         cat = IssueHistoricalCatalog(catalog_path=cat_path, app_id=effective_app_id)
         cat.load()
+
+    if is_bootstrap:
+        cat.bootstrap_complete = True
 
     if is_incremental is None:
         is_incremental = False

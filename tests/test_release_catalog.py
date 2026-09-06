@@ -1203,6 +1203,137 @@ class TestReleaseCatalog(unittest.TestCase):
             self.assertIn("WHERE event_timestamp IS NOT NULL", table_sqls["version_catalog"])
             self.assertNotIn("DATE_SUB", table_sqls["version_catalog"])
 
+            # Case E: Partial migration catalog with mixed versions (1.0.0 lacks IDs, 2.0.0 has IDs)
+            mixed_catalog = {
+                "schema_version": "2.3.0",
+                "watermark": "2026-08-01T00:00:00Z",
+                "app_versions": {
+                    "android": {
+                        "1.0.0": {
+                            "version": "1.0.0",
+                            "crash_events": 1000,
+                            "lifetime_affected_users": 500,
+                            # installation_ids missing
+                        },
+                        "2.0.0": {
+                            "version": "2.0.0",
+                            "crash_events": 10,
+                            "lifetime_affected_users": 2,
+                            "installation_ids": ["uuid_1", "uuid_2"],
+                        }
+                    }
+                },
+                "issues": {},
+            }
+            is_boot_e, wm_e = should_trigger_catalog_bootstrap(
+                cat_data=mixed_catalog,
+                cat_file_exists=True,
+                explicit_bootstrap=False,
+            )
+            self.assertTrue(is_boot_e, "Mixed catalog where any version lacks installation_ids must trigger bootstrap")
+            self.assertIsNone(wm_e)
+
+    def test_partial_migration_catalog_triggers_bootstrap_and_preserves_monotonic_users(self) -> None:
+        """Regression test for Review 5124192460:
+        1. A catalog with >=2 versions where one has installation_ids and another lacks them
+           must trigger bootstrap.
+        2. If an incremental batch arrives for the version lacking authority state,
+           lifetime_affected_users must NEVER decrease below the existing aggregate count.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            cat_file = tmppath / "test_app" / "historical_catalog.json"
+            cat_file.parent.mkdir(parents=True, exist_ok=True)
+
+            mixed_catalog_data = {
+                "schema_version": "2.3.0",
+                "watermark": "2026-08-01T00:00:00Z",
+                "bootstrap_complete": False,
+                "app_versions": {
+                    "android": {
+                        "1.0.0": {
+                            "version": "1.0.0",
+                            "platform": "android",
+                            "status": "legacy",
+                            "crash_events": 1000,
+                            "affected_users": 500,
+                            "lifetime_crashes": 1000,
+                            "lifetime_affected_users": 500,
+                            "last_updated": "2026-07-01T00:00:00Z",
+                            # installation_ids missing: legacy aggregate-only version
+                        },
+                        "2.0.0": {
+                            "version": "2.0.0",
+                            "platform": "android",
+                            "status": "active",
+                            "crash_events": 10,
+                            "affected_users": 2,
+                            "lifetime_crashes": 10,
+                            "lifetime_affected_users": 2,
+                            "installation_ids": ["uuid_recent_1", "uuid_recent_2"],
+                            "last_updated": "2026-08-01T00:00:00Z",
+                        },
+                    }
+                },
+                "issues": {},
+            }
+            cat_file.write_text(json.dumps(mixed_catalog_data), encoding="utf-8")
+
+            # 1. Verify bootstrap is triggered
+            is_boot, wm = should_trigger_catalog_bootstrap(
+                cat_data=mixed_catalog_data,
+                cat_file_exists=True,
+                explicit_bootstrap=False,
+            )
+            self.assertTrue(is_boot, "Partial migration catalog with mixed authority state MUST trigger bootstrap")
+            self.assertIsNone(wm)
+
+            # 2. Simulate incremental ingestion on the legacy version lacking authority state
+            cat = IssueHistoricalCatalog(catalog_path=cat_file, app_id="test_app")
+            cat.load()
+
+            self.assertEqual(cat.app_versions["android"]["1.0.0"]["lifetime_affected_users"], 500)
+
+            incremental_rows = [
+                {
+                    "app_version": "1.0.0",
+                    "platform": "android",
+                    "crash_events": 5,
+                    "affected_users": 2,
+                    "installation_ids": ["uuid_inc_1", "uuid_inc_2"],
+                    "last_seen_timestamp": "2026-08-05T00:00:00Z",
+                }
+            ]
+
+            cat.update_from_catalog_rows(
+                incremental_rows,
+                is_incremental=True,
+                advance_watermark=True,
+                checkpoint_watermark="2026-08-01T00:00:00Z",
+            )
+
+            v1 = cat.app_versions["android"]["1.0.0"]
+            # MUST NOT drop from 500 to 2!
+            self.assertGreaterEqual(
+                v1["lifetime_affected_users"],
+                500,
+                "Lifetime affected users must never decrease below existing aggregate when incremental batch has fewer UUIDs",
+            )
+            self.assertEqual(v1["lifetime_affected_users"], 500)
+            self.assertEqual(v1["affected_users"], 500)
+            # Lifetime crashes incremented: 1000 + 5 = 1005
+            self.assertEqual(v1["lifetime_crashes"], 1005)
+            # New installation IDs tracked
+            self.assertEqual(v1["installation_ids"], ["uuid_inc_1", "uuid_inc_2"])
+
+            # 3. Save catalog and verify serialization
+            cat.save()
+            reloaded_cat = IssueHistoricalCatalog(catalog_path=cat_file, app_id="test_app")
+            reloaded_cat.load()
+            reloaded_v1 = reloaded_cat.app_versions["android"]["1.0.0"]
+            self.assertEqual(reloaded_v1["lifetime_affected_users"], 500)
+            self.assertEqual(reloaded_v1["installation_ids"], ["uuid_inc_1", "uuid_inc_2"])
+
 
 if __name__ == "__main__":
     unittest.main()
