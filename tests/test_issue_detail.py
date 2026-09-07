@@ -110,7 +110,7 @@ class TestIssueDetailIntegration(unittest.TestCase):
             [
                 {
                     "issue_id": "issue-1",
-                    "event_timestamp": dt.datetime(2026, 9, 2, 13, 40, tzinfo=dt.timezone.utc),
+                    "event_timestamp": dt.datetime(2026, 9, 2, 13, 40, tzinfo=dt.UTC),
                     "device_model": "Pixel 8",
                     "os_version": "Android 14",
                     "blame_frame": {

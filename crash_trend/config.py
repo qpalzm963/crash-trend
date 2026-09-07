@@ -7,7 +7,6 @@ import datetime as dt
 import json
 import sys
 from pathlib import Path
-from typing import Optional, Tuple
 
 import yaml
 
@@ -26,7 +25,7 @@ def load_config() -> dict:
         return yaml.safe_load(f) or {}
 
 
-def get_app(name: str, cfg: Optional[dict] = None) -> dict:
+def get_app(name: str, cfg: dict | None = None) -> dict:
     """回傳 app 設定。app 不存在時直接退出。若未傳入 cfg 則自動呼叫 load_config()。"""
     if cfg is None:
         cfg = load_config()
@@ -146,8 +145,8 @@ def get_mcp_config(app_cfg: dict) -> dict:
 
 
 def is_mcp_cache_fresh(
-    cache_path: Path, max_age_days: int = 7, now: Optional[dt.datetime] = None
-) -> Tuple[bool, Optional[float], Optional[str]]:
+    cache_path: Path, max_age_days: int = 7, now: dt.datetime | None = None
+) -> tuple[bool, float | None, str | None]:
     """Checks whether an MCP stacktraces.json cache file is fresh and valid.
     A failed cache (e.g. has errors and no valid issues) is NEVER considered fresh.
     Returns: (is_fresh, age_in_days, generated_at_iso)
@@ -178,11 +177,11 @@ def is_mcp_cache_fresh(
         cleaned = gen_at_str.replace("Z", "+00:00")
         gen_dt = dt.datetime.fromisoformat(cleaned)
         if gen_dt.tzinfo is None:
-            gen_dt = gen_dt.replace(tzinfo=dt.timezone.utc)
+            gen_dt = gen_dt.replace(tzinfo=dt.UTC)
     except Exception:
         return False, None, gen_at_str
 
-    curr_now = now or dt.datetime.now(dt.timezone.utc)
+    curr_now = now or dt.datetime.now(dt.UTC)
     age_seconds = (curr_now - gen_dt).total_seconds()
     age_days = max(0.0, round(age_seconds / 86400.0, 2))
 
@@ -190,7 +189,7 @@ def is_mcp_cache_fresh(
     return is_fresh, age_days, gen_at_str
 
 
-def get_ai_config(app_cfg: Optional[dict] = None, global_cfg: Optional[dict] = None) -> dict:
+def get_ai_config(app_cfg: dict | None = None, global_cfg: dict | None = None) -> dict:
     """Extracts and normalizes AI configuration.
 
     Priority:

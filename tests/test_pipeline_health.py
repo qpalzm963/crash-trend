@@ -13,7 +13,6 @@ from unittest.mock import patch
 from crash_trend.pipeline_health import (
     PipelineRunTracker,
     load_run_summary,
-    now_utc_iso,
     sanitize_error_message,
 )
 
@@ -174,6 +173,7 @@ class TestPipelineHealth(unittest.TestCase):
 
     def test_run_pipeline_orchestration(self) -> None:
         from unittest.mock import patch
+
         from crash_trend.pipeline_run import run_pipeline
 
         fake_cfg = {
@@ -234,6 +234,7 @@ class TestPipelineHealth(unittest.TestCase):
     def test_graceful_failures_exit_zero_detected_from_artifacts(self) -> None:
         """Regression test for Blocking 1: Subprocesses exit 0 but artifacts indicate error."""
         from unittest.mock import patch
+
         from crash_trend.pipeline_run import run_pipeline
 
         fake_cfg = {
@@ -305,6 +306,7 @@ class TestPipelineHealth(unittest.TestCase):
     def test_ai_enabled_with_gemini_key_url(self) -> None:
         """Regression test for High Priority issue: AI enabled detection supports GEMINI_KEY_URL."""
         from unittest.mock import patch
+
         from crash_trend.pipeline_run import run_pipeline
 
         fake_cfg = {
@@ -375,6 +377,7 @@ class TestPipelineHealth(unittest.TestCase):
     def test_mcp_fresh_cache_skip_not_failed_by_historical_error_file(self) -> None:
         """Regression test for High Priority: Historical stacktraces_last_error.json must not fail fresh cache skip."""
         from unittest.mock import patch
+
         from crash_trend.pipeline_run import run_pipeline
 
         fake_cfg = {

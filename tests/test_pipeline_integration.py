@@ -11,14 +11,13 @@ Verifies the 6 key acceptance scenarios required by Issue #9:
 
 from __future__ import annotations
 
-import copy
 import datetime as dt
 import json
 import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 # Add project root and crash_trend to sys.path
 ROOT = Path(__file__).resolve().parent.parent
@@ -29,7 +28,6 @@ from crash_trend.analyze_gemini import enrich_app_data_with_priority_and_ai
 from crash_trend.build_dashboard import (
     assemble_bundle_from_apps,
     build_html,
-    collect_data,
     generate_dashboard,
 )
 from crash_trend.check_surge import weekly_totals_from_daily
@@ -57,7 +55,7 @@ class TestPipelineIntegrationScenarios(unittest.TestCase):
     # -----------------------------------------------------------------------
     def test_scenario_1_crashlytics_and_sessions_available(self) -> None:
         """Scenario 1: Verifies complete pipeline when both Crashlytics and Sessions data are available."""
-        today = dt.datetime.now(dt.timezone.utc).date()
+        today = dt.datetime.now(dt.UTC).date()
         d1 = (today - dt.timedelta(days=1)).strftime("%Y-%m-%d")
         d2 = today.strftime("%Y-%m-%d")
 

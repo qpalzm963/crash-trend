@@ -13,12 +13,12 @@ import os
 import re
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, TypedDict
+from typing import Any, Literal, TypedDict
 
 try:
     from typing import NotRequired
 except ImportError:
-    from typing_extensions import NotRequired  # type: ignore
+    from typing import NotRequired  # type: ignore
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_RUN_SUMMARY_PATH = ROOT / "out" / "pipeline_run.json"
@@ -37,13 +37,13 @@ class StageResult(TypedDict):
     started_at: str
     finished_at: str
     duration_sec: float
-    error_message: Optional[str]
-    details: NotRequired[Optional[Dict[str, Any]]]
+    error_message: str | None
+    details: NotRequired[dict[str, Any] | None]
 
 
 class AppPipelineSummary(TypedDict):
     status: OverallStatus
-    stages: Dict[str, StageResult]
+    stages: dict[str, StageResult]
 
 
 class PipelineRunSummary(TypedDict):
@@ -52,8 +52,8 @@ class PipelineRunSummary(TypedDict):
     finished_at: str
     duration_sec: float
     status: OverallStatus
-    apps: Dict[str, AppPipelineSummary]
-    build_dashboard: NotRequired[Optional[StageResult]]
+    apps: dict[str, AppPipelineSummary]
+    build_dashboard: NotRequired[StageResult | None]
 
 
 # ---------------------------------------------------------------------------
@@ -87,7 +87,7 @@ _PATTERNS_TO_SANITIZE = [
 ]
 
 
-def sanitize_error_message(msg: Optional[Any], max_len: int = 500) -> Optional[str]:
+def sanitize_error_message(msg: Any | None, max_len: int = 500) -> str | None:
     """Sanitizes an error message by stripping sensitive tokens and bounding length."""
     if msg is None:
         return None
@@ -105,7 +105,7 @@ def sanitize_error_message(msg: Optional[Any], max_len: int = 500) -> Optional[s
 
 def now_utc_iso() -> str:
     """Returns current UTC timestamp in ISO 8601 format."""
-    return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def parse_iso(ts: str) -> dt.datetime:
@@ -122,11 +122,11 @@ def parse_iso(ts: str) -> dt.datetime:
 class PipelineRunTracker:
     """Tracks and records execution health, stage timings, and outcomes across apps."""
 
-    def __init__(self, started_at: Optional[str] = None) -> None:
+    def __init__(self, started_at: str | None = None) -> None:
         self.started_at: str = started_at or now_utc_iso()
-        self.finished_at: Optional[str] = None
-        self.apps: Dict[str, Dict[str, StageResult]] = {}
-        self.build_dashboard_result: Optional[StageResult] = None
+        self.finished_at: str | None = None
+        self.apps: dict[str, dict[str, StageResult]] = {}
+        self.build_dashboard_result: StageResult | None = None
 
     def ensure_app(self, app_name: str) -> None:
         if app_name not in self.apps:
@@ -134,13 +134,13 @@ class PipelineRunTracker:
 
     def record_stage(
         self,
-        app_name: Optional[str],
+        app_name: str | None,
         stage_name: str,
         status: StageStatus,
         started_at: str,
         finished_at: str,
-        error_message: Optional[str] = None,
-        details: Optional[Dict[str, Any]] = None,
+        error_message: str | None = None,
+        details: dict[str, Any] | None = None,
     ) -> StageResult:
         """Records the result of a pipeline stage."""
         try:
@@ -170,7 +170,7 @@ class PipelineRunTracker:
 
         return res
 
-    def compute_app_status(self, app_stages: Dict[str, StageResult]) -> OverallStatus:
+    def compute_app_status(self, app_stages: dict[str, StageResult]) -> OverallStatus:
         """Determines the overall status for a single app."""
         # Check core stages first
         for core_s in CORE_STAGES:
@@ -216,7 +216,7 @@ class PipelineRunTracker:
 
     def build_summary(
         self,
-        finished_at: Optional[str] = None,
+        finished_at: str | None = None,
         finalize: bool = True,
     ) -> PipelineRunSummary:
         """Compiles tracked metrics into a validated PipelineRunSummary dictionary.
@@ -238,7 +238,7 @@ class PipelineRunTracker:
         except Exception:
             dur = 0.0
 
-        apps_summary: Dict[str, AppPipelineSummary] = {}
+        apps_summary: dict[str, AppPipelineSummary] = {}
         for app_name, stages in self.apps.items():
             apps_summary[app_name] = {
                 "status": self.compute_app_status(stages),
@@ -261,8 +261,8 @@ class PipelineRunTracker:
 
     def save_summary(
         self,
-        target_path: Optional[Path] = None,
-        finished_at: Optional[str] = None,
+        target_path: Path | None = None,
+        finished_at: str | None = None,
         finalize: bool = True,
     ) -> Path:
         """Atomically writes pipeline_run.json to disk."""
@@ -284,7 +284,7 @@ class PipelineRunTracker:
         return target
 
 
-def load_run_summary(path: Optional[Path] = None) -> Optional[PipelineRunSummary]:
+def load_run_summary(path: Path | None = None) -> PipelineRunSummary | None:
     """Loads a previously written pipeline_run.json, returning None if absent or invalid."""
     target = Path(path) if path else DEFAULT_RUN_SUMMARY_PATH
     if not target.is_file():

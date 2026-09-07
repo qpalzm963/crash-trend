@@ -12,7 +12,7 @@ import re
 import sys
 import time
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import requests
 
@@ -25,7 +25,7 @@ GEMINI_API_URL_TEMPLATE = "https://generativelanguage.googleapis.com/v1beta/mode
 SUPPORTED_PROVIDERS = {"gemini", "openrouter"}
 
 # Canonical provider-neutral standard JSON Schema (strict, lowercase types for OpenRouter)
-CANONICAL_AI_RESPONSE_SCHEMA: Dict[str, Any] = {
+CANONICAL_AI_RESPONSE_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
         "overview": {"type": "string"},
@@ -84,7 +84,7 @@ CANONICAL_AI_RESPONSE_SCHEMA: Dict[str, Any] = {
 }
 
 # Canonical JSON Schema for Lightweight Issue Triage, Classification, and Tagging (Dashboard V2.5 - Issue #40)
-CANONICAL_LIGHTWEIGHT_TRIAGE_SCHEMA: Dict[str, Any] = {
+CANONICAL_LIGHTWEIGHT_TRIAGE_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
         "items": {
@@ -134,7 +134,7 @@ CANONICAL_LIGHTWEIGHT_TRIAGE_SCHEMA: Dict[str, Any] = {
 }
 
 
-def to_gemini_schema(schema: Dict[str, Any]) -> Dict[str, Any]:
+def to_gemini_schema(schema: dict[str, Any]) -> dict[str, Any]:
     """Adapts canonical JSON Schema to legacy Gemini GenerativeLanguage API schema format (OpenAPI 3.0 subset).
 
     Maintained as a backward-compatibility fallback for OpenAPI 3.0 responseSchema.
@@ -144,7 +144,7 @@ def to_gemini_schema(schema: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(schema, dict):
         return schema
 
-    adapted: Dict[str, Any] = {}
+    adapted: dict[str, Any] = {}
     for k, v in schema.items():
         if k == "additionalProperties":
             continue
@@ -186,7 +186,7 @@ def extract_json_block(text: str) -> str:
     return text
 
 
-def resolve_gemini_key(raise_on_missing: bool = False) -> Optional[str]:
+def resolve_gemini_key(raise_on_missing: bool = False) -> str | None:
     """Resolves Gemini API Key from GEMINI_API_KEY or GEMINI_KEY_URL."""
     key = os.environ.get("GEMINI_API_KEY")
     if key and key.strip():
@@ -242,8 +242,8 @@ class AIProvider(ABC):
     def analyze(
         self,
         prompt: str,
-        schema: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
+        schema: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Executes structured analysis against the model and returns a dictionary."""
         pass
 
@@ -256,9 +256,9 @@ class GeminiProvider(AIProvider):
 
     def __init__(
         self,
-        api_key: Optional[str] = None,
-        model: Optional[str] = None,
-        temperature: Optional[float] = None,
+        api_key: str | None = None,
+        model: str | None = None,
+        temperature: float | None = None,
         use_legacy_schema: bool = False,
         api_type: str = "interactions",
     ) -> None:
@@ -317,8 +317,8 @@ class GeminiProvider(AIProvider):
     def analyze(
         self,
         prompt: str,
-        schema: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
+        schema: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         key = self.get_api_key()
         headers = {
             "Content-Type": "application/json",
@@ -329,7 +329,7 @@ class GeminiProvider(AIProvider):
 
         if self._api_type == "interactions":
             url = GEMINI_INTERACTIONS_API_URL
-            body: Dict[str, Any] = {
+            body: dict[str, Any] = {
                 "model": self._model,
                 "input": prompt,
             }
@@ -346,7 +346,7 @@ class GeminiProvider(AIProvider):
         else:
             # Legacy generateContent endpoint fallback (OpenAPI 3.0 or legacy responseJsonSchema)
             url = GEMINI_API_URL_TEMPLATE.format(model=self._model)
-            generation_config: Dict[str, Any] = {
+            generation_config: dict[str, Any] = {
                 "responseMimeType": "application/json",
             }
             if self._temperature is not None:
@@ -365,7 +365,7 @@ class GeminiProvider(AIProvider):
                 "generationConfig": generation_config,
             }
 
-        last_err: Optional[Exception] = None
+        last_err: Exception | None = None
         for attempt in (1, 2, 3):
             try:
                 r = requests.post(
@@ -459,9 +459,9 @@ class OpenRouterProvider(AIProvider):
 
     def __init__(
         self,
-        api_key: Optional[str] = None,
-        model: Optional[str] = None,
-        api_url: Optional[str] = None,
+        api_key: str | None = None,
+        model: str | None = None,
+        api_url: str | None = None,
         zdr: bool = True,
     ) -> None:
         self._explicit_key = api_key
@@ -490,8 +490,8 @@ class OpenRouterProvider(AIProvider):
     def analyze(
         self,
         prompt: str,
-        schema: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
+        schema: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         key = self.get_api_key()
         effective_schema = schema or CANONICAL_AI_RESPONSE_SCHEMA
 
@@ -502,7 +502,7 @@ class OpenRouterProvider(AIProvider):
             "Content-Type": "application/json",
         }
 
-        body: Dict[str, Any] = {
+        body: dict[str, Any] = {
             "model": self._model,
             "max_tokens": 4096,
             "messages": [
@@ -531,7 +531,7 @@ class OpenRouterProvider(AIProvider):
             "temperature": 0.2,
         }
 
-        last_err: Optional[Exception] = None
+        last_err: Exception | None = None
         for attempt in (1, 2, 3):
             try:
                 r = requests.post(
@@ -581,8 +581,8 @@ class OpenRouterProvider(AIProvider):
 
 
 def get_ai_provider(
-    app_cfg: Optional[Dict[str, Any]] = None,
-    global_cfg: Optional[Dict[str, Any]] = None,
+    app_cfg: dict[str, Any] | None = None,
+    global_cfg: dict[str, Any] | None = None,
 ) -> AIProvider:
     """Factory function resolving the configured AIProvider instance.
 
@@ -618,7 +618,7 @@ def get_ai_provider(
             provider_name = "gemini"
 
     # Provider-scoped model resolution
-    model: Optional[str] = None
+    model: str | None = None
     app_has_provider = bool(app_ai.get("provider"))
     app_provider_normalized = str(app_ai.get("provider", "")).strip().lower()
 
@@ -665,8 +665,8 @@ def get_ai_provider(
 
 
 def get_ai_router(
-    app_cfg: Optional[Dict[str, Any]] = None,
-    global_cfg: Optional[Dict[str, Any]] = None,
+    app_cfg: dict[str, Any] | None = None,
+    global_cfg: dict[str, Any] | None = None,
 ):
     """Lazy imports and invokes get_ai_router from ai_router."""
     try:

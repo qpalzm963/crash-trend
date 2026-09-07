@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
 
 DEFAULT_ROOT = Path(__file__).resolve().parent.parent.parent
 VENDOR_JS = DEFAULT_ROOT / "vendor" / "chart.umd.min.js"
 
 
-def get_vendor_chartjs(vendor_path: Optional[Path] = None) -> str:
+def get_vendor_chartjs(vendor_path: Path | None = None) -> str:
     """Reads vendor Chart.js library or returns an empty fallback if missing."""
     v_file = vendor_path or VENDOR_JS
     if v_file.is_file():

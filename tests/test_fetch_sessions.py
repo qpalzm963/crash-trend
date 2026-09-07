@@ -14,7 +14,6 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from crash_trend.fetch_sessions import (
-    DEFAULT_UNAVAILABLE_REASON,
     SQLS,
     build_crash_free_metric,
     build_unavailable_sessions_result,

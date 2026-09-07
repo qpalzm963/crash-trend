@@ -9,7 +9,7 @@ Provides:
 from __future__ import annotations
 
 import datetime as dt
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from typing import Any, Literal, cast
 
 from crash_trend.catalog.comparison import compute_previous_release_comparison
 from crash_trend.catalog.issue_lifecycle import is_version_sample_sufficient
@@ -23,9 +23,9 @@ from crash_trend.versions import max_version, version_key
 
 
 def get_latest_app_version(
-    app_data: dict,
-    platform: Optional[str] = None,
-    catalog: Optional[Any] = None,
+    app_data: dict[str, Any] | None,
+    platform: str | None = None,
+    catalog: Any | None = None,
 ) -> str | None:
     """Extracts the true latest app version from authoritative catalog or app data.
     Strictly filters by platform ('android' or 'ios') if specified to prevent cross-platform pollution.
@@ -81,12 +81,12 @@ def get_latest_app_version(
 
 
 def calculate_version_status(
-    app_versions: Dict[str, Dict[str, Any]],
+    app_versions: dict[str, dict[str, Any]],
     version: str,
     platform: str,
-    latest_version: Optional[str] = None,
-    reference_time: Optional[dt.datetime] = None,
-    known_versions: Optional[List[str]] = None,
+    latest_version: str | None = None,
+    reference_time: dt.datetime | None = None,
+    known_versions: list[str] | None = None,
 ) -> Literal["latest", "active", "legacy"]:
     """Evaluates whether a version is latest, active, or legacy (>90d inactive)."""
     pf = "ios" if platform == "ios" else "android"
@@ -101,16 +101,16 @@ def calculate_version_status(
     if explicit_status in ("legacy", "deprecated"):
         return "legacy"
 
-    ref_dt = reference_time or dt.datetime.now(dt.timezone.utc)
+    ref_dt = reference_time or dt.datetime.now(dt.UTC)
     last_seen_str = v_info.get("last_seen")
     if last_seen_str:
         try:
             clean = last_seen_str.replace("Z", "+00:00")
             last_dt = dt.datetime.fromisoformat(clean)
             if last_dt.tzinfo is None:
-                last_dt = last_dt.replace(tzinfo=dt.timezone.utc)
+                last_dt = last_dt.replace(tzinfo=dt.UTC)
             else:
-                last_dt = last_dt.astimezone(dt.timezone.utc)
+                last_dt = last_dt.astimezone(dt.UTC)
             delta_days = (ref_dt - last_dt).total_seconds() / 86400.0
             if delta_days > 90.0:
                 return "legacy"
@@ -134,26 +134,26 @@ def calculate_version_status(
 
 def build_release_catalog(
     catalog: Any,
-    app_data: Optional[dict] = None,
-    platform: Optional[str] = None,
-    reference_date: Optional[Any] = None,
-) -> List[ReleaseCatalogItem]:
+    app_data: dict | None = None,
+    platform: str | None = None,
+    reference_date: Any | None = None,
+) -> list[ReleaseCatalogItem]:
     """Constructs the decoupled persistent release catalog conforming to ReleaseCatalogItem."""
-    ref_dt = dt.datetime.now(dt.timezone.utc)
+    ref_dt = dt.datetime.now(dt.UTC)
     if reference_date is not None:
         if isinstance(reference_date, dt.datetime):
-            ref_dt = reference_date if reference_date.tzinfo else reference_date.replace(tzinfo=dt.timezone.utc)
+            ref_dt = reference_date if reference_date.tzinfo else reference_date.replace(tzinfo=dt.UTC)
         elif isinstance(reference_date, dt.date):
-            ref_dt = dt.datetime(reference_date.year, reference_date.month, reference_date.day, tzinfo=dt.timezone.utc)
+            ref_dt = dt.datetime(reference_date.year, reference_date.month, reference_date.day, tzinfo=dt.UTC)
         elif isinstance(reference_date, str):
             try:
                 parsed = dt.datetime.fromisoformat(reference_date.replace("Z", "+00:00"))
-                ref_dt = parsed if parsed.tzinfo else parsed.replace(tzinfo=dt.timezone.utc)
+                ref_dt = parsed if parsed.tzinfo else parsed.replace(tzinfo=dt.UTC)
             except Exception:
                 pass
 
     target_platforms = [platform] if platform in ("android", "ios") else ["android", "ios"]
-    catalog_items: List[ReleaseCatalogItem] = []
+    catalog_items: list[ReleaseCatalogItem] = []
 
     for pf in target_platforms:
         known_vers = list(catalog.get_known_app_versions(platform=pf))
@@ -175,7 +175,7 @@ def build_release_catalog(
 
         latest_v = get_latest_app_version(app_data, platform=pf, catalog=catalog) or sorted_vers[-1]
         pf_issues = [iss for iss in catalog.issues.values() if iss.get("platform") == pf]
-        version_sufficiency_map: Dict[str, bool] = {
+        version_sufficiency_map: dict[str, bool] = {
             v_name: is_version_sample_sufficient(catalog.app_versions.get(pf, {}).get(v_name))
             for v_name in sorted_vers
         }
@@ -217,10 +217,10 @@ def build_release_catalog(
             lt_fatal = int(v_info.get("lifetime_fatal") or 0)
             lt_anr = int(v_info.get("lifetime_anr") or 0)
 
-            introduced_ids: List[str] = []
-            persistent_ids: List[str] = []
-            regressed_ids: List[str] = []
-            resolved_ids: List[str] = []
+            introduced_ids: list[str] = []
+            persistent_ids: list[str] = []
+            regressed_ids: list[str] = []
+            resolved_ids: list[str] = []
 
             ver_key_val = version_key(ver)
 
@@ -270,7 +270,7 @@ def build_release_catalog(
                 "resolved_issues": resolved_ids,
             }
 
-            recent_health: Dict[str, ReleaseRecentHealth] = {}
+            recent_health: dict[str, ReleaseRecentHealth] = {}
             periods_dict = app_data.get("periods") if isinstance(app_data, dict) else None
 
             for w_key in ("7", "30", "90"):
@@ -295,7 +295,11 @@ def build_release_catalog(
 
                     snap_fatal = 0
                     snap_anr = 0
-                    snap_pf_issues = [s_iss for s_iss in (snap.get("top_issues") or []) if s_iss.get("platform") in (pf, "all", None)]
+                    snap_issues = (snap.get("top_issues") or []) if isinstance(snap, dict) else []
+                    snap_pf_issues = [
+                        s_iss for s_iss in snap_issues
+                        if isinstance(s_iss, dict) and s_iss.get("platform") in (pf, "all", None)
+                    ]
                     for s_iss in snap_pf_issues:
                         for v_dist in s_iss.get("version_distribution") or []:
                             if v_dist.get("version") == ver:
@@ -306,7 +310,7 @@ def build_release_catalog(
 
                     new_iss_cnt = len([i for i in snap_pf_issues if i.get("first_seen_version") == ver])
 
-                    w_entry = {
+                    w_entry: ReleaseRecentHealth = {
                         "crash_events": ev,
                         "affected_users": usr,
                         "sessions_total": sess,
@@ -336,10 +340,11 @@ def build_release_catalog(
                     c_copy["anr_events"] = a_cnt
                     c_copy["active_issues_count"] = i_cnt
                     c_copy["new_issues_count"] = i_cnt
-                    recent_health[w_key] = c_copy
-                    recent_health[f"{w_key}d"] = c_copy
+                    c_typed = cast(ReleaseRecentHealth, c_copy)
+                    recent_health[w_key] = c_typed
+                    recent_health[f"{w_key}d"] = c_typed
                 else:
-                    empty_entry = {
+                    empty_entry: ReleaseRecentHealth = {
                         "crash_events": 0,
                         "affected_users": 0,
                         "sessions_total": None,
@@ -359,7 +364,7 @@ def build_release_catalog(
                     recent_health[w_key] = empty_entry
                     recent_health[f"{w_key}d"] = empty_entry
 
-            vs_previous: Optional[PreviousReleaseComparison] = None
+            vs_previous: PreviousReleaseComparison | None = None
             if v_prev:
                 prev_info = catalog.app_versions.get(pf, {}).get(v_prev, {})
                 prev_introduced_cnt = len([i for i in pf_issues if i.get("first_seen_version") == v_prev])
@@ -376,7 +381,7 @@ def build_release_catalog(
 
             catalog_items.append({
                 "version": ver,
-                "platform": pf,
+                "platform": cast(Literal["ios", "android"], pf),
                 "first_seen": first_seen,
                 "last_seen": last_seen,
                 "release_date": rel_date,
@@ -392,7 +397,7 @@ def build_release_catalog(
                 "vs_previous": vs_previous,
             })
 
-    final_items: List[ReleaseCatalogItem] = []
+    final_items: list[ReleaseCatalogItem] = []
     for pf in target_platforms:
         pf_items = [i for i in catalog_items if i["platform"] == pf]
         latest_items = [i for i in pf_items if i["status"] == "latest"]

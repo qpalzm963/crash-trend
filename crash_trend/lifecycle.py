@@ -6,9 +6,8 @@ All underlying implementations are modularized in `crash_trend.catalog`.
 
 from __future__ import annotations
 
-import argparse
-from pathlib import Path
 import sys
+from pathlib import Path
 
 # Ensure repository root is in sys.path when executed directly
 _ROOT = Path(__file__).resolve().parent.parent
@@ -35,7 +34,6 @@ from crash_trend.catalog.release_catalog import (
     get_latest_app_version,
 )
 from crash_trend.catalog.watermark import advance_watermark, is_ts_le
-from crash_trend.config import ROOT, get_app, load_config, out_dir
 
 __all__ = [
     "IssueHistoricalCatalog",

@@ -7,16 +7,16 @@ Provides:
 
 from __future__ import annotations
 
-from typing import Any, Dict, Literal, Optional
+from typing import Any, Literal
 
 from crash_trend.schema_v2 import PreviousReleaseComparison
 
 
 def compute_previous_release_comparison(
-    v_curr_info: Dict[str, Any],
-    v_prev_info: Dict[str, Any],
+    v_curr_info: dict[str, Any],
+    v_prev_info: dict[str, Any],
     v_prev: str,
-    recent_health: Dict[str, Any],
+    recent_health: dict[str, Any],
     introduced_count: int,
     prev_introduced_count: int,
 ) -> PreviousReleaseComparison:
@@ -28,9 +28,9 @@ def compute_previous_release_comparison(
     prev_recent = v_prev_info.get("recent_health", {})
 
     # Find matching window for normalized exposure comparison
-    crash_rate_diff: Optional[float] = None
-    fatal_rate_diff: Optional[float] = None
-    anr_rate_diff: Optional[float] = None
+    crash_rate_diff: float | None = None
+    fatal_rate_diff: float | None = None
+    anr_rate_diff: float | None = None
     comp_w = None
     for candidate_w in ("30", "90", "7"):
         c_w = recent_health.get(candidate_w)
@@ -73,14 +73,14 @@ def compute_previous_release_comparison(
     else:
         c_sess = v_curr_info.get("sessions_total")
         p_sess = v_prev_info.get("sessions_total")
-        c_ev = v_curr_info.get("crash_events")
-        p_ev = v_prev_info.get("crash_events")
+        raw_c_ev = v_curr_info.get("crash_events")
+        raw_p_ev = v_prev_info.get("crash_events")
         if c_sess and p_sess and int(c_sess) > 0 and int(p_sess) > 0:
             c_se = int(c_sess)
             p_se = int(p_sess)
-            if c_ev is not None and p_ev is not None:
-                rate_curr = int(c_ev) / c_se
-                rate_prev = int(p_ev) / p_se
+            if raw_c_ev is not None and raw_p_ev is not None:
+                rate_curr = int(raw_c_ev) / c_se
+                rate_prev = int(raw_p_ev) / p_se
                 crash_rate_diff = round((rate_curr - rate_prev) / rate_prev, 4) if rate_prev > 0 else 0.0
 
             # Fallback: strictly require window-scoped fatal_events / fatal_count matching sessions.
@@ -122,7 +122,7 @@ def compute_previous_release_comparison(
                 cfu_prev = rh["crash_free_users_rate"]
                 break
 
-    cfu_diff: Optional[float] = None
+    cfu_diff: float | None = None
     if cfu_curr is not None and cfu_prev is not None:
         cfu_diff = round(cfu_curr - cfu_prev, 4)
 

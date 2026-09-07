@@ -22,11 +22,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from crash_trend.ai_provider import (
-    CANONICAL_AI_RESPONSE_SCHEMA,
-    CANONICAL_LIGHTWEIGHT_TRIAGE_SCHEMA,
     DEFAULT_GEMINI_MODEL,
-    GeminiProvider,
-    OpenRouterProvider,
 )
 from crash_trend.ai_router import (
     LIGHTWEIGHT_TASKS,

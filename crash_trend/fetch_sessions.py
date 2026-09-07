@@ -26,20 +26,28 @@ import datetime as dt
 import json
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any
 
 try:
     from crash_trend.config import ROOT, app_argparser, get_app, is_sessions_enabled, load_config, out_dir, write_json
     from crash_trend.fetch_bigquery import list_crash_tables
-    from crash_trend.schema_v2 import CrashFreeMetric, SourceStatus
+    from crash_trend.schema_v2 import CrashFreeMetric
 except ImportError:
     try:
         from config import ROOT, app_argparser, get_app, is_sessions_enabled, load_config, out_dir, write_json
         from fetch_bigquery import list_crash_tables
-        from schema_v2 import CrashFreeMetric, SourceStatus
+        from schema_v2 import CrashFreeMetric
     except ImportError:
-        from crash_trend.config import ROOT, app_argparser, get_app, is_sessions_enabled, load_config, out_dir, write_json
-        from crash_trend.schema_v2 import CrashFreeMetric, SourceStatus
+        from crash_trend.config import (
+            ROOT,
+            app_argparser,
+            get_app,
+            is_sessions_enabled,
+            load_config,
+            out_dir,
+            write_json,
+        )
+        from crash_trend.schema_v2 import CrashFreeMetric
         list_crash_tables = None  # type: ignore
 
 DEFAULT_SESSIONS_DATASET = "firebase_sessions"
@@ -207,8 +215,8 @@ def list_session_tables(
     client: Any,
     project: str,
     dataset: str = DEFAULT_SESSIONS_DATASET,
-    app_config: Optional[dict] = None,
-) -> List[str]:
+    app_config: dict | None = None,
+) -> list[str]:
     """Lists tables in the sessions dataset, with app package/bundle filtering."""
     try:
         tables = [t.table_id for t in client.list_tables(f"{project}.{dataset}")]
@@ -242,7 +250,7 @@ def list_session_tables(
         return []
 
 
-def run_sessions_query(client: Any, sql: str) -> List[Dict[str, Any]]:
+def run_sessions_query(client: Any, sql: str) -> list[dict[str, Any]]:
     """Runs a BigQuery query and returns rows as dictionaries."""
     rows = client.query(sql).result(max_results=5000)
     return [dict(r) for r in rows]
@@ -252,7 +260,7 @@ def run_sessions_query(client: Any, sql: str) -> List[Dict[str, Any]]:
 # Metric Calculation Utilities (Pure Functions)
 # ---------------------------------------------------------------------------
 
-def calculate_crash_free_rate(total: Optional[int], crashed: Optional[int], precision: int = 4) -> Optional[float]:
+def calculate_crash_free_rate(total: int | None, crashed: int | None, precision: int = 4) -> float | None:
     """Calculates crash-free rate: (total - crashed) / total."""
     if total is None or crashed is None or total <= 0:
         return None
@@ -262,8 +270,8 @@ def calculate_crash_free_rate(total: Optional[int], crashed: Optional[int], prec
 
 
 def calculate_change_pct_points(
-    current_rate: Optional[float], previous_rate: Optional[float], precision: int = 2
-) -> Optional[float]:
+    current_rate: float | None, previous_rate: float | None, precision: int = 2
+) -> float | None:
     """Calculates percentage point change between two rates: (current - previous) * 100."""
     if current_rate is None or previous_rate is None:
         return None
@@ -271,8 +279,8 @@ def calculate_change_pct_points(
 
 
 def calculate_adoption_rate(
-    version_count: Optional[int], total_count: Optional[int], precision: int = 4
-) -> Optional[float]:
+    version_count: int | None, total_count: int | None, precision: int = 4
+) -> float | None:
     """Calculates adoption rate: version_count / total_count."""
     if version_count is None or total_count is None or total_count <= 0:
         return None
@@ -280,11 +288,11 @@ def calculate_adoption_rate(
 
 
 def build_crash_free_metric(
-    total: Optional[int],
-    crashed: Optional[int],
-    previous_rate: Optional[float] = None,
+    total: int | None,
+    crashed: int | None,
+    previous_rate: float | None = None,
     status: str = "available",
-    unavailable_reason: Optional[str] = None,
+    unavailable_reason: str | None = None,
 ) -> CrashFreeMetric:
     """Builds a CrashFreeMetric dictionary conforming to Schema V2."""
     if status == "unavailable":
@@ -335,8 +343,8 @@ def build_crash_free_metric(
 
 def build_unavailable_sessions_result(
     reason: str = DEFAULT_UNAVAILABLE_REASON,
-    periods: Optional[List[int]] = None,
-) -> Dict[str, Any]:
+    periods: list[int] | None = None,
+) -> dict[str, Any]:
     """Generates an explicit unavailable response conforming to Schema V2 graceful degradation."""
     p_list = periods or [7, 30, 90]
     base_res = {
@@ -368,9 +376,9 @@ def build_unavailable_sessions_result(
     return base_res
 
 
-def compute_daily_sessions(rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+def compute_daily_sessions(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     """Aggregates raw daily query rows into date-indexed daily sessions data."""
-    result: Dict[str, Dict[str, Any]] = {}
+    result: dict[str, dict[str, Any]] = {}
     for r in rows:
         d_str = str(r.get("date") or "")
         if not d_str:
@@ -397,19 +405,19 @@ def compute_daily_sessions(rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, An
 
 
 def compute_version_sessions(
-    rows: List[Dict[str, Any]], overall_total_sessions: Optional[int] = None
-) -> Dict[str, Dict[str, Any]]:
+    rows: list[dict[str, Any]], overall_total_sessions: int | None = None
+) -> dict[str, dict[str, Any]]:
     """Aggregates version query rows into version-indexed health metrics with platform isolation."""
-    result: Dict[str, Dict[str, Any]] = {}
+    result: dict[str, dict[str, Any]] = {}
 
     # Calculate total sessions per platform
-    pf_total_sessions: Dict[str, int] = {}
+    pf_total_sessions: dict[str, int] = {}
     for r in rows:
         pf = r.get("_platform") or r.get("platform") or "android"
         pf_total_sessions[pf] = pf_total_sessions.get(pf, 0) + int(r.get("sessions_total") or 0)
 
     # Group metrics by (platform, version)
-    grouped: Dict[Tuple[str, str], Dict[str, int]] = {}
+    grouped: dict[tuple[str, str], dict[str, int]] = {}
     for r in rows:
         ver = str(r.get("version") or "unknown").strip()
         if not ver:
@@ -466,15 +474,15 @@ def compute_version_sessions(
 def fetch_sessions_data(
     project: str,
     dataset: str = DEFAULT_SESSIONS_DATASET,
-    tables: Optional[List[str]] = None,
+    tables: list[str] | None = None,
     days: int = 30,
-    comparison_days: Optional[int] = None,
-    client: Optional[Any] = None,
+    comparison_days: int | None = None,
+    client: Any | None = None,
     crash_dataset: str = DEFAULT_CRASH_DATASET,
-    crash_tables: Optional[List[str]] = None,
-    app_config: Optional[dict] = None,
-    periods: Optional[List[int]] = None,
-) -> Dict[str, Any]:
+    crash_tables: list[str] | None = None,
+    app_config: dict | None = None,
+    periods: list[int] | None = None,
+) -> dict[str, Any]:
     """Fetches Firebase Sessions data from BigQuery with graceful degradation."""
     if client is None:
         try:
@@ -491,7 +499,7 @@ def fetch_sessions_data(
         reason = f"Firebase Sessions export table not found in dataset {project}.{dataset}"
         return build_unavailable_sessions_result(reason, periods=periods)
 
-    now_utc_iso = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now_utc_iso = dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     total_sessions_all = 0
     total_users_all = 0
@@ -503,9 +511,9 @@ def fetch_sessions_data(
     prev_total_users = 0
     prev_crashed_users = 0
 
-    all_daily_rows: List[Dict[str, Any]] = []
-    all_version_rows: List[Dict[str, Any]] = []
-    queried_tables: List[str] = []
+    all_daily_rows: list[dict[str, Any]] = []
+    all_version_rows: list[dict[str, Any]] = []
+    queried_tables: list[str] = []
 
     try:
         for table in tables:
@@ -643,9 +651,9 @@ def fetch_sessions_data(
 def fetch_sessions_for_app(
     app_name: str,
     days: int = 30,
-    comparison_days: Optional[int] = None,
-    client: Optional[Any] = None,
-) -> Dict[str, Any]:
+    comparison_days: int | None = None,
+    client: Any | None = None,
+) -> dict[str, Any]:
     """Fetches Sessions data for a given app defined in apps.yaml."""
     app_cfg = get_app(app_name)
     if not is_sessions_enabled(app_cfg):
@@ -658,7 +666,7 @@ def fetch_sessions_for_app(
     dataset = app_cfg.get("sessions_dataset", DEFAULT_SESSIONS_DATASET)
     crash_dataset = app_cfg.get("bq_dataset", DEFAULT_CRASH_DATASET)
 
-    crash_tables: Optional[List[str]] = None
+    crash_tables: list[str] | None = None
     if client and list_crash_tables is not None:
         try:
             crash_tables = list_crash_tables(client, project, crash_dataset, app_config=app_cfg)
@@ -684,7 +692,7 @@ def fetch_sessions_for_app(
 # Schema V2 Dashboard Enrichment Helpers
 # ---------------------------------------------------------------------------
 
-def enrich_app_dashboard_with_sessions(app_data: Dict[str, Any], sessions_result: Dict[str, Any]) -> Dict[str, Any]:
+def enrich_app_dashboard_with_sessions(app_data: dict[str, Any], sessions_result: dict[str, Any]) -> dict[str, Any]:
     """Merges Sessions results into an existing AppDashboardV2Data dict.
     Strictly preserves Schema V2 contract compliance and graceful degradation.
     """
@@ -798,7 +806,7 @@ def enrich_app_dashboard_with_sessions(app_data: Dict[str, Any], sessions_result
                 except ImportError:
                     from versions import max_version  # type: ignore
 
-                vers_by_pf: Dict[str, list] = {}
+                vers_by_pf: dict[str, list] = {}
                 for item in app_data["version_health"]:
                     if isinstance(item, dict) and item.get("version"):
                         pf = item.get("platform", "android")
@@ -933,7 +941,7 @@ def enrich_app_dashboard_with_sessions(app_data: Dict[str, Any], sessions_result
                         except ImportError:
                             from versions import max_version  # type: ignore
 
-                        snap_vers_by_pf: Dict[str, list] = {}
+                        snap_vers_by_pf: dict[str, list] = {}
                         for item in snap["version_health"]:
                             if isinstance(item, dict) and item.get("version"):
                                 pf = item.get("platform", "android")

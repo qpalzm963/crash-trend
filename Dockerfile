@@ -20,6 +20,7 @@ RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
 # 認證：host 的 ~/.config/configstore/firebase-tools.json（user token）由 compose 掛入，不進 image
 
 WORKDIR /app
+# requirements.txt 由 uv.lock 導出（包含所有 pinned runtime 依賴，CI 具備 drift check 保證一致）
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 

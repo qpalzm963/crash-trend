@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Literal, Optional, Set, Tuple, Union
+from typing import Any, Literal
 
 from crash_trend.authority_store import CatalogAuthorityStore
 from crash_trend.catalog.issue_lifecycle import (
@@ -35,10 +36,10 @@ class IssueHistoricalCatalog:
 
     def __init__(
         self,
-        catalog_path: Optional[Union[str, Path]] = None,
-        app_id: Optional[str] = None,
-        authority_store: Optional[CatalogAuthorityStore] = None,
-        authority_store_path: Optional[Union[str, Path]] = None,
+        catalog_path: str | Path | None = None,
+        app_id: str | None = None,
+        authority_store: CatalogAuthorityStore | None = None,
+        authority_store_path: str | Path | None = None,
     ):
         # Support flexible argument passing: IssueHistoricalCatalog("app_name") or IssueHistoricalCatalog(Path(...))
         if catalog_path is not None and app_id is None:
@@ -50,14 +51,14 @@ class IssueHistoricalCatalog:
         self.catalog_path = Path(catalog_path) if catalog_path is not None else None
         self.app_id = app_id
         # Keyed canonically by f"{platform}:{issue_id}"
-        self.issues: Dict[str, Dict[str, Any]] = {}
+        self.issues: dict[str, dict[str, Any]] = {}
         # Grouped by platform: self.app_versions[platform][version]
-        self.app_versions: Dict[str, Dict[str, Dict[str, Any]]] = {"android": {}, "ios": {}}
-        self.updated_at: Optional[str] = None
-        self.watermark: Optional[str] = None
+        self.app_versions: dict[str, dict[str, dict[str, Any]]] = {"android": {}, "ios": {}}
+        self.updated_at: str | None = None
+        self.watermark: str | None = None
         self.bootstrap_complete: bool = False
         self.authority_state_version: int = 1
-        self.authority_metadata: Dict[str, Any] = {
+        self.authority_metadata: dict[str, Any] = {
             "backend": "sqlite",
             "state_version": 1,
             "bootstrap_complete": False,
@@ -75,14 +76,14 @@ class IssueHistoricalCatalog:
             self.authority_store = CatalogAuthorityStore(":memory:", app_id=app_id)
 
         # In-memory transient tracker for backwards compatibility with raw callers
-        self._version_installations: Dict[str, Dict[str, Set[str]]] = {"android": {}, "ios": {}}
+        self._version_installations: dict[str, dict[str, set[str]]] = {"android": {}, "ios": {}}
 
     def close(self) -> None:
         """Closes the underlying SQLite authority store."""
         if hasattr(self, "authority_store") and self.authority_store is not None:
             self.authority_store.close()
 
-    def __enter__(self) -> "IssueHistoricalCatalog":
+    def __enter__(self) -> IssueHistoricalCatalog:
         return self
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
@@ -98,12 +99,12 @@ class IssueHistoricalCatalog:
         pf = "ios" if platform == "ios" else "android"
         return f"{pf}:{issue_id}"
 
-    def advance_watermark(self, candidate_ts: Optional[str]) -> None:
+    def advance_watermark(self, candidate_ts: str | None) -> None:
         """Advances catalog watermark if candidate_ts is newer than current watermark."""
         self.watermark = advance_watermark(self.watermark, candidate_ts)
 
     @staticmethod
-    def _is_ts_le(ts: Optional[str], watermark: Optional[str]) -> bool:
+    def _is_ts_le(ts: str | None, watermark: str | None) -> bool:
         """Returns True if ts <= watermark (comparing ISO datetimes with timezone awareness)."""
         return is_ts_le(ts, watermark)
 
@@ -124,7 +125,7 @@ class IssueHistoricalCatalog:
                     self.issues[canonical] = iss
 
             loaded_vers = data.get("app_versions", {})
-            legacy_ids_to_migrate: List[Tuple[str, str, List[Any]]] = []
+            legacy_ids_to_migrate: list[tuple[str, str, list[Any]]] = []
 
             if isinstance(loaded_vers, dict):
                 for pf_or_ver, val in loaded_vers.items():
@@ -200,7 +201,7 @@ class IssueHistoricalCatalog:
         if not self.catalog_path:
             return
         self.catalog_path.parent.mkdir(parents=True, exist_ok=True)
-        now_iso = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+        now_iso = dt.datetime.now(dt.UTC).isoformat().replace("+00:00", "Z")
         self.updated_at = now_iso
         eff_app = self.app_id or "default"
 
@@ -226,7 +227,7 @@ class IssueHistoricalCatalog:
                     v_info["lifetime_affected_users"] = final_users
                     v_info["affected_users"] = final_users
 
-        payload: Dict[str, Any] = {
+        payload: dict[str, Any] = {
             "schema_version": "2.3.0",
             "authority": {
                 "backend": "sqlite",
@@ -248,11 +249,11 @@ class IssueHistoricalCatalog:
     def update_app_versions(
         self,
         version_health: Iterable[dict],
-        platform: Optional[str] = None,
-        window: Optional[int | str] = None,
+        platform: str | None = None,
+        window: int | str | None = None,
     ) -> None:
         """Records version-level metrics, lifetime counts, and windowed recent health into catalog per platform."""
-        now_iso = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+        now_iso = dt.datetime.now(dt.UTC).isoformat().replace("+00:00", "Z")
         for v in version_health:
             if not isinstance(v, dict):
                 continue
@@ -302,8 +303,8 @@ class IssueHistoricalCatalog:
                 clean_w = w_key.rstrip("d")
                 fat_val = v.get("fatal_events") if v.get("fatal_events") is not None else (v.get("fatal_count") if v.get("fatal_count") is not None else (v.get("lifetime_fatal") or 0))
                 anr_val = v.get("anr_events") if v.get("anr_events") is not None else (v.get("anr_count") if v.get("anr_count") is not None else (v.get("lifetime_anr") or 0))
-                fat_int = int(fat_val)
-                anr_int = int(anr_val)
+                fat_int = int(fat_val or 0)
+                anr_int = int(anr_val or 0)
                 w_data = {
                     "crash_events": int(events),
                     "affected_users": int(users),
@@ -348,7 +349,7 @@ class IssueHistoricalCatalog:
 
     def update_from_issues(self, issues: Iterable[dict]) -> None:
         """Merges a list of issues and their version distributions into the catalog with platform isolation."""
-        now_iso = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+        now_iso = dt.datetime.now(dt.UTC).isoformat().replace("+00:00", "Z")
         for iss in issues:
             iid = iss.get("issue_id")
             if not iid:
@@ -444,11 +445,11 @@ class IssueHistoricalCatalog:
         rows: Iterable[dict],
         is_incremental: bool = False,
         advance_watermark: bool = True,
-        checkpoint_watermark: Optional[str] = None,
-        is_bootstrap: Optional[bool] = None,
+        checkpoint_watermark: str | None = None,
+        is_bootstrap: bool | None = None,
     ) -> None:
         """Ingests broad catalog query rows (issue_id, app_version, first_seen_ts, last_seen_ts, events, users, fatal, anr)."""
-        now_iso = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+        now_iso = dt.datetime.now(dt.UTC).isoformat().replace("+00:00", "Z")
         eval_watermark = checkpoint_watermark if checkpoint_watermark is not None else self.watermark
         eff_app = self.app_id or "default"
         effective_bootstrap = is_bootstrap if is_bootstrap is not None else (not is_incremental)
@@ -529,7 +530,7 @@ class IssueHistoricalCatalog:
             # Deduplication for affected users using SQLite Authority Store
             inst_set = self._version_installations.setdefault(pf, {}).setdefault(ver, set())
             raw_insts = row.get("installation_ids") or row.get("user_ids") or row.get("installations")
-            new_ids: List[str] = []
+            new_ids: list[str] = []
             if raw_insts:
                 if isinstance(raw_insts, (list, set, tuple)):
                     new_ids.extend(str(x) for x in raw_insts if x)
@@ -606,8 +607,10 @@ class IssueHistoricalCatalog:
                     all_vers = set(existing.get("versions_seen", [])) | {ver}
                     sorted_vers = sorted(list(all_vers), key=version_key)
                     existing["versions_seen"] = sorted_vers
-                    existing["first_seen_version"] = min_version([existing.get("first_seen_version"), ver]) or ver
-                    existing["last_seen_version"] = max_version([existing.get("last_seen_version"), ver]) or ver
+                    first_candidates = [v for v in (existing.get("first_seen_version"), ver) if v]
+                    existing["first_seen_version"] = min_version(first_candidates) or ver
+                    last_candidates = [v for v in (existing.get("last_seen_version"), ver) if v]
+                    existing["last_seen_version"] = max_version(last_candidates) or ver
                     if ts_first and (not existing.get("first_seen_timestamp") or ts_first < existing["first_seen_timestamp"]):
                         existing["first_seen_timestamp"] = ts_first
                     if ts_last and (not existing.get("last_seen_timestamp") or ts_last > existing["last_seen_timestamp"]):
@@ -649,8 +652,8 @@ class IssueHistoricalCatalog:
         self,
         version: str,
         platform: str,
-        latest_version: Optional[str] = None,
-        reference_time: Optional[dt.datetime] = None,
+        latest_version: str | None = None,
+        reference_time: dt.datetime | None = None,
     ) -> Literal["latest", "active", "legacy"]:
         """Evaluates whether a version is latest, active, or legacy (>90d inactive)."""
         return calculate_version_status(
@@ -664,10 +667,10 @@ class IssueHistoricalCatalog:
 
     def build_release_catalog(
         self,
-        app_data: Optional[dict] = None,
-        platform: Optional[str] = None,
-        reference_date: Optional[Any] = None,
-    ) -> List[ReleaseCatalogItem]:
+        app_data: dict | None = None,
+        platform: str | None = None,
+        reference_date: Any | None = None,
+    ) -> list[ReleaseCatalogItem]:
         """Constructs the decoupled persistent release catalog conforming to ReleaseCatalogItem."""
         return build_release_catalog(
             catalog=self,
@@ -676,9 +679,9 @@ class IssueHistoricalCatalog:
             reference_date=reference_date,
         )
 
-    def get_known_app_versions(self, platform: Optional[str] = None) -> List[str]:
+    def get_known_app_versions(self, platform: str | None = None) -> list[str]:
         """Returns sorted list of all known app versions recorded in catalog, optionally isolated by platform."""
-        v_set = set()
+        v_set: set[str] = set()
         platforms_to_check = [platform] if platform in ("android", "ios") else ["android", "ios"]
         for p in platforms_to_check:
             v_set.update(self.app_versions.get(p, {}).keys())
@@ -691,12 +694,12 @@ class IssueHistoricalCatalog:
                         v_set.add(v)
         return sorted(list(v_set), key=version_key)
 
-    def get_version_info(self, version: str, platform: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    def get_version_info(self, version: str, platform: str | None = None) -> dict[str, Any] | None:
         if platform:
             return self.app_versions.get(platform, {}).get(version)
         return self.app_versions.get("android", {}).get(version) or self.app_versions.get("ios", {}).get(version)
 
-    def get_issue_history(self, issue_id: str, platform: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    def get_issue_history(self, issue_id: str, platform: str | None = None) -> dict[str, Any] | None:
         if platform:
             canonical = self._canonical_key(platform, issue_id)
             return self.issues.get(canonical)
@@ -709,13 +712,13 @@ class IssueHistoricalCatalog:
 
 def enrich_app_data_with_lifecycle(
     app_data: dict,
-    catalog: Optional[IssueHistoricalCatalog] = None,
-    app_name: Optional[str] = None,
-    out_dir: Optional[Path] = None,
-    catalog_rows: Optional[Iterable[dict]] = None,
-    version_catalog_rows: Optional[Iterable[dict]] = None,
+    catalog: IssueHistoricalCatalog | None = None,
+    app_name: str | None = None,
+    out_dir: Path | None = None,
+    catalog_rows: Iterable[dict] | None = None,
+    version_catalog_rows: Iterable[dict] | None = None,
     is_bootstrap: bool = False,
-    is_incremental: Optional[bool] = None,
+    is_incremental: bool | None = None,
 ) -> dict:
     """Enriches app_data top_issues, all periods snapshots, and builds persistent release_catalog,
     strictly isolating Android and iOS version sequences and latest versions.
@@ -772,7 +775,7 @@ def enrich_app_data_with_lifecycle(
                     cat.update_app_versions(snap_vh, window=p_k)
 
     # Collect all issues across top_issues and all period snapshots and update catalog
-    all_issues_to_index: List[dict] = []
+    all_issues_to_index: list[dict] = []
     if isinstance(app_data.get("top_issues"), list):
         all_issues_to_index.extend(app_data["top_issues"])
 
@@ -788,19 +791,14 @@ def enrich_app_data_with_lifecycle(
     if "sources" in app_data and isinstance(app_data["sources"], dict):
         app_data["sources"]["historical_catalog"] = {
             "status": "available",
-            "last_sync_timestamp": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z"),
+            "last_sync_timestamp": dt.datetime.now(dt.UTC).isoformat().replace("+00:00", "Z"),
             "error_message": None,
         }
 
     # 3. Determine per-platform version universe and latest version
-    supported_platforms = ["android", "ios"]
-    meta_pfs = app_data.get("metadata", {}).get("platforms")
-    if meta_pfs and isinstance(meta_pfs, list):
-        supported_platforms = [p for p in meta_pfs if p in ("android", "ios")] or ["android", "ios"]
-
-    per_pf_latest: Dict[str, str] = {}
-    per_pf_known: Dict[str, List[str]] = {}
-    per_pf_sufficiency: Dict[str, Dict[str, bool]] = {}
+    per_pf_latest: dict[str, str] = {}
+    per_pf_known: dict[str, list[str]] = {}
+    per_pf_sufficiency: dict[str, dict[str, bool]] = {}
 
     for pf in ("android", "ios"):
         # Filter version health for pf
@@ -824,12 +822,12 @@ def enrich_app_data_with_lifecycle(
         # Authoritative latest version for pf
         latest_v = get_latest_app_version(app_data, platform=pf, catalog=cat)
         if not latest_v:
-            latest_v = max_version(list(known_set)) if known_set else "1.0.0"
+            latest_v = (max_version(list(known_set)) if known_set else None) or "1.0.0"
         known_set.add(latest_v)
         sorted_pf_versions = sorted(list(known_set), key=version_key)
 
         # Build sample sufficiency for pf
-        suff_map: Dict[str, bool] = {}
+        suff_map: dict[str, bool] = {}
         for v in sorted_pf_versions:
             v_info = pf_vh_map.get(v) or cat.get_version_info(v, platform=pf)
             suff_map[v] = is_version_sample_sufficient(v_info)
@@ -878,7 +876,7 @@ def enrich_app_data_with_lifecycle(
 
     # 5. Enrich each period snapshot's top_issues with platform isolation
     if isinstance(periods, dict):
-        for p_key, snap in periods.items():
+        for snap in periods.values():
             if not isinstance(snap, dict):
                 continue
 
@@ -886,9 +884,9 @@ def enrich_app_data_with_lifecycle(
             snap_dist_v = snap.get("distributions", {}).get("app_versions") or []
 
             # Snapshot per-platform universes
-            snap_pf_latest: Dict[str, str] = {}
-            snap_pf_known: Dict[str, List[str]] = {}
-            snap_pf_sufficiency: Dict[str, Dict[str, bool]] = {}
+            snap_pf_latest: dict[str, str] = {}
+            snap_pf_known: dict[str, list[str]] = {}
+            snap_pf_sufficiency: dict[str, dict[str, bool]] = {}
 
             for pf in ("android", "ios"):
                 snap_pf_vh = [
@@ -911,7 +909,7 @@ def enrich_app_data_with_lifecycle(
                 snap_known_set.add(snap_latest_v)
                 sorted_snap_pf_versions = sorted(list(snap_known_set), key=version_key)
 
-                snap_suff_map: Dict[str, bool] = {}
+                snap_suff_map: dict[str, bool] = {}
                 for v in sorted_snap_pf_versions:
                     v_info = snap_pf_vh_map.get(v) or cat.get_version_info(v, platform=pf)
                     snap_suff_map[v] = is_version_sample_sufficient(v_info)

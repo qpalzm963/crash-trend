@@ -17,7 +17,7 @@ import os
 import tempfile
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from .ai_router import is_free_gemini_model, is_free_openrouter_model
 from .config import ROOT
@@ -27,7 +27,7 @@ DEFAULT_HISTORY_PATH = ROOT / "out" / "ai_usage_history.json"
 
 
 def now_utc_iso() -> str:
-    return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def record_ai_call(
@@ -36,14 +36,14 @@ def record_ai_call(
     provider: str,
     model: str,
     status: str = "success",
-    http_status: Optional[int] = None,
-    duration_ms: Optional[float] = None,
+    http_status: int | None = None,
+    duration_ms: float | None = None,
     paid_model_allowed: bool = False,
-    tokens: Optional[Dict[str, Optional[int]]] = None,
-    error_message: Optional[str] = None,
-    history_path: Optional[Path] = None,
+    tokens: dict[str, int | None] | None = None,
+    error_message: str | None = None,
+    history_path: Path | None = None,
     max_records: int = 10000,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Records an AI call telemetry event to persistent history.
 
     All error messages are automatically sanitized before disk write.
@@ -52,7 +52,7 @@ def record_ai_call(
     target.parent.mkdir(parents=True, exist_ok=True)
 
     # Clean tokens: ensure values are ints or None; do not invent fake numbers
-    clean_tokens: Optional[Dict[str, Optional[int]]] = None
+    clean_tokens: dict[str, int | None] | None = None
     if isinstance(tokens, dict):
         p_tok = tokens.get("prompt_tokens")
         c_tok = tokens.get("completion_tokens")
@@ -64,7 +64,7 @@ def record_ai_call(
                 "total_tokens": int(t_tok) if isinstance(t_tok, int) else None,
             }
 
-    event: Dict[str, Any] = {
+    event: dict[str, Any] = {
         "timestamp": now_utc_iso(),
         "app_id": str(app_id or "global"),
         "task_type": str(task_type or "unknown"),
@@ -79,7 +79,7 @@ def record_ai_call(
     }
 
     # Load existing history
-    records: List[Dict[str, Any]] = []
+    records: list[dict[str, Any]] = []
     if target.is_file():
         try:
             records = json.loads(target.read_text(encoding="utf-8"))
@@ -106,9 +106,9 @@ def record_ai_call(
 
 
 def load_ai_usage_history(
-    history_path: Optional[Path] = None,
-    limit: Optional[int] = None,
-) -> List[Dict[str, Any]]:
+    history_path: Path | None = None,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
     """Loads historical AI telemetry records."""
     target = Path(history_path) if history_path else DEFAULT_HISTORY_PATH
     if not target.is_file():
@@ -123,17 +123,17 @@ def load_ai_usage_history(
 
 
 def aggregate_ai_usage(
-    history_records: Optional[List[Dict[str, Any]]] = None,
+    history_records: list[dict[str, Any]] | None = None,
     days: int = 7,
-    now: Optional[dt.datetime] = None,
-) -> Dict[str, Any]:
+    now: dt.datetime | None = None,
+) -> dict[str, Any]:
     """Aggregates AI usage records into Dashboard-ready metrics and distributions."""
     records = history_records if history_records is not None else load_ai_usage_history()
 
-    curr_now = now or dt.datetime.now(dt.timezone.utc)
+    curr_now = now or dt.datetime.now(dt.UTC)
     cutoff = curr_now - dt.timedelta(days=days)
 
-    filtered: List[Dict[str, Any]] = []
+    filtered: list[dict[str, Any]] = []
     for r in records:
         ts_str = r.get("timestamp")
         if not ts_str:
@@ -142,7 +142,7 @@ def aggregate_ai_usage(
             clean_ts = ts_str.replace("Z", "+00:00")
             r_dt = dt.datetime.fromisoformat(clean_ts)
             if r_dt.tzinfo is None:
-                r_dt = r_dt.replace(tzinfo=dt.timezone.utc)
+                r_dt = r_dt.replace(tzinfo=dt.UTC)
             if r_dt >= cutoff:
                 filtered.append(r)
         except Exception:
@@ -150,11 +150,11 @@ def aggregate_ai_usage(
 
     total_requests = len(filtered)
     status_counts = {"success": 0, "error": 0, "fallback": 0, "rate_limit": 0}
-    by_task: Dict[str, int] = defaultdict(int)
-    by_provider: Dict[str, int] = defaultdict(int)
-    by_model: Dict[str, int] = defaultdict(int)
-    by_app: Dict[str, int] = defaultdict(int)
-    daily_map: Dict[str, Dict[str, int]] = defaultdict(lambda: {"total": 0, "success": 0, "error": 0, "fallback": 0, "rate_limit": 0})
+    by_task: dict[str, int] = defaultdict(int)
+    by_provider: dict[str, int] = defaultdict(int)
+    by_model: dict[str, int] = defaultdict(int)
+    by_app: dict[str, int] = defaultdict(int)
+    daily_map: dict[str, dict[str, int]] = defaultdict(lambda: {"total": 0, "success": 0, "error": 0, "fallback": 0, "rate_limit": 0})
 
     paid_models_ever_allowed = False
     has_token_data = False

@@ -79,7 +79,7 @@ class TestMcpCacheFreshness(unittest.TestCase):
 
     def test_fresh_cache_within_max_age(self) -> None:
         cache_file = self.tmppath / "stacktraces.json"
-        now = dt.datetime(2026, 9, 3, 12, 0, 0, tzinfo=dt.timezone.utc)
+        now = dt.datetime(2026, 9, 3, 12, 0, 0, tzinfo=dt.UTC)
         # Cached 2 days ago
         cached_time = (now - dt.timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
         cache_file.write_text(json.dumps({
@@ -94,7 +94,7 @@ class TestMcpCacheFreshness(unittest.TestCase):
 
     def test_stale_cache_exceeding_max_age(self) -> None:
         cache_file = self.tmppath / "stacktraces.json"
-        now = dt.datetime(2026, 9, 3, 12, 0, 0, tzinfo=dt.timezone.utc)
+        now = dt.datetime(2026, 9, 3, 12, 0, 0, tzinfo=dt.UTC)
         # Cached 9 days ago
         cached_time = (now - dt.timedelta(days=9)).strftime("%Y-%m-%dT%H:%M:%SZ")
         cache_file.write_text(json.dumps({
@@ -243,7 +243,7 @@ class TestFetchStacktracesModes(unittest.TestCase):
         """A cache with errors and no issues must NEVER be considered fresh even with now() timestamp."""
         tmpdir = tempfile.TemporaryDirectory()
         tmppath = Path(tmpdir.name)
-        now_str = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        now_str = dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
         # 1. Empty issues with errors
         cf1 = tmppath / "failed1.json"

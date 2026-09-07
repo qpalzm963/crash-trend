@@ -7,7 +7,6 @@ from unittest.mock import MagicMock, patch
 
 from crash_trend.config import get_data_sources, is_sessions_enabled
 from crash_trend.fetch_sessions import (
-    enrich_app_dashboard_with_sessions,
     fetch_sessions_for_app,
 )
 from crash_trend.schema_v2 import validate_dashboard_v2
@@ -77,7 +76,7 @@ class TestDataSourceProfile(unittest.TestCase):
 
     def test_mixed_multi_app_bundle_passes_validation(self) -> None:
         import json
-        from pathlib import Path
+
         from crash_trend.config import ROOT
 
         fixture_dir = ROOT / "tests" / "fixtures"

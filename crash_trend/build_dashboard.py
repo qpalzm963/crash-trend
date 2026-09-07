@@ -6,10 +6,9 @@ All underlying rendering and presentation logic is modularized in `crash_trend.d
 
 from __future__ import annotations
 
-from pathlib import Path
 import sys
-
-from typing import Any, Optional, Union
+from pathlib import Path
+from typing import Any
 
 # Ensure repository root is in sys.path when executed directly
 ROOT = Path(__file__).resolve().parent.parent
@@ -26,15 +25,15 @@ from crash_trend.dashboard import (
 )
 
 
-def assemble_bundle_from_apps(cfg: Optional[dict] = None, root_dir: Optional[Union[str, Path]] = None) -> Optional[dict]:
+def assemble_bundle_from_apps(cfg: dict | None = None, root_dir: str | Path | None = None) -> dict | None:
     """Compatibility wrapper delegating to crash_trend.dashboard.assemble_bundle_from_apps."""
     eff_root = Path(root_dir) if root_dir is not None else ROOT
     return _dashboard.assemble_bundle_from_apps(cfg=cfg, root_dir=eff_root)
 
 
 def collect_data(
-    data_path: Optional[Union[str, Path]] = None,
-    root_dir: Optional[Union[str, Path]] = None,
+    data_path: str | Path | None = None,
+    root_dir: str | Path | None = None,
 ) -> dict:
     """Compatibility wrapper delegating to crash_trend.dashboard.collect_data."""
     eff_root = Path(root_dir) if root_dir is not None else ROOT
@@ -42,8 +41,8 @@ def collect_data(
 
 
 def build_html(
-    data: Union[dict, Any],
-    vendor_chartjs_path: Optional[Union[str, Path]] = None,
+    data: dict | Any,
+    vendor_chartjs_path: str | Path | None = None,
 ) -> str:
     """Compatibility wrapper delegating to crash_trend.dashboard.build_html."""
     eff_vendor = Path(vendor_chartjs_path) if vendor_chartjs_path is not None else ROOT / "vendor" / "chart.umd.min.js"
@@ -51,10 +50,10 @@ def build_html(
 
 
 def generate_dashboard(
-    data: Optional[Union[dict, Any]] = None,
-    output_path: Optional[Union[str, Path]] = None,
-    data_path: Optional[Union[str, Path]] = None,
-    root_dir: Optional[Union[str, Path]] = None,
+    data: dict | Any | None = None,
+    output_path: str | Path | None = None,
+    data_path: str | Path | None = None,
+    root_dir: str | Path | None = None,
 ) -> Path:
     """Compatibility wrapper delegating to crash_trend.dashboard.generate_dashboard."""
     eff_root = Path(root_dir) if root_dir is not None else ROOT
@@ -66,7 +65,7 @@ def generate_dashboard(
     )
 
 
-def main(argv: Optional[list[str]] = None) -> None:
+def main(argv: list[str] | None = None) -> None:
     """Compatibility CLI entrypoint delegating to crash_trend.dashboard.main."""
     _dashboard.main(argv=argv, root_dir=ROOT)
 

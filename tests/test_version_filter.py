@@ -198,7 +198,7 @@ class TestVersionFilterAndScopedMetrics(unittest.TestCase):
         """Acceptance Criteria 9 & 10: Multi-app switching resets version filter when the version
         does not exist in the other app, and preserves valid selections.
         """
-        app_1_versions = ["1.0.8", "1.0.10"]
+        _app_1_versions = ["1.0.8", "1.0.10"]
         app_2_versions = ["2.0.0", "2.1.0"]
 
         def simulate_app_switch(prev_version: str, new_app_versions: list[str]) -> str:

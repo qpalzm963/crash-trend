@@ -15,13 +15,13 @@ import argparse
 import datetime as dt
 import json
 import os
-from pathlib import Path
 import sys
-from typing import Any, Dict, Optional, Union
+from pathlib import Path
+from typing import Any
 
+from crash_trend.dashboard.ai import get_ai_html, get_ai_js
 from crash_trend.dashboard.assets import (
     DEFAULT_ROOT,
-    VENDOR_JS,
     get_dashboard_styles,
     get_header_html,
     get_shell_bottom_html,
@@ -31,7 +31,6 @@ from crash_trend.dashboard.assets import (
     get_sidebar_html,
     get_vendor_chartjs,
 )
-from crash_trend.dashboard.ai import get_ai_html, get_ai_js
 from crash_trend.dashboard.formatting import get_formatting_js
 from crash_trend.dashboard.issues import get_issues_html, get_issues_js
 from crash_trend.dashboard.overview import get_overview_html, get_overview_js
@@ -94,7 +93,7 @@ def assemble_html_template() -> str:
 HTML_TEMPLATE = assemble_html_template()
 
 
-def assemble_bundle_from_apps(cfg: Optional[dict] = None, root_dir: Optional[Union[str, Path]] = None) -> Optional[dict]:
+def assemble_bundle_from_apps(cfg: dict | None = None, root_dir: str | Path | None = None) -> dict | None:
     """Scans out/<app_id>/ for app-level V2 data and bundles them into a DashboardV2Bundle."""
     eff_root = Path(root_dir) if root_dir is not None else ROOT
     if cfg is None:
@@ -149,7 +148,7 @@ def assemble_bundle_from_apps(cfg: Optional[dict] = None, root_dir: Optional[Uni
         return None
 
     default_app = list(collected_apps.keys())[0]
-    now_utc = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now_utc = dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     bundle = {
         "schema_version": SCHEMA_VERSION,
         "generated_at": now_utc,
@@ -213,8 +212,8 @@ def assemble_bundle_from_apps(cfg: Optional[dict] = None, root_dir: Optional[Uni
 
 
 def collect_data(
-    data_path: Optional[Union[str, Path]] = None,
-    root_dir: Optional[Union[str, Path]] = None,
+    data_path: str | Path | None = None,
+    root_dir: str | Path | None = None,
 ) -> dict:
     """Loads Dashboard V2 bundle data from specified path or standard locations."""
     if data_path:
@@ -344,8 +343,8 @@ def collect_data(
 
 
 def build_html(
-    data: Union[dict, Any],
-    vendor_chartjs_path: Optional[Union[str, Path]] = None,
+    data: dict | Any,
+    vendor_chartjs_path: str | Path | None = None,
 ) -> str:
     """Renders self-contained HTML for a DashboardV2Bundle data structure."""
     chartjs_code = get_vendor_chartjs(vendor_chartjs_path)
@@ -356,10 +355,10 @@ def build_html(
 
 
 def generate_dashboard(
-    data: Optional[Union[dict, Any]] = None,
-    output_path: Optional[Union[str, Path]] = None,
-    data_path: Optional[Union[str, Path]] = None,
-    root_dir: Optional[Union[str, Path]] = None,
+    data: dict | Any | None = None,
+    output_path: str | Path | None = None,
+    data_path: str | Path | None = None,
+    root_dir: str | Path | None = None,
 ) -> Path:
     """Generates the dashboard.html file and returns the output Path."""
     eff_root = Path(root_dir) if root_dir is not None else ROOT
@@ -375,8 +374,8 @@ def generate_dashboard(
 
 
 def main(
-    argv: Optional[list[str]] = None,
-    root_dir: Optional[Union[str, Path]] = None,
+    argv: list[str] | None = None,
+    root_dir: str | Path | None = None,
 ) -> None:
     parser = argparse.ArgumentParser(description="產生 Dashboard V2 自包含靜態 HTML 儀表板")
     parser.add_argument("--data", help="輸入之 Dashboard V2 JSON 檔案路徑")

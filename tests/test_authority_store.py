@@ -13,13 +13,12 @@ Verifies:
 
 from __future__ import annotations
 
-import datetime as dt
 import hashlib
 import json
-from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
+from pathlib import Path
 
 from crash_trend.authority_store import AuthorityStoreError, CatalogAuthorityStore
 from crash_trend.fetch_bigquery import transform_bq_to_v2
@@ -55,7 +54,7 @@ class TestCatalogAuthorityStore(unittest.TestCase):
                 self.assertEqual(len(hashes), 3)
                 for raw in ["uuid_1", "uuid_2", "uuid_3"]:
                     self.assertNotIn(raw, hashes)
-                    expected_hash = hashlib.sha256(f"test_app:{raw}".encode("utf-8")).hexdigest()
+                    expected_hash = hashlib.sha256(f"test_app:{raw}".encode()).hexdigest()
                     self.assertIn(expected_hash, hashes)
             finally:
                 conn.close()
@@ -472,8 +471,9 @@ class TestCatalogAuthorityStore(unittest.TestCase):
         AuthorityStoreError must be imported at module level in fetch_bigquery
         and handled without NameError in CLI main() exit path.
         """
-        import crash_trend.fetch_bigquery as fbq
         from unittest.mock import patch
+
+        import crash_trend.fetch_bigquery as fbq
 
         # 1. Verify AuthorityStoreError is bound at module level
         self.assertTrue(hasattr(fbq, "AuthorityStoreError"))
