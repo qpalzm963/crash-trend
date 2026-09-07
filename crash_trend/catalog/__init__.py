@@ -1,23 +1,15 @@
-"""Issue Historical Catalog and Deterministic Lifecycle Engine (Issue #29, #53).
+"""Crash Trend Catalog package (Issue #29, #47, #49, #53).
 
-Compatibility wrapper and CLI entrypoint.
-All underlying implementations are modularized in `crash_trend.catalog`.
+Provides deterministic lifecycle detection, release catalog assembly,
+monotonic watermark tracking, and historical catalog persistence.
 """
 
 from __future__ import annotations
 
-import argparse
-from pathlib import Path
-import sys
-
-# Ensure repository root is in sys.path when executed directly
-_ROOT = Path(__file__).resolve().parent.parent
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
-
 from crash_trend.catalog.bootstrap import (
     _has_verifiable_installation_authority,
     bootstrap_catalog_from_disk,
+    main,
     should_trigger_catalog_bootstrap,
 )
 from crash_trend.catalog.comparison import compute_previous_release_comparison
@@ -35,7 +27,6 @@ from crash_trend.catalog.release_catalog import (
     get_latest_app_version,
 )
 from crash_trend.catalog.watermark import advance_watermark, is_ts_le
-from crash_trend.config import ROOT, get_app, load_config, out_dir
 
 __all__ = [
     "IssueHistoricalCatalog",
@@ -53,9 +44,4 @@ __all__ = [
     "is_ts_le",
     "main",
 ]
-
-from crash_trend.catalog.bootstrap import main
-
-if __name__ == "__main__":
-    main()
 
