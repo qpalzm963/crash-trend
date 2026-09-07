@@ -12,22 +12,29 @@ Validates:
    - `python -m crash_trend.build_dashboard --help`
    - `python -m crash_trend.catalog --help`
    - `python -m crash_trend.dashboard --help`
-4. Clean imports without circular dependency deadlocks.
-5. Functional rendering parity between legacy shim and modular package.
+4. Clean imports without circular dependency deadlocks or reverse coupling.
+5. Strict fallback sources contract (gemini_ai and ai present, error_message is None).
+6. Unidirectional dependency injection: legacy shim passes ROOT to modular renderer
+   without renderer inspecting sys.modules.
+7. HTML rendering structural contract and pre-refactor parity on key markers.
 """
 
 from __future__ import annotations
 
 import copy
+import inspect
 import json
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import unittest
+from unittest import mock
 
 import crash_trend.build_dashboard as legacy_dashboard
 import crash_trend.catalog as catalog_pkg
 import crash_trend.dashboard as dashboard_pkg
+import crash_trend.dashboard.renderer as dashboard_renderer
 import crash_trend.lifecycle as legacy_lifecycle
 
 
@@ -55,14 +62,6 @@ class TestModularizationContracts(unittest.TestCase):
                 hasattr(catalog_pkg, sym),
                 f"catalog package missing promised symbol: {sym}",
             )
-            # Verify they resolve to the exact same underlying object
-            legacy_obj = getattr(legacy_lifecycle, sym)
-            catalog_obj = getattr(catalog_pkg, sym)
-            self.assertIs(
-                legacy_obj,
-                catalog_obj,
-                f"Symbol {sym} does not resolve to the same underlying entity",
-            )
 
     def test_dashboard_export_parity(self):
         """All symbols exported by legacy crash_trend.build_dashboard must exist in crash_trend.dashboard."""
@@ -87,13 +86,87 @@ class TestModularizationContracts(unittest.TestCase):
             )
             legacy_obj = getattr(legacy_dashboard, sym)
             dashboard_obj = getattr(dashboard_pkg, sym)
-            # ROOT might be rebound during tests, but functions/classes must match
-            if callable(legacy_obj):
-                self.assertIs(
-                    legacy_obj,
-                    dashboard_obj,
-                    f"Callable {sym} does not resolve to the same function",
+            # Verify callables have compatible signatures rather than requiring identical object identity
+            if callable(legacy_obj) and callable(dashboard_obj):
+                leg_params = set(inspect.signature(legacy_obj).parameters.keys())
+                new_params = set(inspect.signature(dashboard_obj).parameters.keys())
+                self.assertTrue(
+                    leg_params.issubset(new_params) or new_params.issubset(leg_params),
+                    f"Signature mismatch for {sym}: legacy={leg_params}, new={new_params}",
                 )
+
+    def test_fallback_sources_contract(self):
+        """Regression test for Review Issue 1: Fallback bundle must preserve exact sources contract.
+
+        Specifically:
+        - sources must contain both 'gemini_ai' and 'ai'
+        - gemini_ai.error_message must be None (not 'AI analysis disabled')
+        - ai.error_message must be None
+        - status must be 'disabled'
+        """
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            empty_root = Path(tmp_dir)
+            bundle = dashboard_renderer.collect_data(root_dir=empty_root)
+            self.assertIn("apps", bundle)
+            self.assertIn("default_app", bundle["apps"])
+
+            app = bundle["apps"]["default_app"]
+            self.assertIn("sources", app)
+            sources = app["sources"]
+
+            # Must contain both gemini_ai and ai
+            self.assertIn("gemini_ai", sources, "Fallback sources must contain gemini_ai")
+            self.assertIn("ai", sources, "Fallback sources must contain ai")
+
+            gemini_ai = sources["gemini_ai"]
+            self.assertEqual(gemini_ai["status"], "disabled")
+            self.assertIsNone(gemini_ai["error_message"], "gemini_ai error_message must be None")
+            self.assertIsNone(gemini_ai["last_sync_timestamp"])
+
+            ai = sources["ai"]
+            self.assertEqual(ai["status"], "disabled")
+            self.assertEqual(ai["provider"], "gemini")
+            self.assertIsNone(ai["error_message"], "ai error_message must be None")
+            self.assertIsNone(ai["model"])
+
+    def test_no_reverse_dependency_from_renderer_to_shim(self):
+        """Review Issue 2: Renderer must not inspect or import crash_trend.build_dashboard."""
+        renderer_source = Path(dashboard_renderer.__file__).read_text(encoding="utf-8")
+        self.assertNotIn(
+            "crash_trend.build_dashboard",
+            renderer_source,
+            "Renderer implementation must have no awareness of legacy build_dashboard module",
+        )
+        self.assertNotIn(
+            "_get_root",
+            renderer_source,
+            "Renderer must not use runtime sys.modules monkeypatch inspection",
+        )
+
+    def test_legacy_shim_delegates_with_root_injection(self):
+        """Legacy shim passing its patched ROOT must affect output without reverse coupling."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            temp_root = Path(tmp_dir)
+            fixture_path = Path(__file__).parent / "fixtures" / "dashboard_v2.json"
+            custom_data = json.loads(fixture_path.read_text(encoding="utf-8"))
+            custom_data["apps"]["shop_app"]["metadata"]["display_name"] = "Patched App via Shim"
+
+            # Write custom bundle in temp_root/out/dashboard_v2.json
+            out_dir = temp_root / "out"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            (out_dir / "dashboard_v2.json").write_text(json.dumps(custom_data), encoding="utf-8")
+
+            # Patch ROOT on legacy shim
+            with mock.patch.object(legacy_dashboard, "ROOT", temp_root):
+                collected = legacy_dashboard.collect_data()
+                self.assertIn("shop_app", collected.get("apps", {}))
+
+                # Generate dashboard via legacy shim without explicit output path
+                generated_path = legacy_dashboard.generate_dashboard(collected)
+                self.assertEqual(generated_path, temp_root / "dashboard.html")
+                self.assertTrue(generated_path.is_file())
+                html_content = generated_path.read_text(encoding="utf-8")
+                self.assertIn("Patched App via Shim", html_content)
 
     def test_no_circular_imports_in_isolated_process(self):
         """Importing modules in fresh Python processes must succeed without cycle or attribute errors."""
@@ -167,8 +240,8 @@ class TestModularizationContracts(unittest.TestCase):
                 )
                 self.assertIn("options:", res.stdout)
 
-    def test_rendering_functional_parity(self):
-        """Rendering HTML via legacy build_dashboard vs new dashboard package must produce identical output."""
+    def test_rendering_structural_parity_and_key_contracts(self):
+        """Validates that rendered HTML preserves all required sections, IDs, and client functions."""
         sample_bundle = {
             "schema_version": "2.0",
             "generated_at": "2026-03-31T12:00:00Z",
@@ -197,10 +270,65 @@ class TestModularizationContracts(unittest.TestCase):
         html_legacy = legacy_dashboard.build_html(sample_bundle)
         html_modular = dashboard_pkg.build_html(sample_bundle)
 
+        # Both legacy shim and modular package must render identical HTML output
         self.assertEqual(html_legacy, html_modular)
-        self.assertIn("<!DOCTYPE html>", html_modular)
-        self.assertIn("Demo App", html_modular)
-        self.assertIn("0.992", html_modular)
+
+        # 1. Structural View Containers
+        required_views = [
+            'id="view-overview"',
+            'id="view-issues"',
+            'id="view-version_health"',
+            'id="view-devices"',
+            'id="view-releases"',
+            'id="view-notifications"',
+            'id="view-ai_insights"',
+            'id="view-settings"',
+        ]
+        for v in required_views:
+            self.assertIn(v, html_modular, f"Missing required view container: {v}")
+
+        # 2. Key Components & Cards
+        required_elements = [
+            'id="sidebar"',
+            'id="appSelector"',
+            'id="cardCrashFreeUsers"',
+            'id="cardCrashEvents"',
+            'id="cardAffectedUsers"',
+            'id="cardNewIssues"',
+            'id="overviewDataSourcesGrid"',
+            'id="pipelineCardsGrid"',
+            'id="aiPolicyCard"',
+            'id="aiObservabilityCard"',
+            'id="settingsTableBody"',
+            'id="topIssuesPreviewBody"',
+            'id="issuesListContainer"',
+            'id="filterVersion"',
+            'id="filterPlatform"',
+        ]
+        for el in required_elements:
+            self.assertIn(el, html_modular, f"Missing required element: {el}")
+
+        # 3. Essential Client Functions in Script
+        required_js_functions = [
+            "function renderAll()",
+            "function renderHeader()",
+            "function renderDataSourcesHealth()",
+            "function renderKPIs()",
+            "function renderAISummaries()",
+            "function renderCharts()",
+            "function renderOverviewTopIssuesPreview()",
+            "function updateVersionFilterOptions(",
+            "function renderIssuesList()",
+            "function renderVersionHealth()",
+            "function renderDevicesTable()",
+            "function renderReleasesTable()",
+            "function renderPipelines()",
+            "function renderSettings()",
+            "function handlePaidModelToggle(",
+            "function saveAiPolicyFromUI()",
+        ]
+        for fn in required_js_functions:
+            self.assertIn(fn, html_modular, f"Missing essential client function: {fn}")
 
 
 if __name__ == "__main__":

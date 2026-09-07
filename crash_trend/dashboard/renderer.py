@@ -44,13 +44,6 @@ ROOT = DEFAULT_ROOT
 DEFAULT_OUT_HTML = ROOT / "dashboard.html"
 
 
-def _get_root() -> Path:
-    """Dynamically resolves root directory, respecting test patches on crash_trend.build_dashboard.ROOT."""
-    bd = sys.modules.get("crash_trend.build_dashboard")
-    if bd is not None and hasattr(bd, "ROOT"):
-        return getattr(bd, "ROOT")
-    return ROOT
-
 
 def assemble_html_template() -> str:
     """Assembles all modular section HTML and JS components into the complete HTML template."""
@@ -101,9 +94,9 @@ def assemble_html_template() -> str:
 HTML_TEMPLATE = assemble_html_template()
 
 
-def assemble_bundle_from_apps(cfg: Optional[dict] = None) -> Optional[dict]:
+def assemble_bundle_from_apps(cfg: Optional[dict] = None, root_dir: Optional[Union[str, Path]] = None) -> Optional[dict]:
     """Scans out/<app_id>/ for app-level V2 data and bundles them into a DashboardV2Bundle."""
-    eff_root = _get_root()
+    eff_root = Path(root_dir) if root_dir is not None else ROOT
     if cfg is None:
         try:
             import yaml
@@ -219,7 +212,10 @@ def assemble_bundle_from_apps(cfg: Optional[dict] = None) -> Optional[dict]:
     return bundle
 
 
-def collect_data(data_path: Optional[Union[str, Path]] = None) -> dict:
+def collect_data(
+    data_path: Optional[Union[str, Path]] = None,
+    root_dir: Optional[Union[str, Path]] = None,
+) -> dict:
     """Loads Dashboard V2 bundle data from specified path or standard locations."""
     if data_path:
         p = Path(data_path)
@@ -227,13 +223,14 @@ def collect_data(data_path: Optional[Union[str, Path]] = None) -> dict:
             return json.loads(p.read_text(encoding="utf-8"))
         raise FileNotFoundError(f"Specified data file not found: {data_path}")
 
+    eff_root = Path(root_dir) if root_dir is not None else ROOT
+
     # 1. Try to assemble from multi-app out/<app>/ data
-    assembled = assemble_bundle_from_apps()
+    assembled = assemble_bundle_from_apps(root_dir=eff_root)
     if assembled:
         return assembled
 
     # 2. Search production locations (嚴禁在正式環境偷偷 fallback 至測試 fixture)
-    eff_root = _get_root()
     candidates = [
         eff_root / "reports" / "dashboard_v2.json",
         eff_root / "out" / "dashboard_v2.json",
@@ -286,9 +283,15 @@ def collect_data(data_path: Optional[Union[str, Path]] = None) -> dict:
                     },
                     "gemini_ai": {
                         "status": "disabled",
+                        "last_sync_timestamp": None,
+                        "error_message": None,
+                    },
+                    "ai": {
+                        "status": "disabled",
+                        "provider": "gemini",
                         "model": None,
                         "last_sync_timestamp": None,
-                        "error_message": "AI analysis disabled",
+                        "error_message": None,
                     },
                 },
                 "kpi": {
@@ -340,10 +343,12 @@ def collect_data(data_path: Optional[Union[str, Path]] = None) -> dict:
     }
 
 
-def build_html(data: Union[dict, Any]) -> str:
+def build_html(
+    data: Union[dict, Any],
+    vendor_chartjs_path: Optional[Union[str, Path]] = None,
+) -> str:
     """Renders self-contained HTML for a DashboardV2Bundle data structure."""
-    eff_root = _get_root()
-    chartjs_code = get_vendor_chartjs(eff_root / "vendor" / "chart.umd.min.js")
+    chartjs_code = get_vendor_chartjs(vendor_chartjs_path)
     json_data = json.dumps(data, ensure_ascii=False)
     tmpl = assemble_html_template()
     html = tmpl.replace("__CHARTJS__", chartjs_code).replace("__DATA__", json_data)
@@ -354,26 +359,33 @@ def generate_dashboard(
     data: Optional[Union[dict, Any]] = None,
     output_path: Optional[Union[str, Path]] = None,
     data_path: Optional[Union[str, Path]] = None,
+    root_dir: Optional[Union[str, Path]] = None,
 ) -> Path:
     """Generates the dashboard.html file and returns the output Path."""
+    eff_root = Path(root_dir) if root_dir is not None else ROOT
     if data is None:
-        data = collect_data(data_path)
+        data = collect_data(data_path, root_dir=eff_root)
 
-    eff_root = _get_root()
     out = Path(output_path) if output_path else eff_root / "dashboard.html"
-    html_content = build_html(data)
+    vendor_js = eff_root / "vendor" / "chart.umd.min.js"
+    html_content = build_html(data, vendor_chartjs_path=vendor_js)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(html_content, encoding="utf-8")
     return out
 
 
-def main() -> None:
+def main(
+    argv: Optional[list[str]] = None,
+    root_dir: Optional[Union[str, Path]] = None,
+) -> None:
     parser = argparse.ArgumentParser(description="產生 Dashboard V2 自包含靜態 HTML 儀表板")
     parser.add_argument("--data", help="輸入之 Dashboard V2 JSON 檔案路徑")
-    parser.add_argument("--out", default=str(DEFAULT_OUT_HTML), help="輸出之 HTML 檔案路徑")
-    args = parser.parse_args()
+    parser.add_argument("--out", default=None, help="輸出之 HTML 檔案路徑")
+    args = parser.parse_args(argv)
 
-    out_file = generate_dashboard(output_path=args.out, data_path=args.data)
+    eff_root = Path(root_dir) if root_dir is not None else ROOT
+    out_target = args.out or str(eff_root / "dashboard.html")
+    out_file = generate_dashboard(output_path=out_target, data_path=args.data, root_dir=eff_root)
     try:
         print(f"  ✓ 成功產生自包含 Dashboard V2 儀表板: {out_file}")
     except UnicodeEncodeError:
