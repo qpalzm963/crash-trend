@@ -7,6 +7,28 @@ on:
     branches: [ main ]
 
 jobs:
+  lockfile-check:
+    name: Lockfile & Requirements Consistency
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Check uv.lock consistency with pyproject.toml
+        run: uv lock --check
+
+      - name: Check requirements.txt consistency with uv.lock
+        run: |
+          uv export --no-dev --locked --no-emit-project --no-hashes --no-header | diff -u requirements.txt -
+
   test:
     name: Test (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
@@ -28,10 +50,10 @@ jobs:
         run: uv python install ${{ matrix.python-version }}
 
       - name: Install dependencies from lockfile
-        run: uv sync --frozen --python ${{ matrix.python-version }}
+        run: uv sync --locked --python ${{ matrix.python-version }}
 
       - name: Run Schema and Unit Tests
-        run: uv run --python ${{ matrix.python-version }} python -m unittest discover -s tests -p "test_*.py" -v
+        run: uv run --locked --no-sync --python ${{ matrix.python-version }} python -m unittest discover -s tests -p "test_*.py" -v
 
   lint:
     name: Ruff Linter
@@ -49,10 +71,10 @@ jobs:
         run: uv python install 3.11
 
       - name: Install dependencies from lockfile
-        run: uv sync --frozen --python 3.11
+        run: uv sync --locked --python 3.11
 
       - name: Run Ruff Check
-        run: uv run --python 3.11 ruff check .
+        run: uv run --locked --no-sync --python 3.11 ruff check .
 
   type-check:
     name: Mypy Type Check Baseline
@@ -70,7 +92,7 @@ jobs:
         run: uv python install 3.11
 
       - name: Install dependencies from lockfile
-        run: uv sync --frozen --python 3.11
+        run: uv sync --locked --python 3.11
 
       - name: Run Mypy
-        run: uv run --python 3.11 mypy
+        run: uv run --locked --no-sync --python 3.11 mypy

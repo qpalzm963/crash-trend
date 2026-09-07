@@ -514,6 +514,10 @@ pip install -e ".[dev]"
 ### 品質檢查指令
 
 ```bash
+# 驗證 lockfile 與 requirements.txt 一致性（無漂移）
+uv lock --check
+./scripts/export_requirements.sh  # 或: uv export --no-dev --locked --no-emit-project --no-hashes --no-header -o requirements.txt
+
 # 程式碼 Linting（Ruff）
 uv run ruff check .
 
@@ -525,10 +529,11 @@ uv run python -m unittest discover -s tests -p "test_*.py" -v
 ```
 
 ### GitHub Actions CI
-GitHub Actions (`.github/workflows/ci.yml`) 在每次 push 與 PR 時自動執行三道品質閘門：
-1. **測試矩陣**：Python 3.11 與 3.12 全量單元測試。
-2. **Linter**：Ruff 程式碼規範與語法檢查。
-3. **Type Check**：核心模組 Mypy 靜態型別檢查。
+GitHub Actions (`.github/workflows/ci.yml`) 在每次 push 與 PR 時自動執行四道品質閘門：
+1. **Lockfile & Requirements 一致性**：驗證 committed `uv.lock` 與 `pyproject.toml` 一致，且 `requirements.txt` 無漂移。
+2. **測試矩陣**：Python 3.11 與 3.12 全量單元測試（使用 `--locked --no-sync` 嚴格確保環境不浮動）。
+3. **Linter**：Ruff 程式碼規範與語法檢查。
+4. **Type Check**：核心模組 Mypy 靜態型別檢查。
 
 ---
 
