@@ -706,6 +706,27 @@ def validate_historical_catalog(data: dict) -> List[str]:
             if "bootstrap_complete" in auth and not isinstance(auth["bootstrap_complete"], bool):
                 errors.append("authority.bootstrap_complete must be a boolean")
 
+    def _check_forbidden_raw_ids(node: Any, path: str = "", visited: Optional[set] = None) -> None:
+        if visited is None:
+            visited = set()
+        node_id = id(node)
+        if node_id in visited:
+            return
+        visited.add(node_id)
+
+        if isinstance(node, dict):
+            for k, v in node.items():
+                cur_p = f"{path}.{k}" if path else str(k)
+                if k in ("installation_ids", "user_ids"):
+                    errors.append(f"{cur_p} is forbidden in historical catalog (zero raw IDs policy)")
+                _check_forbidden_raw_ids(v, cur_p, visited)
+        elif isinstance(node, list):
+            for i, item in enumerate(node):
+                cur_p = f"{path}[{i}]"
+                _check_forbidden_raw_ids(item, cur_p, visited)
+
+    _check_forbidden_raw_ids(data)
+
     if "issues" in data and isinstance(data["issues"], dict):
         for key, iss in data["issues"].items():
             p = f"issues['{key}']."
