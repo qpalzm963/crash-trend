@@ -676,7 +676,7 @@ classDiagram
 > **嚴禁在 `historical_catalog.json` 寫入 `installation_ids` 或 `user_ids` 欄位**。
 > - 歷史版本的 catalog 中若有 legacy `installation_ids`，在 `IssueHistoricalCatalog.load()` 時會自動遷移入 SQLite Authority Store，並在記憶體中立即執行 `pop("installation_ids", None)` 清除。
 > - `save()` 寫回時只允許序列化 `lifetime_affected_users` 去重數值與 `authority` metadata。
-> - `validate_historical_catalog()` 在執行階段強制拒絕任何包含 `installation_ids` 或 `user_ids` 的資料。
+> - `validate_historical_catalog()` 在執行階段以遞迴掃描強制拒絕任何階層包含 `installation_ids` 或 `user_ids` 的資料。
 
 ---
 
@@ -859,6 +859,6 @@ assert len(cat_errors) == 0, f"Catalog schema errors: {cat_errors}"
 ```
 
 - **相容性保證與版本職責**：
-  - Historical Catalog Producer 固定產出 `schema_version: "2.3.0"`；`validate_historical_catalog()` 在執行階段嚴格檢核必填欄位並強制拒絕任何 `installation_ids` 或 `user_ids` 違規欄位，落實零 raw IDs 保證，同時支援 `{"1.0", "2.0", "2.3", "2.3.0", "2.6", "2.6.0"}` 相容讀取。
+  - Historical Catalog Producer 固定產出 `schema_version: "2.3.0"`；`validate_historical_catalog()` 在執行階段嚴格檢核必填欄位並以遞迴掃描強制拒絕任何階層之 `installation_ids` 或 `user_ids` 違規欄位，落實零 raw IDs 保證，同時支援 `{"1.0", "2.0", "2.3", "2.3.0", "2.6", "2.6.0"}` 相容讀取。
   - 前端 Dashboard Bundle 之頂層 `schema_version` 為 `"2.6.0"`；`schema_v2.py` 之 `SUPPORTED_SCHEMA_VERSIONS` 相容 `{"2.0", "2.3", "2.3.0", "2.6", "2.6.0"}`。
   - 舊版消費端若僅需要單期快照，直接讀取 `AppDashboardV2Data` 之 `kpi`、`top_issues` 依然完全相容；若需要長週期版本演進分析，可消費新增之 `release_catalog` 欄位。

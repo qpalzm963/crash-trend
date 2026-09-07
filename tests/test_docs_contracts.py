@@ -98,6 +98,44 @@ class TestDocsContracts(unittest.TestCase):
         self.assertIn("2.3.0", SUPPORTED_SCHEMA_VERSIONS)
         self.assertIn("2.6.0", SUPPORTED_SCHEMA_VERSIONS)
 
+    def test_recursive_zero_raw_ids_enforcement(self) -> None:
+        """Verifies that validate_historical_catalog() recursively rejects raw IDs anywhere in the structure."""
+        nested_cat = {
+            "schema_version": "2.3.0",
+            "updated_at": "2026-09-02T14:00:00Z",
+            "issues": {
+                "android:8a7f1b2c": {
+                    "issue_id": "8a7f1b2c",
+                    "platform": "android",
+                    "first_seen_version": "3.1.0",
+                    "last_seen_version": "3.2.0",
+                    "versions_seen": ["3.1.0", "3.2.0"],
+                }
+            },
+            "app_versions": {
+                "android": {
+                    "3.2.0": {
+                        "version": "3.2.0",
+                        "platform": "android",
+                        "recent_health": {
+                            "30d": {
+                                "nested_payload": {
+                                    "user_ids": ["raw_user_leak"],
+                                    "device_list": [{"installation_ids": ["raw_inst_leak"]}],
+                                }
+                            }
+                        },
+                    }
+                }
+            },
+        }
+        errs = validate_historical_catalog(nested_cat)
+        self.assertEqual(len(errs), 2)
+        self.assertTrue(any("user_ids is forbidden" in e for e in errs))
+        self.assertTrue(any("installation_ids is forbidden" in e for e in errs))
+        self.assertTrue(any("recent_health.30d.nested_payload.user_ids" in e for e in errs))
+        self.assertTrue(any("recent_health.30d.nested_payload.device_list[0].installation_ids" in e for e in errs))
+
 
 if __name__ == "__main__":
     unittest.main()

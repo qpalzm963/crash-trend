@@ -311,6 +311,26 @@ class TestDashboardV2Schema(unittest.TestCase):
         errs = validate_historical_catalog(with_iss_ids)
         self.assertTrue(any("user_ids is forbidden" in e for e in errs))
 
+        # 4. Deeply nested in recent_health
+        with_nested_rh = json.loads(json.dumps(base_cat))
+        with_nested_rh["app_versions"]["android"]["1.0.1"]["recent_health"] = {
+            "30d": {"crash_events": 10, "installation_ids": ["uuid-nested"]}
+        }
+        errs = validate_historical_catalog(with_nested_rh)
+        self.assertTrue(
+            any("app_versions.android.1.0.1.recent_health.30d.installation_ids is forbidden" in e for e in errs)
+        )
+
+        # 5. Deeply nested in an arbitrary list structure
+        with_nested_list = json.loads(json.dumps(base_cat))
+        with_nested_list["issues"]["android:issue1"]["custom_trace"] = [
+            {"stack": "foo", "user_ids": ["user-nested"]}
+        ]
+        errs = validate_historical_catalog(with_nested_list)
+        self.assertTrue(
+            any("issues.android:issue1.custom_trace[0].user_ids is forbidden" in e for e in errs)
+        )
+
     def test_v2_3_bundle_requires_lifecycle_on_top_issues(self) -> None:
         fixture_path = self.fixtures_dir / "dashboard_v2.json"
         data = json.loads(fixture_path.read_text(encoding="utf-8"))
