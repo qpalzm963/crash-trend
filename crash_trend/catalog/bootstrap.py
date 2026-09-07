@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, List, Optional, Tuple, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 from crash_trend.authority_store import CatalogAuthorityStore
 from crash_trend.config import ROOT
@@ -21,9 +21,9 @@ if TYPE_CHECKING:
 
 def _has_verifiable_installation_authority(
     v: dict,
-    app_id: Optional[str] = None,
-    platform: Optional[str] = None,
-    store: Optional[CatalogAuthorityStore] = None,
+    app_id: str | None = None,
+    platform: str | None = None,
+    store: CatalogAuthorityStore | None = None,
 ) -> bool:
     """Verifies that a version entity possesses authoritative installation UUID state.
 
@@ -65,15 +65,15 @@ def _has_verifiable_installation_authority(
 
 
 def should_trigger_catalog_bootstrap(
-    cat_data: Optional[dict],
+    cat_data: dict | None,
     cat_file_exists: bool,
     explicit_bootstrap: bool = False,
-    explicit_watermark: Optional[str] = None,
-    authority_store: Optional[CatalogAuthorityStore] = None,
-    authority_store_path: Optional[Path] = None,
-    app_id: Optional[str] = None,
-    cat_file_path: Optional[Path] = None,
-) -> Tuple[bool, Optional[str]]:
+    explicit_watermark: str | None = None,
+    authority_store: CatalogAuthorityStore | None = None,
+    authority_store_path: Path | None = None,
+    app_id: str | None = None,
+    cat_file_path: Path | None = None,
+) -> tuple[bool, str | None]:
     """Evaluates whether a catalog requires a full historical bootstrap.
 
     Triggers full bootstrap (SQLS["version_catalog_bootstrap"]) if:
@@ -105,7 +105,7 @@ def should_trigger_catalog_bootstrap(
 
     eff_app = app_id or (cat_data.get("app_id") if isinstance(cat_data, dict) else None) or "default"
     store = authority_store
-    opened_store_to_close: Optional[CatalogAuthorityStore] = None
+    opened_store_to_close: CatalogAuthorityStore | None = None
 
     if store is None:
         if authority_store_path is not None and Path(authority_store_path).is_file():
@@ -121,7 +121,7 @@ def should_trigger_catalog_bootstrap(
         if not isinstance(app_vers, dict) or not app_vers:
             return True, None
 
-        all_v_objs: List[Tuple[str, dict]] = []
+        all_v_objs: list[tuple[str, dict]] = []
         for pf_or_ver, val in app_vers.items():
             if isinstance(val, dict):
                 if pf_or_ver in ("android", "ios"):
@@ -146,8 +146,8 @@ def should_trigger_catalog_bootstrap(
 
 def bootstrap_catalog_from_disk(
     app_name: str,
-    root_dir: Optional[Path] = None,
-    catalog: Optional[IssueHistoricalCatalog] = None,
+    root_dir: Path | None = None,
+    catalog: IssueHistoricalCatalog | None = None,
 ) -> IssueHistoricalCatalog:
     """Bootstraps an IssueHistoricalCatalog by scanning historical reports and archives on disk."""
     base = root_dir or ROOT
@@ -218,6 +218,7 @@ def bootstrap_catalog_from_disk(
 def main() -> None:
     """CLI entrypoint for standalone catalog bootstrap and lifecycle maintenance."""
     import argparse
+
     from crash_trend.catalog.historical import IssueHistoricalCatalog
     from crash_trend.config import get_app, load_config, out_dir
 

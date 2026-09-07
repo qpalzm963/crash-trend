@@ -19,7 +19,7 @@ import re
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Literal
 
 try:
     from google.cloud import bigquery
@@ -36,7 +36,7 @@ except ImportError:
             pass
 
 try:
-    from crash_trend.config import ROOT, app_argparser, get_app, load_config, out_dir, write_json
+    from crash_trend.config import app_argparser, get_app, load_config, out_dir, write_json
     from crash_trend.schema_v2 import (
         AppDashboardV2Data,
         AppMetadata,
@@ -46,25 +46,21 @@ try:
         DailyTrendPoint,
         DeviceDistItem,
         Distributions,
-        EventsByErrorType,
         IssueSummary,
-        KPIMetric,
         OSDistItem,
         OverviewKPI,
         PeriodInfo,
         PlatformDistItem,
         SnapshotStatus,
         SourcesAvailability,
-        SourceStatus,
         VersionDistCount,
         VersionHealthItem,
-        is_valid_date,
         is_valid_iso8601_utc,
         validate_app_dashboard_v2,
     )
     from crash_trend.versions import max_version, min_version, version_key
 except ImportError:
-    from config import ROOT, app_argparser, get_app, load_config, out_dir, write_json
+    from config import app_argparser, get_app, load_config, out_dir, write_json
     from schema_v2 import (
         AppDashboardV2Data,
         AppMetadata,
@@ -74,19 +70,15 @@ except ImportError:
         DailyTrendPoint,
         DeviceDistItem,
         Distributions,
-        EventsByErrorType,
         IssueSummary,
-        KPIMetric,
         OSDistItem,
         OverviewKPI,
         PeriodInfo,
         PlatformDistItem,
         SnapshotStatus,
         SourcesAvailability,
-        SourceStatus,
         VersionDistCount,
         VersionHealthItem,
-        is_valid_date,
         is_valid_iso8601_utc,
         validate_app_dashboard_v2,
     )
@@ -97,7 +89,7 @@ except ImportError:
 # BigQuery SQL Query Templates (V2 - 對齊 Firebase Crashlytics 真實 Schema)
 # ---------------------------------------------------------------------------
 
-SQLS: Dict[str, str] = {
+SQLS: dict[str, str] = {
     # 1. 獨立 Overview 聚合查詢（期間內全量計數與全量去重用戶，對齊日曆日邊界）
     "overview": """
         SELECT
@@ -264,7 +256,7 @@ SQLS: Dict[str, str] = {
 }
 
 
-def build_custom_keys_sql(table: str, days: int, keys: List[str]) -> Optional[str]:
+def build_custom_keys_sql(table: str, days: int, keys: list[str]) -> str | None:
     """動態組裝自訂 keys 分布查詢，防範非法字元注入。"""
     valid_keys = [k for k in keys if re.fullmatch(r"[\w-]+", k)]
     if not valid_keys:
@@ -286,7 +278,7 @@ def build_custom_keys_sql(table: str, days: int, keys: List[str]) -> Optional[st
 
 def build_version_catalog_sql(
     table: str,
-    watermark: Optional[str] = None,
+    watermark: str | None = None,
     catalog_days: int = 90,
     is_bootstrap: bool = False,
 ) -> str:
@@ -328,22 +320,22 @@ def build_version_catalog_sql(
 # Timestamp & Data Formatting Helpers
 # ---------------------------------------------------------------------------
 
-def format_iso_utc(ts: Any, fallback: Optional[str] = None) -> str:
+def format_iso_utc(ts: Any, fallback: str | None = None) -> str:
     """轉換任何輸入時間型態為嚴格 ISO 8601 UTC 字串（結尾為 Z）。"""
     if ts is None:
         if fallback and is_valid_iso8601_utc(fallback):
             return fallback
-        return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        return dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     if isinstance(ts, dt.datetime):
         if ts.tzinfo is None:
-            ts_utc = ts.replace(tzinfo=dt.timezone.utc)
+            ts_utc = ts.replace(tzinfo=dt.UTC)
         else:
-            ts_utc = ts.astimezone(dt.timezone.utc)
+            ts_utc = ts.astimezone(dt.UTC)
         return ts_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
 
     if isinstance(ts, dt.date):
-        return dt.datetime(ts.year, ts.month, ts.day, tzinfo=dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        return dt.datetime(ts.year, ts.month, ts.day, tzinfo=dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     if isinstance(ts, str):
         s = ts.strip()
@@ -354,16 +346,16 @@ def format_iso_utc(ts: Any, fallback: Optional[str] = None) -> str:
         try:
             parsed = dt.datetime.fromisoformat(clean)
             if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=dt.timezone.utc)
+                parsed = parsed.replace(tzinfo=dt.UTC)
             else:
-                parsed = parsed.astimezone(dt.timezone.utc)
+                parsed = parsed.astimezone(dt.UTC)
             return parsed.strftime("%Y-%m-%dT%H:%M:%SZ")
         except (ValueError, TypeError):
             pass
 
     if fallback and is_valid_iso8601_utc(fallback):
         return fallback
-    return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def extract_platform_from_table(table_name: str) -> str:
@@ -406,8 +398,8 @@ def list_crash_tables(
     client: bigquery.Client,
     project: str,
     dataset: str,
-    app_config: Optional[dict] = None,
-) -> List[str]:
+    app_config: dict | None = None,
+) -> list[str]:
     """列出 Crashlytics 批次表，並根據 App 設定過濾，避免跨 App 混淆。找不到時回傳空陣列。"""
     tables = [t.table_id for t in client.list_tables(f"{project}.{dataset}")]
     batch_tables = [t for t in tables if not t.endswith("_REALTIME")]
@@ -438,9 +430,9 @@ def list_crash_tables(
     return batch_tables
 
 
-def run_query(client: bigquery.Client, sql: str) -> List[dict]:
+def run_query(client: bigquery.Client, sql: str) -> list[dict]:
     rows = client.query(sql).result(max_results=500)
-    out: List[dict] = []
+    out: list[dict] = []
     for r in rows:
         d = dict(r)
         for k, v in d.items():
@@ -455,13 +447,13 @@ def run_query(client: bigquery.Client, sql: str) -> List[dict]:
 # ---------------------------------------------------------------------------
 
 def transform_bq_period_snapshot(
-    tables_data: Dict[str, dict],
-    detected_platforms: List[str],
+    tables_data: dict[str, dict],
+    detected_platforms: list[str],
     days: int,
     start_date: dt.date,
     end_date: dt.date,
-    master_daily_trend: Optional[List[DailyTrendPoint]] = None,
-    period_errors: Optional[List[str]] = None,
+    master_daily_trend: list[DailyTrendPoint] | None = None,
+    period_errors: list[str] | None = None,
 ) -> AppPeriodSnapshot:
     """Computes an authoritative period snapshot conforming to AppPeriodSnapshot."""
     start_time_iso = f"{start_date.isoformat()}T00:00:00Z"
@@ -477,7 +469,7 @@ def transform_bq_period_snapshot(
     date_keys = [(start_date + dt.timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days)]
     date_keys_set = set(date_keys)
 
-    daily_buckets: Dict[str, dict] = {
+    daily_buckets: dict[str, dict] = {
         d: {
             "crash_events": 0,
             "affected_users": 0,
@@ -497,15 +489,15 @@ def transform_bq_period_snapshot(
     calculated_new_issues = 0
     has_new_issues_data = False
     has_any_overview = False
-    overview_failed_tables: List[str] = []
+    overview_failed_tables: list[str] = []
 
-    platform_stats: Dict[str, Dict[str, int]] = {p: {"events": 0, "users": 0} for p in detected_platforms}
-    raw_issues: List[dict] = []
-    raw_devices: List[dict] = []
-    raw_os: List[dict] = []
-    raw_apps: List[dict] = []
-    raw_custom_keys: List[dict] = []
-    ver_by_issue: Dict[Tuple[str, str], List[dict]] = {}
+    platform_stats: dict[str, dict[str, int]] = {p: {"events": 0, "users": 0} for p in detected_platforms}
+    raw_issues: list[dict] = []
+    raw_devices: list[dict] = []
+    raw_os: list[dict] = []
+    raw_apps: list[dict] = []
+    raw_custom_keys: list[dict] = []
+    ver_by_issue: dict[tuple[str, str], list[dict]] = {}
 
     for table_name, t_data in tables_data.items():
         platform = extract_platform_from_table(table_name)
@@ -593,7 +585,7 @@ def transform_bq_period_snapshot(
         for ck in t_data.get("custom_keys") or []:
             raw_custom_keys.append({**ck, "_platform": platform})
 
-    daily_trend: List[DailyTrendPoint] = []
+    daily_trend: list[DailyTrendPoint] = []
     if master_daily_trend is not None:
         daily_trend = [p for p in master_daily_trend if p.get("date") in date_keys_set]
     else:
@@ -659,7 +651,7 @@ def transform_bq_period_snapshot(
         "events_by_error_type": {"fatal": overview_fatal, "anr": overview_anr, "non_fatal": overview_non_fatal},
     }
 
-    seen_issues: Dict[Tuple[str, str], IssueSummary] = {}
+    seen_issues: dict[tuple[str, str], IssueSummary] = {}
     for it in raw_issues:
         iid = str(it.get("issue_id") or "")
         if not iid:
@@ -671,7 +663,7 @@ def transform_bq_period_snapshot(
         us = int(it.get("users") or 0)
 
         iv_list = ver_by_issue.get(key, [])
-        v_dist_dict: Dict[str, VersionDistCount] = {}
+        v_dist_dict: dict[str, VersionDistCount] = {}
         for iv in iv_list:
             v_name = iv["version"]
             if v_name in v_dist_dict:
@@ -680,7 +672,7 @@ def transform_bq_period_snapshot(
             else:
                 v_dist_dict[v_name] = {"version": v_name, "events": iv["events"], "users": iv["users"]}
 
-        version_dist: List[VersionDistCount] = list(v_dist_dict.values())
+        version_dist: list[VersionDistCount] = list(v_dist_dict.values())
         versions = [vd["version"] for vd in version_dist]
 
         first_ver = min_version(versions) or str(it.get("first_seen_version") or "1.0.0")
@@ -723,12 +715,12 @@ def transform_bq_period_snapshot(
 
     top_issues = sorted(seen_issues.values(), key=lambda x: (-x["events"], -x["affected_users"]))[:50]
 
-    platform_dist: List[PlatformDistItem] = []
+    platform_dist: list[PlatformDistItem] = []
     for p_name in detected_platforms:
         p_stat = platform_stats.get(p_name, {"events": 0, "users": 0})
         platform_dist.append({"name": "ios" if p_name == "ios" else "android", "events": p_stat["events"], "users": p_stat["users"], "share": round(p_stat["events"] / overview_total_events, 4) if overview_total_events > 0 else 0.0})
 
-    device_models: List[DeviceDistItem] = []
+    device_models: list[DeviceDistItem] = []
     for dev in sorted(raw_devices, key=lambda x: -int(x.get("events") or 0))[:30]:
         pf = dev.get("_platform", "all")
         device_models.append({
@@ -739,7 +731,7 @@ def transform_bq_period_snapshot(
             "share": round(int(dev.get("events") or 0) / overview_total_events, 4) if overview_total_events > 0 else 0.0,
         })
 
-    os_versions: List[OSDistItem] = []
+    os_versions: list[OSDistItem] = []
     for os_r in sorted(raw_os, key=lambda x: -int(x.get("events") or 0))[:30]:
         pf = os_r.get("_platform", "all")
         os_versions.append({
@@ -750,7 +742,7 @@ def transform_bq_period_snapshot(
             "share": round(int(os_r.get("events") or 0) / overview_total_events, 4) if overview_total_events > 0 else 0.0,
         })
 
-    app_versions: List[AppVersionDistItem] = []
+    app_versions: list[AppVersionDistItem] = []
     for app_r in sorted(raw_apps, key=lambda x: -int(x.get("events") or 0))[:30]:
         pf = app_r.get("_platform", "all")
         app_versions.append({
@@ -761,7 +753,7 @@ def transform_bq_period_snapshot(
             "share": round(int(app_r.get("events") or 0) / overview_total_events, 4) if overview_total_events > 0 else 0.0,
         })
 
-    custom_keys: List[CustomKeyDistributionItem] = []
+    custom_keys: list[CustomKeyDistributionItem] = []
     for ck_r in sorted(raw_custom_keys, key=lambda x: -int(x.get("events") or 0))[:60]:
         custom_keys.append({
             "key": str(ck_r.get("custom_key") or ""),
@@ -778,7 +770,7 @@ def transform_bq_period_snapshot(
         "custom_keys": custom_keys,
     }
 
-    version_health: List[VersionHealthItem] = []
+    version_health: list[VersionHealthItem] = []
     for idx, v_item in enumerate(sorted(raw_apps, key=lambda x: version_key(str(x.get("app_version") or "")), reverse=True)[:20]):
         pf = v_item.get("_platform", "all")
         version_health.append({
@@ -797,7 +789,7 @@ def transform_bq_period_snapshot(
     if period_errors:
         snap_status: SnapshotStatus = "error"
         if isinstance(period_errors, dict):
-            snap_error: Optional[str] = "; ".join(f"{k}: {v}" for k, v in period_errors.items())
+            snap_error: str | None = "; ".join(f"{k}: {v}" for k, v in period_errors.items())
         elif isinstance(period_errors, list):
             snap_error = "; ".join(str(e) for e in period_errors)
         else:
@@ -836,17 +828,17 @@ def transform_bq_to_v2(
     bq_result: dict,
     app_config: dict,
     days: int = 30,
-    end_time: Optional[dt.datetime] = None,
+    end_time: dt.datetime | None = None,
     is_bootstrap: bool = False,
-    is_incremental: Optional[bool] = None,
-    out_dir: Optional[Path] = None,
-    catalog: Optional[Any] = None,
+    is_incremental: bool | None = None,
+    out_dir: Path | None = None,
+    catalog: Any | None = None,
 ) -> AppDashboardV2Data:
     """把 BigQuery 查詢結果字典轉換為嚴格符合 Schema V2 的 AppDashboardV2Data。"""
-    end_dt = end_time.astimezone(dt.timezone.utc) if end_time else dt.datetime.now(dt.timezone.utc)
+    end_dt = end_time.astimezone(dt.UTC) if end_time else dt.datetime.now(dt.UTC)
     end_date = end_dt.date()
     start_date = end_date - dt.timedelta(days=days - 1)
-    now_iso = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now_iso = dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     app_id = str(app_config.get("app_id") or app_config.get("name") or "app")
     display_name = str(app_config.get("display_name") or app_id)
@@ -854,7 +846,7 @@ def transform_bq_to_v2(
     source_repo = app_config.get("source_repo")
     custom_keys_monitored = list(app_config.get("custom_keys") or [])
 
-    tables_data: Dict[str, dict] = (bq_result or {}).get("tables") or {}
+    tables_data: dict[str, dict] = (bq_result or {}).get("tables") or {}
     queried_tables = list(tables_data.keys())
 
     detected_platforms = sorted(list({extract_platform_from_table(t) for t in queried_tables}))
@@ -899,7 +891,7 @@ def transform_bq_to_v2(
     }
 
     periods_data = (bq_result or {}).get("periods")
-    periods_dict: Dict[str, AppPeriodSnapshot] = {}
+    periods_dict: dict[str, AppPeriodSnapshot] = {}
 
     if isinstance(periods_data, dict) and periods_data:
         # 1. Identify longest period to derive master daily_trend
@@ -962,10 +954,10 @@ def transform_bq_to_v2(
         "periods": periods_dict,
     }
 
-    raw_catalog_rows: List[dict] = []
-    raw_version_catalog_rows: List[dict] = []
+    raw_catalog_rows: list[dict] = []
+    raw_version_catalog_rows: list[dict] = []
 
-    candidate_tables: List[Dict[str, dict]] = []
+    candidate_tables: list[dict[str, dict]] = []
     if (bq_result or {}).get("tables"):
         candidate_tables.append(bq_result["tables"])
     if isinstance((bq_result or {}).get("periods"), dict):
@@ -1122,11 +1114,11 @@ def main() -> None:
     supported_periods = sorted(list({7, 30, 90, args.days}))
     max_period = max(supported_periods)
 
-    periods_result: Dict[str, dict] = {
+    periods_result: dict[str, dict] = {
         str(p): {"tables": {t: {} for t in tables}, "errors": {}} for p in supported_periods
     }
 
-    def fetch_single_query(p_days: int, table: str, name: str, sql_tpl: str) -> Tuple[int, str, str, Any, Optional[str]]:
+    def fetch_single_query(p_days: int, table: str, name: str, sql_tpl: str) -> tuple[int, str, str, Any, str | None]:
         fq = f"{project}.{dataset}.{table}"
         catalog_days = max(90, p_days)
         formatted_sql = sql_tpl.format(table=fq, days=p_days, catalog_days=catalog_days) if "{table}" in sql_tpl else sql_tpl
@@ -1212,7 +1204,7 @@ def main() -> None:
         for ve in val_errors[:5]:
             print(f"    - {ve}", file=sys.stderr)
     else:
-        print(f"  ✓ AppDashboardV2Data 轉換完成並通過 Schema V2 驗證")
+        print("  ✓ AppDashboardV2Data 轉換完成並通過 Schema V2 驗證")
 
     write_json(out_dir(args.app) / "dashboard_v2.json", app_v2_data)
 

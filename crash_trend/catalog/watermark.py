@@ -8,10 +8,9 @@ Provides:
 from __future__ import annotations
 
 import datetime as dt
-from typing import Optional
 
 
-def advance_watermark(current_watermark: Optional[str], candidate_ts: Optional[str]) -> Optional[str]:
+def advance_watermark(current_watermark: str | None, candidate_ts: str | None) -> str | None:
     """Advances catalog watermark if candidate_ts is newer than current watermark."""
     if not candidate_ts:
         return current_watermark
@@ -26,9 +25,9 @@ def advance_watermark(current_watermark: Optional[str], candidate_ts: Optional[s
         dt_cand = dt.datetime.fromisoformat(c_clean)
         dt_curr = dt.datetime.fromisoformat(w_clean)
         if dt_cand.tzinfo is None:
-            dt_cand = dt_cand.replace(tzinfo=dt.timezone.utc)
+            dt_cand = dt_cand.replace(tzinfo=dt.UTC)
         if dt_curr.tzinfo is None:
-            dt_curr = dt_curr.replace(tzinfo=dt.timezone.utc)
+            dt_curr = dt_curr.replace(tzinfo=dt.UTC)
         if dt_cand > dt_curr:
             return ts_str
         return current_watermark
@@ -38,7 +37,7 @@ def advance_watermark(current_watermark: Optional[str], candidate_ts: Optional[s
         return current_watermark
 
 
-def is_ts_le(ts: Optional[str], watermark: Optional[str]) -> bool:
+def is_ts_le(ts: str | None, watermark: str | None) -> bool:
     """Returns True if ts <= watermark (comparing ISO datetimes with timezone awareness)."""
     if not ts or not watermark:
         return False
@@ -48,9 +47,9 @@ def is_ts_le(ts: Optional[str], watermark: Optional[str]) -> bool:
         dt_t = dt.datetime.fromisoformat(t_clean)
         dt_w = dt.datetime.fromisoformat(w_clean)
         if dt_t.tzinfo is None:
-            dt_t = dt_t.replace(tzinfo=dt.timezone.utc)
+            dt_t = dt_t.replace(tzinfo=dt.UTC)
         if dt_w.tzinfo is None:
-            dt_w = dt_w.replace(tzinfo=dt.timezone.utc)
+            dt_w = dt_w.replace(tzinfo=dt.UTC)
         return dt_t <= dt_w
     except Exception:
         return str(ts).strip() <= str(watermark).strip()

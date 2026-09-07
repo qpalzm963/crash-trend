@@ -8,14 +8,14 @@ Provides:
 
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, List, Optional
+from collections.abc import Iterable
 
 from crash_trend.schema_v2 import IssueLifecycle
 from crash_trend.versions import max_version, min_version, version_key
 
 
 def is_version_sample_sufficient(
-    version_info: Optional[dict],
+    version_info: dict | None,
     min_adoption_rate: float = 0.05,
     min_sessions: int = 1000,
     min_version_events: int = 20,
@@ -54,9 +54,9 @@ def detect_issue_lifecycle(
     all_known_versions: Iterable[str],
     latest_version: str,
     sample_sufficient: bool = False,
-    current_version_events: Optional[Dict[str, int]] = None,
-    known_version_sufficiency: Optional[Dict[str, bool]] = None,
-    version_health_map: Optional[Dict[str, dict]] = None,
+    current_version_events: dict[str, int] | None = None,
+    known_version_sufficiency: dict[str, bool] | None = None,
+    version_health_map: dict[str, dict] | None = None,
 ) -> IssueLifecycle:
     """Deterministically calculates the lifecycle contract for an issue.
 
@@ -122,7 +122,7 @@ def detect_issue_lifecycle(
         absent_versions = [v for v in intermediate if v not in seen_set]
 
         # An intermediate version only counts as an absence gap if it had sufficient observation evidence!
-        proven_absent_versions: List[str] = []
+        proven_absent_versions: list[str] = []
         for v in absent_versions:
             if known_version_sufficiency is not None:
                 if known_version_sufficiency.get(v, False):

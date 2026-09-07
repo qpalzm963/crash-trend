@@ -11,12 +11,7 @@ This module defines the Python data contract for Dashboard V2, providing:
 from __future__ import annotations
 
 import datetime as dt
-from typing import Any, Dict, List, Literal, Optional, TypedDict, Union
-
-try:
-    from typing import NotRequired
-except ImportError:
-    from typing_extensions import NotRequired  # type: ignore
+from typing import Any, Literal, NotRequired, TypedDict
 
 SCHEMA_VERSION = "2.6.0"
 SUPPORTED_SCHEMA_VERSIONS = {"2.0", "2.3", "2.3.0", "2.6", "2.6.0"}
@@ -29,9 +24,9 @@ class AppMetadata(TypedDict):
     app_id: str
     display_name: str
     firebase_project_id: str
-    platforms: List[Literal["ios", "android"]]
-    source_repo: Optional[str]
-    custom_keys_monitored: List[str]
+    platforms: list[Literal["ios", "android"]]
+    source_repo: str | None
+    custom_keys_monitored: list[str]
 
 
 class PeriodComparison(TypedDict):
@@ -44,7 +39,7 @@ class PeriodInfo(TypedDict):
     days: int
     start_time: str
     end_time: str
-    comparison_period: Optional[PeriodComparison]
+    comparison_period: PeriodComparison | None
 
 
 SnapshotStatus = Literal[
@@ -59,46 +54,46 @@ SnapshotStatus = Literal[
 
 class SourceStatus(TypedDict):
     status: SnapshotStatus
-    tables_queried: NotRequired[Optional[List[str]]]
-    provider: NotRequired[Optional[str]]
-    model: NotRequired[Optional[str]]
-    requested_mode: NotRequired[Optional[str]]
-    task_type: NotRequired[Optional[str]]
-    selected_provider: NotRequired[Optional[str]]
-    selected_model: NotRequired[Optional[str]]
-    routing_reason: NotRequired[Optional[str]]
-    fallback_used: NotRequired[Optional[bool]]
-    fallback_reason: NotRequired[Optional[str]]
-    paid_model_allowed: NotRequired[Optional[bool]]
-    last_sync_timestamp: Optional[str]
-    error_message: Optional[str]
+    tables_queried: NotRequired[list[str] | None]
+    provider: NotRequired[str | None]
+    model: NotRequired[str | None]
+    requested_mode: NotRequired[str | None]
+    task_type: NotRequired[str | None]
+    selected_provider: NotRequired[str | None]
+    selected_model: NotRequired[str | None]
+    routing_reason: NotRequired[str | None]
+    fallback_used: NotRequired[bool | None]
+    fallback_reason: NotRequired[str | None]
+    paid_model_allowed: NotRequired[bool | None]
+    last_sync_timestamp: str | None
+    error_message: str | None
 
 
 class SourcesAvailability(TypedDict):
     crashlytics_bq: SourceStatus
     firebase_sessions: SourceStatus
     mcp_crashlytics: SourceStatus
-    gemini_ai: NotRequired[Optional[SourceStatus]]
-    ai: NotRequired[Optional[SourceStatus]]
-    manual_console: NotRequired[Optional[SourceStatus]]
-    historical_catalog: NotRequired[Optional[SourceStatus]]
+    gemini_ai: NotRequired[SourceStatus | None]
+    ai: NotRequired[SourceStatus | None]
+    manual_console: NotRequired[SourceStatus | None]
+    historical_catalog: NotRequired[SourceStatus | None]
 
 
 class KPIMetric(TypedDict):
     value: int
-    previous_value: Optional[int]
-    change_pct: Optional[float]
+    previous_value: int | None
+    change_pct: float | None
     status: Literal["available", "insufficient_data", "error"]
 
 
 class CrashFreeMetric(TypedDict):
-    rate: Optional[float]  # 0.0 to 1.0 (e.g. 0.9985 for 99.85%)
-    total: Optional[int]
-    crashed: Optional[int]
-    previous_rate: Optional[float]
-    change_pct_points: Optional[float]
+    rate: float | None  # 0.0 to 1.0 (e.g. 0.9985 for 99.85%)
+    total: int | None
+    crashed: int | None
+    previous_rate: float | None
+    change_pct_points: float | None
     status: Literal["available", "unavailable", "insufficient_data", "error"]
-    unavailable_reason: Optional[str]
+    unavailable_reason: str | None
 
 
 class EventsByErrorType(TypedDict):
@@ -123,21 +118,21 @@ class DailyTrendPoint(TypedDict):
     fatal_events: int
     anr_events: int
     non_fatal_events: int
-    sessions_total: Optional[int]
-    crashed_sessions: Optional[int]
-    crash_free_sessions_rate: Optional[float]
-    by_platform: Optional[Dict[str, Dict[str, int]]]
+    sessions_total: int | None
+    crashed_sessions: int | None
+    crash_free_sessions_rate: float | None
+    by_platform: dict[str, dict[str, int]] | None
 
 
 class VersionHealthItem(TypedDict):
     version: str
     platform: Literal["ios", "android", "all"]
-    release_date: Optional[str]
+    release_date: str | None
     crash_events: int
     affected_users: int
-    crash_free_users_rate: Optional[float]
-    crash_free_sessions_rate: Optional[float]
-    adoption_rate: Optional[float]
+    crash_free_users_rate: float | None
+    crash_free_sessions_rate: float | None
+    adoption_rate: float | None
     status: Literal["latest", "active", "maintenance", "deprecated"]
     trend: Literal["improving", "degrading", "stable", "new"]
 
@@ -181,11 +176,11 @@ class CustomKeyDistributionItem(TypedDict):
 
 
 class Distributions(TypedDict):
-    platform: List[PlatformDistItem]
-    device_models: List[DeviceDistItem]
-    os_versions: List[OSDistItem]
-    app_versions: List[AppVersionDistItem]
-    custom_keys: NotRequired[List[CustomKeyDistributionItem]]
+    platform: list[PlatformDistItem]
+    device_models: list[DeviceDistItem]
+    os_versions: list[OSDistItem]
+    app_versions: list[AppVersionDistItem]
+    custom_keys: NotRequired[list[CustomKeyDistributionItem]]
 
 
 class PriorityBreakdown(TypedDict):
@@ -202,26 +197,26 @@ class PriorityInfo(TypedDict):
     score: int
     level: Literal["P0", "P1", "P2", "P3"]
     trend: Literal["new", "worsening", "stable", "improving"]
-    score_breakdown: Optional[PriorityBreakdown]
+    score_breakdown: PriorityBreakdown | None
 
 
 class BlameFrame(TypedDict):
-    file: Optional[str]
-    line: Optional[int]
-    symbol: Optional[str]
-    class_name: Optional[str]
-    method_name: Optional[str]
+    file: str | None
+    line: int | None
+    symbol: str | None
+    class_name: str | None
+    method_name: str | None
     is_blame: bool
     source_available: bool
 
 
 class AIIssueAnalysis(TypedDict):
     status: Literal["available", "unavailable", "pending", "skipped"]
-    root_cause: Optional[str]
-    suggested_fix: Optional[str]
-    effort: Optional[Literal["S", "M", "L"]]
-    confidence: Optional[Literal["high", "medium", "low", "needs_manual_review"]]
-    reasoning_sources: Optional[List[str]]
+    root_cause: str | None
+    suggested_fix: str | None
+    effort: Literal["S", "M", "L"] | None
+    confidence: Literal["high", "medium", "low", "needs_manual_review"] | None
+    reasoning_sources: list[str] | None
 
 
 class BreadcrumbItem(TypedDict):
@@ -229,7 +224,7 @@ class BreadcrumbItem(TypedDict):
     category: str
     message: str
     level: str
-    data: NotRequired[Optional[Dict[str, Any]]]
+    data: NotRequired[dict[str, Any] | None]
 
 
 class LogItem(TypedDict):
@@ -248,12 +243,12 @@ class TopOSCount(TypedDict):
 
 
 class IssueDetail(TypedDict):
-    stack_trace: Optional[str]
-    breadcrumbs: Optional[List[BreadcrumbItem]]
-    logs: Optional[List[LogItem]]
-    custom_keys: Optional[Dict[str, Any]]
-    top_devices: Optional[List[TopDeviceCount]]
-    top_os: Optional[List[TopOSCount]]
+    stack_trace: str | None
+    breadcrumbs: list[BreadcrumbItem] | None
+    logs: list[LogItem] | None
+    custom_keys: dict[str, Any] | None
+    top_devices: list[TopDeviceCount] | None
+    top_os: list[TopOSCount] | None
 
 
 class VersionDistCount(TypedDict):
@@ -278,9 +273,9 @@ class IssueLifecycle(TypedDict):
     last_seen_version: str
     versions_seen: int
     confidence: Literal["high", "medium", "low"]
-    previously_absent_since: Optional[str]
-    reappeared_version: Optional[str]
-    reason: Optional[str]
+    previously_absent_since: str | None
+    reappeared_version: str | None
+    reason: str | None
 
 
 class CatalogIssueHistory(TypedDict):
@@ -291,9 +286,9 @@ class CatalogIssueHistory(TypedDict):
     error_type: Literal["FATAL", "ANR", "NON_FATAL"]
     first_seen_version: str
     last_seen_version: str
-    first_seen_timestamp: Optional[str]
-    last_seen_timestamp: Optional[str]
-    versions_seen: List[str]
+    first_seen_timestamp: str | None
+    last_seen_timestamp: str | None
+    versions_seen: list[str]
     last_updated: str
 
 
@@ -303,34 +298,34 @@ ReleaseStatus = Literal["latest", "active", "legacy"]
 class ReleaseRecentHealth(TypedDict):
     crash_events: int
     affected_users: int
-    sessions_total: Optional[int]
-    crash_free_users_rate: Optional[float]
-    crash_free_sessions_rate: Optional[float]
-    adoption_rate: Optional[float]
+    sessions_total: int | None
+    crash_free_users_rate: float | None
+    crash_free_sessions_rate: float | None
+    adoption_rate: float | None
     fatal_events: int
     anr_events: int
     new_issues_count: int
     sample_sufficient: bool
     status: str
     trend: str
-    crash_rate: NotRequired[Optional[float]]
+    crash_rate: NotRequired[float | None]
     fatal_count: NotRequired[int]
     anr_count: NotRequired[int]
     active_issues_count: NotRequired[int]
 
 
 class PreviousReleaseComparison(TypedDict):
-    previous_version: Optional[str]
-    crash_rate_change_pct: Optional[float]
-    crash_free_users_diff: Optional[float]
-    fatal_change_pct: Optional[float]
-    anr_change_pct: Optional[float]
-    new_issues_diff: Optional[int]
+    previous_version: str | None
+    crash_rate_change_pct: float | None
+    crash_free_users_diff: float | None
+    fatal_change_pct: float | None
+    anr_change_pct: float | None
+    new_issues_diff: int | None
     stability: Literal["improving", "stable", "degrading", "baseline"]
-    fatal_rate_change_pct: NotRequired[Optional[float]]
-    anr_rate_change_pct: NotRequired[Optional[float]]
-    new_issues_count: NotRequired[Optional[int]]
-    stability_status: NotRequired[Optional[str]]
+    fatal_rate_change_pct: NotRequired[float | None]
+    anr_rate_change_pct: NotRequired[float | None]
+    new_issues_count: NotRequired[int | None]
+    stability_status: NotRequired[str | None]
 
 
 class ReleaseIssueLifecycle(TypedDict):
@@ -338,74 +333,74 @@ class ReleaseIssueLifecycle(TypedDict):
     persistent_count: int
     regressed_count: int
     resolved_count: int
-    introduced: List[str]
-    persistent: List[str]
-    regressed: List[str]
-    resolved: List[str]
-    introduced_issues: NotRequired[List[str]]
-    persistent_issues: NotRequired[List[str]]
-    regressed_issues: NotRequired[List[str]]
-    resolved_issues: NotRequired[List[str]]
+    introduced: list[str]
+    persistent: list[str]
+    regressed: list[str]
+    resolved: list[str]
+    introduced_issues: NotRequired[list[str]]
+    persistent_issues: NotRequired[list[str]]
+    regressed_issues: NotRequired[list[str]]
+    resolved_issues: NotRequired[list[str]]
 
 
 class ReleaseCatalogItem(TypedDict):
     version: str
     platform: Literal["ios", "android"]
-    first_seen: Optional[str]
-    last_seen: Optional[str]
-    release_date: Optional[str]
+    first_seen: str | None
+    last_seen: str | None
+    release_date: str | None
     status: ReleaseStatus
     lifetime_crashes: int
     lifetime_issues: int
     lifetime_affected_users: int
     lifetime_fatal: int
     lifetime_anr: int
-    recent_health: Dict[str, ReleaseRecentHealth]
-    stability_status: NotRequired[Optional[str]]
+    recent_health: dict[str, ReleaseRecentHealth]
+    stability_status: NotRequired[str | None]
     issue_lifecycle: NotRequired[ReleaseIssueLifecycle]
-    vs_previous: NotRequired[Optional[PreviousReleaseComparison]]
+    vs_previous: NotRequired[PreviousReleaseComparison | None]
 
 
 class CatalogVersionHistory(TypedDict):
     version: str
     platform: Literal["ios", "android"]
     status: Literal["latest", "active", "maintenance", "deprecated", "legacy"]
-    adoption_rate: Optional[float]
-    sessions_total: Optional[int]
+    adoption_rate: float | None
+    sessions_total: int | None
     crash_events: int
     sample_sufficient: bool
     last_updated: str
-    first_seen: NotRequired[Optional[str]]
-    last_seen: NotRequired[Optional[str]]
-    release_date: NotRequired[Optional[str]]
+    first_seen: NotRequired[str | None]
+    last_seen: NotRequired[str | None]
+    release_date: NotRequired[str | None]
     lifetime_crashes: NotRequired[int]
     lifetime_issues: NotRequired[int]
     lifetime_affected_users: NotRequired[int]
     lifetime_fatal: NotRequired[int]
     lifetime_anr: NotRequired[int]
-    recent_health: NotRequired[Dict[str, Any]]
-    installation_ids: NotRequired[List[str]]
-    user_ids: NotRequired[List[str]]
-    issue_ids: NotRequired[List[str]]
+    recent_health: NotRequired[dict[str, Any]]
+    installation_ids: NotRequired[list[str]]
+    user_ids: NotRequired[list[str]]
+    issue_ids: NotRequired[list[str]]
 
 
 class CatalogAuthorityMetadata(TypedDict):
     backend: Literal["sqlite"]
     state_version: int
     bootstrap_complete: bool
-    store_path: NotRequired[Optional[str]]
+    store_path: NotRequired[str | None]
 
 
 class HistoricalCatalogData(TypedDict):
     schema_version: str
     updated_at: str
-    watermark: NotRequired[Optional[str]]
-    app_id: NotRequired[Optional[str]]
+    watermark: NotRequired[str | None]
+    app_id: NotRequired[str | None]
     authority: NotRequired[CatalogAuthorityMetadata]
     bootstrap_complete: NotRequired[bool]
     authority_state_version: NotRequired[int]
-    issues: Dict[str, CatalogIssueHistory]
-    app_versions: Dict[str, Dict[str, CatalogVersionHistory]]
+    issues: dict[str, CatalogIssueHistory]
+    app_versions: dict[str, dict[str, CatalogVersionHistory]]
 
 
 class IssueSummary(TypedDict):
@@ -421,10 +416,10 @@ class IssueSummary(TypedDict):
     last_seen_timestamp: str
     first_seen_version: str
     last_seen_version: str
-    version_distribution: List[VersionDistCount]
-    blame_frame: Optional[BlameFrame]
+    version_distribution: list[VersionDistCount]
+    blame_frame: BlameFrame | None
     ai_analysis: AIIssueAnalysis
-    detail: Optional[IssueDetail]
+    detail: IssueDetail | None
     lifecycle: NotRequired[IssueLifecycle]
 
 
@@ -437,27 +432,27 @@ class RecommendedAction(TypedDict):
 
 class AISummary(TypedDict):
     status: Literal["available", "unavailable", "disabled", "error"]
-    provider: NotRequired[Optional[str]]
-    model: Optional[str]
-    generated_at: Optional[str]
+    provider: NotRequired[str | None]
+    model: str | None
+    generated_at: str | None
     overview: str
-    key_takeaways: List[str]
+    key_takeaways: list[str]
     distribution_insights: str
-    recommended_actions: List[RecommendedAction]
-    data_limitations: Optional[str]
+    recommended_actions: list[RecommendedAction]
+    data_limitations: str | None
 
 
 class AppPeriodSnapshot(TypedDict):
     period: PeriodInfo
     kpi: OverviewKPI
-    daily_trend: NotRequired[List[DailyTrendPoint]]
-    version_health: List[VersionHealthItem]
+    daily_trend: NotRequired[list[DailyTrendPoint]]
+    version_health: list[VersionHealthItem]
     distributions: Distributions
-    top_issues: List[IssueSummary]
-    ai_summary: NotRequired[Optional[AISummary]]
+    top_issues: list[IssueSummary]
+    ai_summary: NotRequired[AISummary | None]
     status: NotRequired[SnapshotStatus]
-    error_message: NotRequired[Optional[str]]
-    release_catalog: NotRequired[Optional[List[ReleaseCatalogItem]]]
+    error_message: NotRequired[str | None]
+    release_catalog: NotRequired[list[ReleaseCatalogItem] | None]
 
 
 class AppDashboardV2Data(TypedDict):
@@ -465,25 +460,25 @@ class AppDashboardV2Data(TypedDict):
     period: PeriodInfo
     sources: SourcesAvailability
     kpi: OverviewKPI
-    daily_trend: List[DailyTrendPoint]
-    version_health: List[VersionHealthItem]
+    daily_trend: list[DailyTrendPoint]
+    version_health: list[VersionHealthItem]
     distributions: Distributions
-    top_issues: List[IssueSummary]
+    top_issues: list[IssueSummary]
     ai_summary: AISummary
-    limitations: List[str]
-    periods: NotRequired[Dict[str, AppPeriodSnapshot]]
-    ai_policy: NotRequired[Optional[Dict[str, Any]]]
-    release_catalog: NotRequired[Optional[List[ReleaseCatalogItem]]]
+    limitations: list[str]
+    periods: NotRequired[dict[str, AppPeriodSnapshot]]
+    ai_policy: NotRequired[dict[str, Any] | None]
+    release_catalog: NotRequired[list[ReleaseCatalogItem] | None]
 
 
 class DashboardV2Bundle(TypedDict):
     schema_version: str
     generated_at: str
     default_app: str
-    apps: Dict[str, AppDashboardV2Data]
-    pipeline_run: NotRequired[Optional[Dict[str, Any]]]
-    global_ai_policy: NotRequired[Optional[Dict[str, Any]]]
-    ai_usage: NotRequired[Optional[Dict[str, Any]]]
+    apps: dict[str, AppDashboardV2Data]
+    pipeline_run: NotRequired[dict[str, Any] | None]
+    global_ai_policy: NotRequired[dict[str, Any] | None]
+    ai_usage: NotRequired[dict[str, Any] | None]
 
 
 # ---------------------------------------------------------------------------
@@ -519,7 +514,7 @@ def is_valid_date(val: Any) -> bool:
         return False
 
 
-def validate_kpi_metric(metric: Any, name: str, errors: List[str]) -> None:
+def validate_kpi_metric(metric: Any, name: str, errors: list[str]) -> None:
     if not isinstance(metric, dict):
         errors.append(f"{name} must be an object")
         return
@@ -544,7 +539,7 @@ def validate_kpi_metric(metric: Any, name: str, errors: List[str]) -> None:
             errors.append(f"{name}.change_pct must be a number or null")
 
 
-def validate_crash_free_metric(metric: Any, name: str, errors: List[str]) -> None:
+def validate_crash_free_metric(metric: Any, name: str, errors: list[str]) -> None:
     if not isinstance(metric, dict):
         errors.append(f"{name} must be an object")
         return
@@ -582,7 +577,7 @@ def validate_crash_free_metric(metric: Any, name: str, errors: List[str]) -> Non
             errors.append(f"{name}.change_pct_points must be a number or null")
 
 
-def validate_issue_lifecycle(lc: Any, errors: List[str], p: str = "") -> None:
+def validate_issue_lifecycle(lc: Any, errors: list[str], p: str = "") -> None:
     """Validates an IssueLifecycle object against Schema V2.3 rules."""
     if lc is not None:
         if not isinstance(lc, dict):
@@ -604,7 +599,7 @@ def validate_issue_lifecycle(lc: Any, errors: List[str], p: str = "") -> None:
                 errors.append(f"{p}lifecycle.versions_seen must be a non-negative integer")
 
 
-def validate_release_catalog(catalog: Any, errors: List[str], p: str = "") -> None:
+def validate_release_catalog(catalog: Any, errors: list[str], p: str = "") -> None:
     """Validates a list of ReleaseCatalogItem objects against Schema V2.6 rules."""
     if catalog is None:
         return
@@ -681,9 +676,9 @@ def validate_release_catalog(catalog: Any, errors: List[str], p: str = "") -> No
                         errors.append(f"{cp}issue_lifecycle.{cnt_f} must be a non-negative integer")
 
 
-def validate_historical_catalog(data: dict) -> List[str]:
+def validate_historical_catalog(data: dict) -> list[str]:
     """Validates a HistoricalCatalogData dictionary strictly against Schema V2.3 rules."""
-    errors: List[str] = []
+    errors: list[str] = []
     if not isinstance(data, dict):
         return ["HistoricalCatalogData must be an object"]
 
@@ -706,7 +701,7 @@ def validate_historical_catalog(data: dict) -> List[str]:
             if "bootstrap_complete" in auth and not isinstance(auth["bootstrap_complete"], bool):
                 errors.append("authority.bootstrap_complete must be a boolean")
 
-    def _check_forbidden_raw_ids(node: Any, path: str = "", visited: Optional[set] = None) -> None:
+    def _check_forbidden_raw_ids(node: Any, path: str = "", visited: set | None = None) -> None:
         if visited is None:
             visited = set()
         node_id = id(node)
@@ -761,7 +756,7 @@ def validate_historical_catalog(data: dict) -> List[str]:
 def validate_issue_summary(
     issue: Any,
     idx: int,
-    errors: List[str],
+    errors: list[str],
     p: str = "",
     require_lifecycle: bool = False,
 ) -> None:
@@ -873,9 +868,9 @@ def validate_issue_summary(
     validate_issue_lifecycle(lc, errors, p)
 
 
-def validate_app_dashboard_v2(data: dict, prefix: str = "", require_lifecycle: bool = False) -> List[str]:
+def validate_app_dashboard_v2(data: dict, prefix: str = "", require_lifecycle: bool = False) -> list[str]:
     """Validates an AppDashboardV2Data dictionary strictly against Schema V2 rules."""
-    errors: List[str] = []
+    errors: list[str] = []
     if not isinstance(data, dict):
         return [f"{prefix}Expected object, got {type(data).__name__}"]
 
@@ -1272,9 +1267,9 @@ def validate_app_dashboard_v2(data: dict, prefix: str = "", require_lifecycle: b
     return errors
 
 
-def validate_dashboard_v2(data: dict) -> List[str]:
+def validate_dashboard_v2(data: dict) -> list[str]:
     """Validates a full DashboardV2Bundle against Schema V2 rules."""
-    errors: List[str] = []
+    errors: list[str] = []
     if not isinstance(data, dict):
         return [f"Expected object root, got {type(data).__name__}"]
 

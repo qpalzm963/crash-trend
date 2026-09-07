@@ -13,47 +13,44 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 
 try:
-    from crash_trend.ai_provider import get_ai_provider, get_ai_router
+    from crash_trend.ai_provider import get_ai_router
     from crash_trend.config import get_app, get_mcp_config, is_sessions_enabled, load_config
     from crash_trend.pipeline_health import (
         DEFAULT_RUN_SUMMARY_PATH,
         PipelineRunTracker,
-        StageStatus,
         now_utc_iso,
         sanitize_error_message,
     )
 except ImportError:
     try:
-        from ai_provider import get_ai_provider, get_ai_router
+        from ai_provider import get_ai_router
         from config import get_app, get_mcp_config, is_sessions_enabled, load_config
         from pipeline_health import (
             DEFAULT_RUN_SUMMARY_PATH,
             PipelineRunTracker,
-            StageStatus,
             now_utc_iso,
             sanitize_error_message,
         )
     except ImportError:
-        from .ai_provider import get_ai_provider, get_ai_router  # type: ignore
+        from .ai_provider import get_ai_router  # type: ignore
         from .config import get_app, get_mcp_config, is_sessions_enabled, load_config  # type: ignore
         from .pipeline_health import (  # type: ignore
             DEFAULT_RUN_SUMMARY_PATH,
             PipelineRunTracker,
-            StageStatus,
             now_utc_iso,
             sanitize_error_message,
         )
 
 
 def run_stage_process(
-    cmd: List[str],
-    cwd: Optional[Path] = None,
-    env: Optional[Dict[str, str]] = None,
+    cmd: list[str],
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
 ) -> tuple[int, str, str]:
     """Runs a pipeline stage command and returns (returncode, stdout, stderr)."""
     current_env = dict(os.environ)
@@ -63,8 +60,7 @@ def run_stage_process(
     proc = subprocess.run(
         cmd,
         cwd=str(cwd or ROOT),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         text=True,
         env=current_env,
     )
@@ -72,12 +68,12 @@ def run_stage_process(
 
 
 def run_pipeline(
-    app_names: Optional[List[str]] = None,
+    app_names: list[str] | None = None,
     days: int = 30,
-    summary_path: Optional[Path] = None,
+    summary_path: Path | None = None,
     skip_dashboard: bool = False,
     verbose: bool = True,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Orchestrates pipeline execution across apps and returns the run summary."""
     cfg = load_config()
     all_apps = list((cfg.get("apps") or {}).keys())
@@ -312,7 +308,7 @@ def run_pipeline(
         # 6. Analyze AI / Priority (Optional Stage)
         # -------------------------------------------------------------------
         t0 = now_utc_iso()
-        config_error: Optional[str] = None
+        config_error: str | None = None
         mode_name = "auto"
         routing_reason = ""
         try:

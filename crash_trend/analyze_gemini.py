@@ -27,128 +27,97 @@ import json
 import os
 import re
 import sys
-import time
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from typing import Any, Literal
 
 import requests
 
 try:
-    from .config import ROOT, app_argparser, get_app, write_json
-    from .schema_v2 import (
-        AIIssueAnalysis,
-        AISummary,
-        IssueSummary,
-        PriorityBreakdown,
-        PriorityInfo,
-        RecommendedAction,
-        is_valid_iso8601_utc,
-        validate_app_dashboard_v2,
-    )
-    from .versions import max_version, min_version, version_key
     from .ai_provider import (
-        AIProvider,
         CANONICAL_AI_RESPONSE_SCHEMA,
         CANONICAL_LIGHTWEIGHT_TRIAGE_SCHEMA,
         DEFAULT_GEMINI_MODEL,
+        AIProvider,
         GeminiProvider,
         OpenRouterProvider,
         get_ai_provider,
-        resolve_gemini_key,
     )
     from .ai_router import (
-        AITaskRouter,
         LIGHTWEIGHT_TASKS,
-        TASK_DEEP_ANALYSIS,
-        TASK_ISSUE_CLASSIFICATION,
-        TASK_ISSUE_SUMMARY,
-        TASK_ISSUE_TAGGING,
         TASK_ISSUE_TRIAGE,
-        TASK_LIGHTWEIGHT,
+        AITaskRouter,
         get_ai_router,
     )
     from .ai_telemetry import record_ai_call
     from .pipeline_health import sanitize_error_message
+    from .schema_v2 import (
+        AIIssueAnalysis,
+        AISummary,
+        PriorityBreakdown,
+        PriorityInfo,
+        RecommendedAction,
+    )
+    from .versions import max_version
 except ImportError:
     try:
-        from config import ROOT, app_argparser, get_app, write_json
-        from schema_v2 import (
-            AIIssueAnalysis,
-            AISummary,
-            IssueSummary,
-            PriorityBreakdown,
-            PriorityInfo,
-            RecommendedAction,
-            is_valid_iso8601_utc,
-            validate_app_dashboard_v2,
-        )
-        from versions import max_version, min_version, version_key
         from ai_provider import (
-            AIProvider,
             CANONICAL_AI_RESPONSE_SCHEMA,
             CANONICAL_LIGHTWEIGHT_TRIAGE_SCHEMA,
             DEFAULT_GEMINI_MODEL,
+            AIProvider,
             GeminiProvider,
             OpenRouterProvider,
             get_ai_provider,
-            resolve_gemini_key,
         )
         from ai_router import (
-            AITaskRouter,
             LIGHTWEIGHT_TASKS,
-            TASK_DEEP_ANALYSIS,
-            TASK_ISSUE_CLASSIFICATION,
-            TASK_ISSUE_SUMMARY,
-            TASK_ISSUE_TAGGING,
             TASK_ISSUE_TRIAGE,
-            TASK_LIGHTWEIGHT,
+            AITaskRouter,
             get_ai_router,
         )
         from ai_telemetry import record_ai_call
         from pipeline_health import sanitize_error_message
-    except ImportError:
-        from crash_trend.config import ROOT, app_argparser, get_app, write_json
-        from crash_trend.schema_v2 import (
+        from schema_v2 import (
             AIIssueAnalysis,
             AISummary,
-            IssueSummary,
             PriorityBreakdown,
             PriorityInfo,
             RecommendedAction,
-            is_valid_iso8601_utc,
-            validate_app_dashboard_v2,
         )
-        from crash_trend.versions import max_version, min_version, version_key
+        from versions import max_version
+    except ImportError:
         from crash_trend.ai_provider import (
-            AIProvider,
             CANONICAL_AI_RESPONSE_SCHEMA,
             CANONICAL_LIGHTWEIGHT_TRIAGE_SCHEMA,
             DEFAULT_GEMINI_MODEL,
+            AIProvider,
             GeminiProvider,
             OpenRouterProvider,
             get_ai_provider,
-            resolve_gemini_key,
         )
         from crash_trend.ai_router import (
-            AITaskRouter,
             LIGHTWEIGHT_TASKS,
-            TASK_DEEP_ANALYSIS,
-            TASK_ISSUE_CLASSIFICATION,
-            TASK_ISSUE_SUMMARY,
-            TASK_ISSUE_TAGGING,
             TASK_ISSUE_TRIAGE,
-            TASK_LIGHTWEIGHT,
+            AITaskRouter,
             get_ai_router,
         )
         from crash_trend.ai_telemetry import record_ai_call
         from crash_trend.pipeline_health import sanitize_error_message
+        from crash_trend.schema_v2 import (
+            AIIssueAnalysis,
+            AISummary,
+            PriorityBreakdown,
+            PriorityInfo,
+            RecommendedAction,
+        )
+        from crash_trend.versions import max_version
 
 
 
 
 def iso_utc_now() -> str:
     """Returns current UTC timestamp in ISO 8601 format (YYYY-MM-DDTHH:MM:SSZ)."""
-    return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 # ---------------------------------------------------------------------------
@@ -412,7 +381,7 @@ def resolve_api_key(raise_on_missing: bool = False) -> str | None:
     return None
 
 
-def generate_disabled_ai_summary(reason: str = "未配置 AI API 金鑰", provider: Optional[str] = None) -> AISummary:
+def generate_disabled_ai_summary(reason: str = "未配置 AI API 金鑰", provider: str | None = None) -> AISummary:
     """未啟用 AI 時的優雅降級 AISummary 結構。"""
     return {
         "status": "disabled",
@@ -439,7 +408,7 @@ def generate_disabled_issue_analysis() -> AIIssueAnalysis:
     }
 
 
-def generate_error_ai_summary(error_msg: str, provider: Optional[str] = None) -> AISummary:
+def generate_error_ai_summary(error_msg: str, provider: str | None = None) -> AISummary:
     """AI 呼叫失敗時的降級 AISummary 結構。"""
     return {
         "status": "error",
@@ -836,9 +805,9 @@ def enrich_app_data_with_priority_and_ai(
     api_key: str | None = None,
     model: str | None = None,
     top_limit: int = 10,
-    provider: Optional[AIProvider] = None,
-    app_cfg: Optional[dict] = None,
-    router: Optional[AITaskRouter] = None,
+    provider: AIProvider | None = None,
+    app_cfg: dict | None = None,
+    router: AITaskRouter | None = None,
     task_type: str = "deep_analysis",
 ) -> dict:
     """將 AppDashboardV2Data 資料字典進行確定性優先級計算與 AI 分析擴充。
@@ -877,8 +846,8 @@ def enrich_app_data_with_priority_and_ai(
     )
 
     # 2. 解析 AITaskRouter 或直接 Provider
-    active_router: Optional[AITaskRouter] = None
-    active_provider: Optional[AIProvider] = None
+    active_router: AITaskRouter | None = None
+    active_provider: AIProvider | None = None
 
     if router is not None:
         active_router = router

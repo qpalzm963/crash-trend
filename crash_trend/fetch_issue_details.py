@@ -19,8 +19,9 @@ from __future__ import annotations
 import datetime as dt
 import json
 import re
+import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any
 
 try:
     from google.cloud import bigquery
@@ -34,7 +35,6 @@ try:
         get_app,
         get_mcp_config,
         is_mcp_cache_fresh,
-        load_config,
         out_dir,
         write_json,
     )
@@ -54,7 +54,6 @@ except ImportError:
         get_app,
         get_mcp_config,
         is_mcp_cache_fresh,
-        load_config,
         out_dir,
         write_json,
     )
@@ -103,23 +102,23 @@ SYSTEM_FRAME_PREFIXES = (
 def normalize_timestamp_utc(val: Any) -> str:
     """Converts a datetime, ISO string, timestamp number to strict ISO 8601 UTC (ending in Z)."""
     if val is None:
-        return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        return dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     if isinstance(val, dt.datetime):
         if val.tzinfo is None:
-            val = val.replace(tzinfo=dt.timezone.utc)
+            val = val.replace(tzinfo=dt.UTC)
         else:
-            val = val.astimezone(dt.timezone.utc)
+            val = val.astimezone(dt.UTC)
         return val.strftime("%Y-%m-%dT%H:%M:%SZ")
 
     if isinstance(val, (int, float)):
         if val > 1e11:
             val = val / 1000.0
         try:
-            d = dt.datetime.fromtimestamp(val, tz=dt.timezone.utc)
+            d = dt.datetime.fromtimestamp(val, tz=dt.UTC)
             return d.strftime("%Y-%m-%dT%H:%M:%SZ")
         except (ValueError, OSError):
-            return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            return dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     if isinstance(val, str):
         s = val.strip()
@@ -130,18 +129,18 @@ def normalize_timestamp_utc(val: Any) -> str:
         for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
             try:
                 parsed = dt.datetime.strptime(s.split(".")[0].replace("Z", ""), fmt)
-                return parsed.replace(tzinfo=dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                return parsed.replace(tzinfo=dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
             except ValueError:
                 continue
 
-    return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 # ---------------------------------------------------------------------------
 # Symbol Resolution & Source Availability
 # ---------------------------------------------------------------------------
 
-def parse_symbol(symbol: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
+def parse_symbol(symbol: str | None) -> tuple[str | None, str | None]:
     """Extracts (class_name, method_name) from a symbol or function signature string."""
     if not symbol or not isinstance(symbol, str):
         return None, None
@@ -180,7 +179,7 @@ def parse_symbol(symbol: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
     return None, sym
 
 
-def check_source_available(file_path: Optional[str], source_repo: Optional[Union[str, Path]]) -> bool:
+def check_source_available(file_path: str | None, source_repo: str | Path | None) -> bool:
     """Checks whether the file exists in the specified source repository."""
     if not file_path or not source_repo:
         return False
@@ -210,20 +209,20 @@ def check_source_available(file_path: Optional[str], source_repo: Optional[Union
 
 def parse_blame_frame(
     frame_data: Any,
-    default_file: Optional[str] = None,
-    default_line: Optional[int] = None,
-    source_repo: Optional[Union[str, Path]] = None,
-    source_available: Optional[bool] = None,
-) -> Optional[BlameFrame]:
+    default_file: str | None = None,
+    default_line: int | None = None,
+    source_repo: str | Path | None = None,
+    source_available: bool | None = None,
+) -> BlameFrame | None:
     """Parses blame frame from a dict, string, or frame object into a valid BlameFrame TypedDict."""
     if frame_data is None and default_file is None:
         return None
 
-    file_val: Optional[str] = None
-    line_val: Optional[int] = None
-    symbol_val: Optional[str] = None
-    class_val: Optional[str] = None
-    method_val: Optional[str] = None
+    file_val: str | None = None
+    line_val: int | None = None
+    symbol_val: str | None = None
+    class_val: str | None = None
+    method_val: str | None = None
 
     if isinstance(frame_data, dict):
         file_val = frame_data.get("file") or frame_data.get("filename") or default_file
@@ -297,7 +296,7 @@ def parse_blame_frame(
     }
 
 
-def is_system_frame(symbol: Optional[str], file: Optional[str]) -> bool:
+def is_system_frame(symbol: str | None, file: str | None) -> bool:
     """Checks whether a frame belongs to system / runtime frameworks rather than app code."""
     if symbol:
         for prefix in SYSTEM_FRAME_PREFIXES:
@@ -310,9 +309,9 @@ def is_system_frame(symbol: Optional[str], file: Optional[str]) -> bool:
 
 
 def extract_blame_frame_from_frames(
-    frames: List[dict],
-    source_repo: Optional[Union[str, Path]] = None,
-) -> Optional[BlameFrame]:
+    frames: list[dict],
+    source_repo: str | Path | None = None,
+) -> BlameFrame | None:
     """Extracts the most relevant blame frame from a list of stack frames.
     Priority:
     1. Official Crashlytics `blamed == True` or `is_blame == True` or `importance > 0`
@@ -360,14 +359,14 @@ def format_stack_trace(
     exceptions: Any = None,
     threads: Any = None,
     error: Any = None,
-    raw_trace: Optional[str] = None,
+    raw_trace: str | None = None,
     max_lines: int = MAX_TRACE_LINES,
-) -> Optional[str]:
+) -> str | None:
     """Formats structured exceptions, error (Apple), or threads into a standard stack trace string."""
     if raw_trace and isinstance(raw_trace, str) and raw_trace.strip():
         return truncate_trace(raw_trace, max_lines=max_lines)
 
-    lines: List[str] = []
+    lines: list[str] = []
 
     # 1. Format Exceptions (Android / Generic)
     if isinstance(exceptions, list) and exceptions:
@@ -454,14 +453,14 @@ def format_stack_trace(
 def parse_breadcrumbs(
     raw_breadcrumbs: Any,
     max_items: int = DEFAULT_BREADCRUMBS_LIMIT,
-) -> Optional[List[BreadcrumbItem]]:
+) -> list[BreadcrumbItem] | None:
     """Parses breadcrumbs list supporting both BQ schema (name/params/timestamp) and MCP schema (category/message/timestamp)."""
     if raw_breadcrumbs is None:
         return None
     if not isinstance(raw_breadcrumbs, list):
         return []
 
-    items: List[BreadcrumbItem] = []
+    items: list[BreadcrumbItem] = []
     for b in raw_breadcrumbs:
         if not isinstance(b, dict):
             continue
@@ -511,19 +510,19 @@ def parse_breadcrumbs(
 def parse_logs(
     raw_logs: Any,
     max_items: int = DEFAULT_LOGS_LIMIT,
-) -> Optional[List[LogItem]]:
+) -> list[LogItem] | None:
     """Parses logs list with ISO 8601 UTC timestamps and max items limit."""
     if raw_logs is None:
         return None
     if not isinstance(raw_logs, list):
         return []
 
-    items: List[LogItem] = []
-    for l in raw_logs:
-        if not isinstance(l, dict):
+    items: list[LogItem] = []
+    for entry in raw_logs:
+        if not isinstance(entry, dict):
             continue
-        ts = normalize_timestamp_utc(l.get("timestamp"))
-        msg = str(l.get("message") or "")
+        ts = normalize_timestamp_utc(entry.get("timestamp"))
+        msg = str(entry.get("message") or "")
         items.append({"timestamp": ts, "message": msg})
 
     if len(items) > max_items:
@@ -532,7 +531,7 @@ def parse_logs(
     return items
 
 
-def parse_custom_keys(raw_custom_keys: Any) -> Optional[Dict[str, Any]]:
+def parse_custom_keys(raw_custom_keys: Any) -> dict[str, Any] | None:
     """Parses custom keys from repeated struct list or dictionary."""
     if raw_custom_keys is None:
         return None
@@ -541,7 +540,7 @@ def parse_custom_keys(raw_custom_keys: Any) -> Optional[Dict[str, Any]]:
         return dict(raw_custom_keys)
 
     if isinstance(raw_custom_keys, list):
-        out: Dict[str, Any] = {}
+        out: dict[str, Any] = {}
         for item in raw_custom_keys:
             if isinstance(item, dict) and "key" in item:
                 out[str(item["key"])] = item.get("value")
@@ -553,14 +552,14 @@ def parse_custom_keys(raw_custom_keys: Any) -> Optional[Dict[str, Any]]:
 def parse_top_devices(
     devices_data: Any,
     top_n: int = DEFAULT_TOP_DIST_LIMIT,
-) -> Optional[List[TopDeviceCount]]:
+) -> list[TopDeviceCount] | None:
     """Parses top device counts."""
     if devices_data is None:
         return None
     if not isinstance(devices_data, list):
         return []
 
-    out: List[TopDeviceCount] = []
+    out: list[TopDeviceCount] = []
     for item in devices_data:
         if not isinstance(item, dict):
             continue
@@ -577,14 +576,14 @@ def parse_top_devices(
 def parse_top_os(
     os_data: Any,
     top_n: int = DEFAULT_TOP_DIST_LIMIT,
-) -> Optional[List[TopOSCount]]:
+) -> list[TopOSCount] | None:
     """Parses top OS counts."""
     if os_data is None:
         return None
     if not isinstance(os_data, list):
         return []
 
-    out: List[TopOSCount] = []
+    out: list[TopOSCount] = []
     for item in os_data:
         if not isinstance(item, dict):
             continue
@@ -603,13 +602,13 @@ def parse_top_os(
 # ---------------------------------------------------------------------------
 
 def build_issue_detail(
-    stack_trace: Optional[str] = None,
-    breadcrumbs: Optional[List[BreadcrumbItem]] = None,
-    logs: Optional[List[LogItem]] = None,
-    custom_keys: Optional[Dict[str, Any]] = None,
-    top_devices: Optional[List[TopDeviceCount]] = None,
-    top_os: Optional[List[TopOSCount]] = None,
-) -> Optional[IssueDetail]:
+    stack_trace: str | None = None,
+    breadcrumbs: list[BreadcrumbItem] | None = None,
+    logs: list[LogItem] | None = None,
+    custom_keys: dict[str, Any] | None = None,
+    top_devices: list[TopDeviceCount] | None = None,
+    top_os: list[TopOSCount] | None = None,
+) -> IssueDetail | None:
     """Builds a schema-compliant IssueDetail dictionary with all 6 required fields."""
     if (
         stack_trace is None
@@ -639,11 +638,11 @@ def fetch_issue_details_from_bq(
     client: Any,
     project: str,
     dataset: str,
-    tables: List[str],
-    issue_ids: List[str],
+    tables: list[str],
+    issue_ids: list[str],
     days: int = 30,
-    source_repo: Optional[Union[str, Path]] = None,
-) -> Dict[str, Dict[str, Any]]:
+    source_repo: str | Path | None = None,
+) -> dict[str, dict[str, Any]]:
     """Queries detailed crash events, stack frames, breadcrumbs, logs, and custom keys from BigQuery."""
     if not client or not tables or not issue_ids:
         return {}
@@ -653,7 +652,7 @@ def fetch_issue_details_from_bq(
         return {}
 
     id_list_str = ", ".join(f"'{i}'" for i in valid_ids)
-    results: Dict[str, Dict[str, Any]] = {}
+    results: dict[str, dict[str, Any]] = {}
 
     for table in tables:
         fq_table = f"{project}.{dataset}.{table}"
@@ -721,7 +720,7 @@ def fetch_issue_details_from_bq(
                 print(f"  ⚠ BigQuery sample events query failed for {table}: {e}")
                 event_rows = []
 
-        devices_by_issue: Dict[str, List[dict]] = {}
+        devices_by_issue: dict[str, list[dict]] = {}
         try:
             device_rows = [dict(r) for r in client.query(sql_devices).result(max_results=500)]
             for r in device_rows:
@@ -732,7 +731,7 @@ def fetch_issue_details_from_bq(
         except Exception as e:
             print(f"  ⚠ BigQuery devices query failed for {table}: {e}")
 
-        os_by_issue: Dict[str, List[dict]] = {}
+        os_by_issue: dict[str, list[dict]] = {}
         try:
             os_rows = [dict(r) for r in client.query(sql_os).result(max_results=500)]
             for r in os_rows:
@@ -814,8 +813,8 @@ def fetch_issue_details_from_bq(
 
 def load_issue_details_from_stacktraces_cache(
     stacktraces_path: Path,
-    source_repo: Optional[Union[str, Path]] = None,
-) -> Dict[str, Dict[str, Any]]:
+    source_repo: str | Path | None = None,
+) -> dict[str, dict[str, Any]]:
     """Loads cached stack traces and blame frames from stacktraces.json."""
     if not stacktraces_path.exists():
         return {}
@@ -826,7 +825,7 @@ def load_issue_details_from_stacktraces_cache(
         return {}
 
     issues = data.get("issues") or {}
-    results: Dict[str, Dict[str, Any]] = {}
+    results: dict[str, dict[str, Any]] = {}
 
     for iid, item in issues.items():
         if not isinstance(item, dict):
@@ -867,11 +866,11 @@ def safe_get_app(name: str) -> dict:
 
 def fetch_issue_details(
     app_name: str,
-    issue_ids: List[str],
+    issue_ids: list[str],
     days: int = 30,
     bq_client: Any = None,
-    source_repo: Optional[Union[str, Path]] = None,
-) -> Dict[str, Dict[str, Any]]:
+    source_repo: str | Path | None = None,
+) -> dict[str, dict[str, Any]]:
     """Fetches IssueDetail and BlameFrame for specified issues with supplemental merge.
 
     Data sources:
@@ -881,7 +880,7 @@ def fetch_issue_details(
     """
     app = safe_get_app(app_name)
     repo = source_repo or app.get("source_repo")
-    results: Dict[str, Dict[str, Any]] = {}
+    results: dict[str, dict[str, Any]] = {}
 
     # 1. Query BigQuery (if client available)
     if bq_client is not None and issue_ids:
@@ -936,13 +935,13 @@ def fetch_issue_details(
 
 
 def enrich_top_issues(
-    issues: List[dict],
+    issues: list[dict],
     app_name: str,
     days: int = 30,
     bq_client: Any = None,
-    source_repo: Optional[Union[str, Path]] = None,
-    details_cache: Optional[Dict[str, Any]] = None,
-) -> List[dict]:
+    source_repo: str | Path | None = None,
+    details_cache: dict[str, Any] | None = None,
+) -> list[dict]:
     """Enriches a list of IssueSummary dictionaries with blame_frame and detail."""
     if not issues:
         return []
@@ -951,7 +950,7 @@ def enrich_top_issues(
     repo = source_repo or app.get("source_repo")
 
     # Determine which issue IDs actually need fetching (not already cached or complete)
-    needed_ids: List[str] = []
+    needed_ids: list[str] = []
     for i in issues:
         iid = i.get("issue_id")
         if not iid:
