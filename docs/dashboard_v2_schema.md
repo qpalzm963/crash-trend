@@ -9,9 +9,9 @@
 
 1. **三大契約職責分離（Three Distinct Decoupled Contracts）**：
    系統嚴格劃分三種獨立且單向流動的資料契約：
-   - **Dashboard JSON Contract** (`out/dashboard_v2.json`)：專供前端 Web UI 呈現的聚合容器（Bundle）。
-   - **Historical Catalog JSON Contract** (`out/historical_catalog.json`)：跨視窗版本演進與 Issue 生命週期累積狀態。
-   - **SQLite Authority Store Contract** (`out/catalog_authority.sqlite3`)：設備級精確去重的唯一事實來源（Single Source of Truth）。
+    - **Dashboard JSON Contract** (`out/dashboard_v2.json` 或 `out/<app>/dashboard_v2.json`)：專供前端 Web UI 呈現的聚合容器（Bundle）。
+    - **Historical Catalog JSON Contract** (`out/<app>/historical_catalog.json`)：跨視窗版本演進與 Issue 生命週期累積狀態。
+    - **SQLite Authority Store Contract** (`out/<app>/catalog_authority.sqlite3`)：設備級精確去重的唯一事實來源（Single Source of Truth）。
 2. **前端與 Raw BigQuery 完全解耦**：
    UI 僅消費本 Schema 定義的聚合資料與結構化分析，不得直接解析 BigQuery raw JSON 或自行在前端執行重度聚合。
 3. **精確去重與隱私防護（Privacy-Preserving Deterministic Salted Hashing & Zero PII）**：
@@ -99,11 +99,11 @@ flowchart TD
 
 | 特性維度 | 1. Dashboard JSON Contract | 2. Historical Catalog JSON Contract | 3. SQLite Authority Store Contract |
 | :--- | :--- | :--- | :--- |
-| **檔案路徑** | `out/dashboard_v2.json` | `out/historical_catalog.json` | `out/catalog_authority.sqlite3` |
+| **檔案路徑** | `out/dashboard_v2.json` 或 `out/<app>/dashboard_v2.json` | `out/<app>/historical_catalog.json` | `out/<app>/catalog_authority.sqlite3` |
 | **主要定位** | 前端呈現容器（Bundle） | 跨視窗版本演進與狀態累積 | 精確去重唯一事實來源（SSOT） |
 | **儲存引擎** | 純 JSON 檔案 | 純 JSON 檔案 | 本機 SQLite 3（WAL 模式） |
-| **Schema 版本** | `2.6.0`（相容 `2.0` ~ `2.6.0`） | `2.3.0` / `2.6.0` | `state_version: 1` |
-| **PII / 裝置 ID** | **完全零 IDs**（無 installation IDs） | **完全零 IDs**（無 installation IDs） | **加鹽雜湊集合**（SHA-256，零明文） |
+| **Schema 版本** | `2.6.0`（相容 `2.0` ~ `2.6.0`） | Producer: `2.3.0`（Validator 相容 `2.0` ~ `2.6.0`） | `state_version: 1` |
+| **PII / 裝置 ID** | **完全零 IDs**（無 installation IDs） | **完全零 IDs**（無 installation IDs，Validator 強制檢核） | **加鹽雜湊集合**（SHA-256，零明文） |
 | **讀寫模式** | 每次 Pipeline Run 全量產出 | 每次 Pipeline Run 增量讀取並寫回 | 依水線批次追加（`INSERT OR IGNORE`） |
 | **生命週期行為** | 單次消費 / UI 渲染 | 跨週期持久化、水線推進 | 跨週期持久化、去重計算、權威標記 |
 
@@ -558,7 +558,7 @@ classDiagram
   }
 }
 ```
-- `sample_sufficient`：樣本充足度判定布林值（通常門檻為 `sessions_total >= 1000` 或 `affected_users >= 10`），樣本不足時避免誤判 degradation。
+- `sample_sufficient`：樣本充足度判定布林值（由 `is_version_sample_sufficient()` 判定：`adoption_rate >= 0.05`、`sessions_total >= 1000` 或 `crash_events >= 20` 滿足任一項，或由外部顯式標記為 true），樣本不足時避免誤判 degradation。
 
 #### `PreviousReleaseComparison` (`vs_previous`)
 以相鄰前一版本為基準進行之標準化對比：
@@ -592,9 +592,11 @@ classDiagram
 
 ---
 
-## 4. 契約二：Historical Catalog JSON 規格（`historical_catalog.json`）
+## 4. 契約二：Historical Catalog JSON 規格（`out/<app>/historical_catalog.json`）
 
-`historical_catalog.json` 是管線長期狀態持久化實體，負責記錄跨視窗版本指標、生命週期分類與水線資訊。
+`out/<app>/historical_catalog.json` 是管線長期狀態持久化實體，負責記錄跨視窗版本指標、生命週期分類與水線資訊。
+- **Schema 版本定位**：Historical Catalog Producer 固定產出 `schema_version: "2.3.0"`；Validator 同時支援相容讀取 `{"1.0", "2.0", "2.3", "2.3.0", "2.6", "2.6.0"}`。勿將前端 Bundle 的 `2.6.0` 混寫為 Producer 的版本。
+- **檔案路徑**：Canonical path 為 `out/<app>/historical_catalog.json`，依 App 嚴格隔離。
 
 ### 4.1 結構與欄位定義
 
@@ -646,10 +648,25 @@ classDiagram
         "lifetime_affected_users": 1850,
         "lifetime_fatal": 3100,
         "lifetime_anr": 420,
-        "recent_health": { ... }
+        "recent_health": {
+          "30d": {
+            "crash_events": 1200,
+            "affected_users": 520,
+            "sessions_total": 150000,
+            "crash_free_users_rate": 0.9965,
+            "crash_free_sessions_rate": 0.9992,
+            "adoption_rate": 0.65,
+            "fatal_events": 800,
+            "anr_events": 110,
+            "new_issues_count": 5,
+            "sample_sufficient": true,
+            "status": "latest",
+            "trend": "stable"
+          }
+        }
       }
     },
-    "ios": { ... }
+    "ios": {}
   }
 }
 ```
@@ -659,14 +676,15 @@ classDiagram
 > **嚴禁在 `historical_catalog.json` 寫入 `installation_ids` 或 `user_ids` 欄位**。
 > - 歷史版本的 catalog 中若有 legacy `installation_ids`，在 `IssueHistoricalCatalog.load()` 時會自動遷移入 SQLite Authority Store，並在記憶體中立即執行 `pop("installation_ids", None)` 清除。
 > - `save()` 寫回時只允許序列化 `lifetime_affected_users` 去重數值與 `authority` metadata。
+> - `validate_historical_catalog()` 在執行階段強制拒絕任何包含 `installation_ids` 或 `user_ids` 的資料。
 
 ---
 
-## 5. 契約三：SQLite Authority Store 規格（`catalog_authority.sqlite3`）
+## 5. 契約三：SQLite Authority Store 規格（`out/<app>/catalog_authority.sqlite3`）
 
 ### 5.1 儲存配置與連線規範
 
-- **檔案命名與路徑**：預設位於 `out/catalog_authority.sqlite3` 或 `out/<app>/catalog_authority.sqlite3`。
+- **檔案命名與路徑**：Canonical path 為 `out/<app>/catalog_authority.sqlite3`（與同一 app 之 `out/<app>/historical_catalog.json` 位於同一目錄）。
 - **PRAGMA 規範**：
   ```sql
   PRAGMA journal_mode = WAL;
@@ -835,11 +853,12 @@ from crash_trend.schema_v2 import (
 errors = validate_dashboard_v2(dashboard_bundle_dict)
 assert len(errors) == 0, f"Dashboard schema errors: {errors}"
 
-# 2. 驗證歷史目錄契約（保證零 raw IDs）
+# 2. 驗證歷史目錄契約（結構合規且強制拒絕 raw installation_ids / user_ids）
 cat_errors = validate_historical_catalog(historical_catalog_dict)
 assert len(cat_errors) == 0, f"Catalog schema errors: {cat_errors}"
 ```
 
-- **相容性保證**：
-  - `schema_v2.py` 之 `SUPPORTED_SCHEMA_VERSIONS` 同時相容 `{"2.0", "2.3", "2.3.0", "2.6", "2.6.0"}`。
+- **相容性保證與版本職責**：
+  - Historical Catalog Producer 固定產出 `schema_version: "2.3.0"`；`validate_historical_catalog()` 在執行階段嚴格檢核必填欄位並強制拒絕任何 `installation_ids` 或 `user_ids` 違規欄位，落實零 raw IDs 保證，同時支援 `{"1.0", "2.0", "2.3", "2.3.0", "2.6", "2.6.0"}` 相容讀取。
+  - 前端 Dashboard Bundle 之頂層 `schema_version` 為 `"2.6.0"`；`schema_v2.py` 之 `SUPPORTED_SCHEMA_VERSIONS` 相容 `{"2.0", "2.3", "2.3.0", "2.6", "2.6.0"}`。
   - 舊版消費端若僅需要單期快照，直接讀取 `AppDashboardV2Data` 之 `kpi`、`top_issues` 依然完全相容；若需要長週期版本演進分析，可消費新增之 `release_catalog` 欄位。

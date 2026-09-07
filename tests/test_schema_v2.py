@@ -270,6 +270,47 @@ class TestDashboardV2Schema(unittest.TestCase):
         self.assertTrue(any("schema_version" in e for e in errs))
         self.assertTrue(any("updated_at is required" in e for e in errs))
 
+    def test_historical_catalog_zero_raw_ids_enforcement(self) -> None:
+        base_cat = {
+            "schema_version": "2.3.0",
+            "updated_at": "2026-09-03T12:00:00Z",
+            "issues": {
+                "android:issue1": {
+                    "issue_id": "issue1",
+                    "platform": "android",
+                    "first_seen_version": "1.0.0",
+                    "last_seen_version": "1.0.1",
+                    "versions_seen": ["1.0.0", "1.0.1"],
+                }
+            },
+            "app_versions": {
+                "android": {
+                    "1.0.1": {
+                        "version": "1.0.1",
+                        "platform": "android",
+                    }
+                }
+            },
+        }
+
+        # 1. Top-level raw IDs rejection
+        with_top_ids = dict(base_cat)
+        with_top_ids["installation_ids"] = ["uuid-1"]
+        errs = validate_historical_catalog(with_top_ids)
+        self.assertTrue(any("installation_ids is forbidden" in e for e in errs))
+
+        # 2. Version-level raw IDs rejection
+        with_ver_ids = json.loads(json.dumps(base_cat))
+        with_ver_ids["app_versions"]["android"]["1.0.1"]["installation_ids"] = ["uuid-2"]
+        errs = validate_historical_catalog(with_ver_ids)
+        self.assertTrue(any("installation_ids is forbidden" in e for e in errs))
+
+        # 3. Issue-level raw IDs rejection
+        with_iss_ids = json.loads(json.dumps(base_cat))
+        with_iss_ids["issues"]["android:issue1"]["user_ids"] = ["user-1"]
+        errs = validate_historical_catalog(with_iss_ids)
+        self.assertTrue(any("user_ids is forbidden" in e for e in errs))
+
     def test_v2_3_bundle_requires_lifecycle_on_top_issues(self) -> None:
         fixture_path = self.fixtures_dir / "dashboard_v2.json"
         data = json.loads(fixture_path.read_text(encoding="utf-8"))

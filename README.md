@@ -60,7 +60,7 @@ Crashlytics MCP ───────┘        │                         │
 
 ### SQLite Authority Store 精確去重與隱私防護
 
-- **去重權威儲存**：採用本機 SQLite (`out/catalog_authority.sqlite3`) 專責管理設備級精確去重，徹底將大量 raw UUID 從 JSON 解耦。
+- **去重權威儲存**：採用本機 SQLite (`out/<app>/catalog_authority.sqlite3`) 專責管理設備級精確去重，徹底將大量 raw UUID 從 JSON 解耦。
 - **Zero PII 加鹽雜湊**：裝置識別碼在寫入資料庫前，一律以 `app_id` 作為 Salt 進行 SHA-256 確定性加鹽雜湊（`SHA-256(f"{app_id}:{raw_uuid}")`），不儲存任何明文識別碼。
 - **高效並行與安全**：啟用 SQLite WAL（Write-Ahead Logging）模式、`synchronous = NORMAL` 與 `busy_timeout = 5000`，確保背景執行緒與排程穩定寫入。
 - **JSON 去重解耦**：`historical_catalog.json` 與 `dashboard_v2.json` 絕不包含 raw installation IDs，僅記錄去重後的計數值與 authority metadata。
@@ -71,9 +71,9 @@ Crashlytics MCP ───────┘        │                         │
 
 | 契約名稱 | 儲存檔案 | 核心職責 | 格式與特性 |
 | :--- | :--- | :--- | :--- |
-| **Dashboard JSON Contract** | `out/dashboard_v2.json` | 供前端 Web UI 呈現的聚合資料容器（Bundle） | 包含多週期快照、KPI、趨勢、問題排行與發佈版本目錄 |
-| **Historical Catalog JSON Contract** | `out/historical_catalog.json` | 跨視窗版本演進與 Issue 生命週期累積狀態 | 儲存版本時間戳、水線、生命週期與去重後指標，**零 raw IDs** |
-| **SQLite Authority Store Contract** | `out/catalog_authority.sqlite3` | 受影響用戶去重的唯一事實來源（Single Source of Truth） | 本機 SQLite DB，儲存加鹽雜湊集合與版本權威狀態 |
+| **Dashboard JSON Contract** | `out/dashboard_v2.json` 或 `out/<app>/dashboard_v2.json` | 供前端 Web UI 呈現的聚合資料容器（Bundle） | 包含多週期快照、KPI、趨勢、問題排行與發佈版本目錄 |
+| **Historical Catalog JSON Contract** | `out/<app>/historical_catalog.json` | 跨視窗版本演進與 Issue 生命週期累積狀態 | 儲存版本時間戳、水線、生命週期與去重後指標，**零 raw IDs** |
+| **SQLite Authority Store Contract** | `out/<app>/catalog_authority.sqlite3` | 受影響用戶去重的唯一事實來源（Single Source of Truth） | 本機 SQLite DB，儲存加鹽雜湊集合與版本權威狀態 |
 
 ### 資料管線生命週期（Migration / Bootstrap / Incremental）
 
@@ -482,10 +482,11 @@ requirements.txt
 dashboard.html
 out/
   pipeline_run.json           # 管線健康度與 stage 審計
-  dashboard_v2.json           # Dashboard V2 Bundle（前端渲染契約）
-  historical_catalog.json     # 跨週期版本目錄與 Issue 生命週期累積狀態契約
-  catalog_authority.sqlite3   # SQLite 受影響用戶去重權威儲存（不含 PII 的加鹽雜湊）
-  <app>/...
+  dashboard_v2.json           # Dashboard V2 Bundle（前端渲染契約，頂層聚合）
+  <app>/
+    dashboard_v2.json         # 單一 app 前端渲染契約
+    historical_catalog.json   # 跨週期版本目錄與 Issue 生命週期累積狀態契約
+    catalog_authority.sqlite3 # SQLite 受影響用戶去重權威儲存（不含 PII 的加鹽雜湊）
 reports/
 logs/
 ```

@@ -706,12 +706,19 @@ def validate_historical_catalog(data: dict) -> List[str]:
             if "bootstrap_complete" in auth and not isinstance(auth["bootstrap_complete"], bool):
                 errors.append("authority.bootstrap_complete must be a boolean")
 
+    for forbidden_k in ("installation_ids", "user_ids"):
+        if forbidden_k in data:
+            errors.append(f"{forbidden_k} is forbidden in historical catalog (zero raw IDs policy)")
+
     if "issues" in data and isinstance(data["issues"], dict):
         for key, iss in data["issues"].items():
             p = f"issues['{key}']."
             if not isinstance(iss, dict):
                 errors.append(f"{p}must be an object")
                 continue
+            for forbidden_k in ("installation_ids", "user_ids"):
+                if forbidden_k in iss:
+                    errors.append(f"{p}{forbidden_k} is forbidden in historical catalog (zero raw IDs policy)")
             for field in ("issue_id", "platform", "first_seen_version", "last_seen_version", "versions_seen"):
                 if field not in iss:
                     errors.append(f"{p}{field} is required")
@@ -728,11 +735,18 @@ def validate_historical_catalog(data: dict) -> List[str]:
                         vp = f"app_versions.{pf_or_ver}['{ver_k}']."
                         if not isinstance(v_obj, dict):
                             errors.append(f"{vp}must be an object")
-                        elif "version" not in v_obj:
-                            errors.append(f"{vp}version is required")
+                        else:
+                            if "version" not in v_obj:
+                                errors.append(f"{vp}version is required")
+                            for forbidden_k in ("installation_ids", "user_ids"):
+                                if forbidden_k in v_obj:
+                                    errors.append(f"{vp}{forbidden_k} is forbidden in historical catalog (zero raw IDs policy)")
                 else:
                     if "version" not in val:
                         errors.append(f"app_versions['{pf_or_ver}'].version is required")
+                    for forbidden_k in ("installation_ids", "user_ids"):
+                        if forbidden_k in val:
+                            errors.append(f"app_versions['{pf_or_ver}'].{forbidden_k} is forbidden in historical catalog (zero raw IDs policy)")
 
     return errors
 
