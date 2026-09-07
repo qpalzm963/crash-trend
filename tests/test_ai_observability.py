@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import datetime as dt
-import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -86,7 +85,7 @@ class TestAIObservability(unittest.TestCase):
 
     def test_3_aggregate_ai_usage_metrics(self) -> None:
         """Test 3: aggregate_ai_usage groups by task, provider, model, status, and daily trend."""
-        now = dt.datetime(2026, 9, 4, 10, 0, 0, tzinfo=dt.timezone.utc)
+        now = dt.datetime(2026, 9, 4, 10, 0, 0, tzinfo=dt.UTC)
         sample_records = [
             # Day 1: Gemini deep_analysis success (with tokens)
             {

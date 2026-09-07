@@ -6,10 +6,10 @@ Subclasses unittest.TestCase to ensure full compatibility with CI discovery:
 
 import datetime as dt
 import json
-from pathlib import Path
 import tempfile
-from typing import Any, Dict, List
 import unittest
+from pathlib import Path
+from typing import Any
 
 from crash_trend.build_dashboard import build_html
 from crash_trend.fetch_bigquery import SQLS, build_version_catalog_sql, transform_bq_to_v2
@@ -25,7 +25,7 @@ from crash_trend.schema_v2 import (
 )
 
 
-def _sample_app_data() -> Dict[str, Any]:
+def _sample_app_data() -> dict[str, Any]:
     return {
         "metadata": {
             "app_id": "com.example.app",
@@ -143,7 +143,7 @@ class TestReleaseCatalog(unittest.TestCase):
     def test_legacy_release_preservation_over_90d(self) -> None:
         """Test that releases inactive for >90 days become legacy and are never deleted."""
         cat = IssueHistoricalCatalog("test_app")
-        ref_dt = dt.datetime(2026, 9, 1, 0, 0, 0, tzinfo=dt.timezone.utc)
+        ref_dt = dt.datetime(2026, 9, 1, 0, 0, 0, tzinfo=dt.UTC)
 
         cat.update_app_versions([
             {
@@ -190,7 +190,7 @@ class TestReleaseCatalog(unittest.TestCase):
     def test_platform_strict_isolation(self) -> None:
         """Test strict isolation between Android and iOS releases."""
         cat = IssueHistoricalCatalog("test_app")
-        ref_dt = dt.datetime(2026, 9, 1, 0, 0, 0, tzinfo=dt.timezone.utc)
+        ref_dt = dt.datetime(2026, 9, 1, 0, 0, 0, tzinfo=dt.UTC)
 
         cat.update_app_versions([
             {"version": "1.0.0", "platform": "android", "first_seen": "2026-08-01T00:00:00Z", "last_seen": "2026-08-20T00:00:00Z", "lifetime_crashes": 10},
@@ -442,7 +442,7 @@ class TestReleaseCatalog(unittest.TestCase):
             },
         }
 
-        cfg: Dict[str, Any] = {"apps": {"com.test.app": {"platforms": ["android"]}}}
+        cfg: dict[str, Any] = {"apps": {"com.test.app": {"platforms": ["android"]}}}
         v2_data = transform_bq_to_v2(bq_result, cfg)
         self.assertIn("release_catalog", v2_data)
         cat_item = next((x for x in v2_data["release_catalog"] if x["version"] == "3.1.0"), None)
@@ -842,7 +842,7 @@ class TestReleaseCatalog(unittest.TestCase):
         }
 
         # validate single catalog list
-        errors: List[str] = []
+        errors: list[str] = []
         validate_release_catalog([item], errors)
         self.assertEqual(errors, [])
 
@@ -850,7 +850,7 @@ class TestReleaseCatalog(unittest.TestCase):
         app_data = _sample_app_data()
         enrich_app_data_with_lifecycle(app_data, app_name="test_app")
         self.assertIn("release_catalog", app_data)
-        errors2: List[str] = []
+        errors2: list[str] = []
         validate_release_catalog(app_data["release_catalog"], errors2)
         self.assertEqual(errors2, [])
 

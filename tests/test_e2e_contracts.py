@@ -23,7 +23,6 @@ from unittest.mock import MagicMock, patch
 from crash_trend.analyze_gemini import enrich_app_data_with_priority_and_ai
 from crash_trend.build_dashboard import (
     assemble_bundle_from_apps,
-    build_html,
     generate_dashboard,
 )
 from crash_trend.fetch_bigquery import transform_bq_to_v2
@@ -33,10 +32,8 @@ from crash_trend.fetch_sessions import (
     build_unavailable_sessions_result,
     enrich_app_dashboard_with_sessions,
 )
-from crash_trend.pipeline_health import PipelineRunTracker, load_run_summary
+from crash_trend.pipeline_health import PipelineRunTracker
 from crash_trend.schema_v2 import (
-    SCHEMA_VERSION,
-    validate_app_dashboard_v2,
     validate_dashboard_v2,
 )
 
@@ -53,7 +50,7 @@ class TestE2EContracts(unittest.TestCase):
     # -----------------------------------------------------------------------
     def test_profile_1_full_profile(self) -> None:
         """Profile 1: Full pipeline with BQ (Apple singular error), Sessions, MCP, and AI."""
-        today = dt.datetime.now(dt.timezone.utc).date()
+        today = dt.datetime.now(dt.UTC).date()
         d1 = (today - dt.timedelta(days=1)).strftime("%Y-%m-%d")
         d2 = today.strftime("%Y-%m-%d")
 
@@ -119,7 +116,7 @@ class TestE2EContracts(unittest.TestCase):
 
             # Step 3: MCP fresh cache enrich
             mcp_cache = {
-                "generated_at": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "generated_at": dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "issues": {
                     "ios_crash_1": {
                         "blame_frame": {"file": "MetalRenderer.swift", "line": 88, "symbol": "drawFrame()", "blamed": True},
@@ -252,7 +249,7 @@ class TestE2EContracts(unittest.TestCase):
             out_app.mkdir(parents=True, exist_ok=True)
 
             # Stale cache: 14 days old (> 7 days)
-            old_time = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=14)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            old_time = (dt.datetime.now(dt.UTC) - dt.timedelta(days=14)).strftime("%Y-%m-%dT%H:%M:%SZ")
             stale_cache = {
                 "generated_at": old_time,
                 "issues": {
@@ -531,8 +528,8 @@ class TestE2EContracts(unittest.TestCase):
     def test_profile_7_openrouter_provider_e2e(self) -> None:
         """Profile 7: True OpenRouter production orchestration via run_pipeline() (Issue #26 / Review 5099212339)."""
         import json as json_mod
+
         from crash_trend.pipeline_run import run_pipeline
-        from crash_trend.build_dashboard import assemble_bundle_from_apps, generate_dashboard
 
         app_cfg = {
             "display_name": "OpenRouter App",
@@ -615,8 +612,9 @@ class TestE2EContracts(unittest.TestCase):
             def fake_stage_exec(cmd, cwd=None, env=None):
                 cmd_str = " ".join(cmd)
                 if "analyze_ai" in cmd_str:
-                    from crash_trend.analyze_ai import main as ai_main
                     import sys
+
+                    from crash_trend.analyze_ai import main as ai_main
                     old_argv = sys.argv
                     try:
                         sys.argv = ["analyze_ai.py", "--app", "openrouter_app"]

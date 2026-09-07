@@ -10,17 +10,15 @@ from __future__ import annotations
 
 import copy
 import os
-import re
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from dataclasses import dataclass
+from typing import Any
 
 import requests
 
 from .ai_provider import (
-    AIProvider,
     CANONICAL_AI_RESPONSE_SCHEMA,
     DEFAULT_GEMINI_MODEL,
-    DEFAULT_OPENROUTER_MODEL,
+    AIProvider,
     GeminiProvider,
     OpenRouterProvider,
     resolve_gemini_key,
@@ -123,11 +121,11 @@ class AIRouterConfig:
     mode: str = "auto"
     primary_provider: str = "gemini"
     primary_model: str = DEFAULT_GEMINI_MODEL
-    primary_api_key: Optional[str] = None
-    primary_temperature: Optional[float] = None
+    primary_api_key: str | None = None
+    primary_temperature: float | None = None
     lightweight_provider: str = "openrouter"
     lightweight_model: str = DEFAULT_LIGHTWEIGHT_MODEL
-    lightweight_api_key: Optional[str] = None
+    lightweight_api_key: str | None = None
     lightweight_zdr: bool = True
     allow_paid_models: bool = False
     include_source_snippet: bool = True
@@ -142,24 +140,24 @@ class AIRoutingDecision:
     selected_model: str
     routing_reason: str
     paid_model_allowed: bool
-    fallback_target_provider: Optional[str] = None
-    fallback_target_model: Optional[str] = None
+    fallback_target_provider: str | None = None
+    fallback_target_model: str | None = None
 
 
 @dataclass
 class AIRouterResult:
-    data: Dict[str, Any]
+    data: dict[str, Any]
     decision: AIRoutingDecision
     fallback_used: bool = False
-    fallback_reason: Optional[str] = None
+    fallback_reason: str | None = None
     active_provider: str = ""
     active_model: str = ""
-    tokens: Optional[Dict[str, Optional[int]]] = None
+    tokens: dict[str, int | None] | None = None
 
 
 def resolve_router_config(
-    app_cfg: Optional[Dict[str, Any]] = None,
-    global_cfg: Optional[Dict[str, Any]] = None,
+    app_cfg: dict[str, Any] | None = None,
+    global_cfg: dict[str, Any] | None = None,
 ) -> AIRouterConfig:
     """Resolves AIRouterConfig by merging global and per-app configuration dictionaries."""
     app_ai = copy.deepcopy((app_cfg.get("ai") or {}) if app_cfg else {})
@@ -405,7 +403,7 @@ class AITaskRouter:
     def analyze(
         self,
         prompt: str,
-        schema: Optional[Dict[str, Any]] = None,
+        schema: dict[str, Any] | None = None,
         task_type: str = "deep_analysis",
     ) -> AIRouterResult:
         """Executes analysis through routed provider, with transient fallback if enabled."""
@@ -466,8 +464,8 @@ class AITaskRouter:
 
 
 def get_ai_router(
-    app_cfg: Optional[Dict[str, Any]] = None,
-    global_cfg: Optional[Dict[str, Any]] = None,
+    app_cfg: dict[str, Any] | None = None,
+    global_cfg: dict[str, Any] | None = None,
 ) -> AITaskRouter:
     """Factory creating an AITaskRouter instance resolved from app and global configuration."""
     cfg = resolve_router_config(app_cfg, global_cfg)

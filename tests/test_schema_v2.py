@@ -13,10 +13,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from crash_trend.schema_v2 import (
-    SCHEMA_VERSION,
     is_valid_date,
     is_valid_iso8601_utc,
-    validate_app_dashboard_v2,
     validate_dashboard_v2,
     validate_historical_catalog,
 )
@@ -35,7 +33,7 @@ class TestDashboardV2Schema(unittest.TestCase):
         self.assertEqual(
             errors,
             [],
-            f"Expected dashboard_v2.json to pass validation, got errors:\n" + "\n".join(errors),
+            "Expected dashboard_v2.json to pass validation, got errors:\n" + "\n".join(errors),
         )
 
         # Multi-app check
@@ -58,7 +56,7 @@ class TestDashboardV2Schema(unittest.TestCase):
         self.assertEqual(
             errors,
             [],
-            f"Expected dashboard_v2_no_sessions.json to pass validation, got errors:\n"
+            "Expected dashboard_v2_no_sessions.json to pass validation, got errors:\n"
             + "\n".join(errors),
         )
 

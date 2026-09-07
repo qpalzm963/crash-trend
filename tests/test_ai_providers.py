@@ -11,8 +11,6 @@ import json
 import unittest
 from unittest.mock import MagicMock, patch
 
-import requests
-
 from crash_trend.ai_provider import (
     CANONICAL_AI_RESPONSE_SCHEMA,
     DEFAULT_GEMINI_MODEL,

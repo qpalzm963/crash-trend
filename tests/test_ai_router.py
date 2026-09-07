@@ -15,20 +15,15 @@ from unittest.mock import MagicMock, patch
 import requests
 
 from crash_trend.ai_provider import (
-    CANONICAL_AI_RESPONSE_SCHEMA,
     DEFAULT_GEMINI_MODEL,
     GeminiProvider,
-    OpenRouterProvider,
 )
 from crash_trend.ai_router import (
-    AIRouterConfig,
-    AITaskRouter,
     get_ai_router,
     is_free_openrouter_model,
     is_transient_error,
-    resolve_router_config,
 )
-from crash_trend.analyze_gemini import build_ai_prompt, enrich_app_data_with_priority_and_ai
+from crash_trend.analyze_gemini import enrich_app_data_with_priority_and_ai
 from crash_trend.config import ROOT
 from crash_trend.schema_v2 import validate_app_dashboard_v2
 
@@ -397,6 +392,7 @@ class TestAIRouter(unittest.TestCase):
         """Test 14 (Review 5103409751): Pipeline health records complete routing telemetry matching canonical sources.ai."""
         import tempfile
         from pathlib import Path
+
         from crash_trend.pipeline_run import run_pipeline
 
         mock_run_proc.return_value = (0, "ok", "")

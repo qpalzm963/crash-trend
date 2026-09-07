@@ -10,9 +10,10 @@ import contextlib
 import datetime as dt
 import hashlib
 import logging
-from pathlib import Path
 import sqlite3
-from typing import Any, Dict, Iterable, Iterator, List, Optional, Set, Tuple, Union
+from collections.abc import Iterable, Iterator
+from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -32,14 +33,14 @@ class CatalogAuthorityStore:
 
     def __init__(
         self,
-        db_path: Union[str, Path] = ":memory:",
-        app_id: Optional[str] = None,
+        db_path: str | Path = ":memory:",
+        app_id: str | None = None,
     ) -> None:
         self.app_id = str(app_id).strip() if app_id else None
         self.is_memory = str(db_path) == ":memory:"
         self.db_path = Path(db_path) if not self.is_memory else ":memory:"
-        self._conn: Optional[sqlite3.Connection] = None
-        self._explicit_conn: Optional[sqlite3.Connection] = None
+        self._conn: sqlite3.Connection | None = None
+        self._explicit_conn: sqlite3.Connection | None = None
 
         if not self.is_memory and isinstance(self.db_path, Path):
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -128,7 +129,7 @@ class CatalogAuthorityStore:
             )
             conn.commit()
 
-    def hash_installation(self, raw_id: Union[str, int], app_id: Optional[str] = None) -> str:
+    def hash_installation(self, raw_id: str | int, app_id: str | None = None) -> str:
         """Computes a deterministic, non-reversible SHA-256 hash for an installation identifier.
 
         Salts with app_id to prevent rainbow-table identification across apps while
@@ -136,10 +137,10 @@ class CatalogAuthorityStore:
         """
         raw_str = str(raw_id).strip()
         eff_app = app_id or self.app_id or "default"
-        salted = f"{eff_app}:{raw_str}".encode("utf-8")
+        salted = f"{eff_app}:{raw_str}".encode()
         return hashlib.sha256(salted).hexdigest()
 
-    def _normalize_pf(self, platform: Optional[str]) -> str:
+    def _normalize_pf(self, platform: str | None) -> str:
         pf = str(platform or "").strip().lower()
         return "ios" if pf == "ios" else "android"
 
@@ -148,9 +149,9 @@ class CatalogAuthorityStore:
         app_id: str,
         platform: str,
         app_version: str,
-        installation_ids: Iterable[Union[str, int]],
-        first_seen: Optional[str] = None,
-        last_seen: Optional[str] = None,
+        installation_ids: Iterable[str | int],
+        first_seen: str | None = None,
+        last_seen: str | None = None,
     ) -> int:
         """Idempotently adds installation identifiers for a specific (app_id, platform, app_version).
 
@@ -163,7 +164,7 @@ class CatalogAuthorityStore:
         if not ver:
             return 0
 
-        hashes: Set[str] = set()
+        hashes: set[str] = set()
         for raw in installation_ids:
             if raw is not None:
                 s = str(raw).strip()
@@ -173,7 +174,7 @@ class CatalogAuthorityStore:
         if not hashes:
             return 0
 
-        now_iso = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+        now_iso = dt.datetime.now(dt.UTC).isoformat().replace("+00:00", "Z")
         fs = first_seen or now_iso
         ls = last_seen or now_iso
 
@@ -289,7 +290,7 @@ class CatalogAuthorityStore:
         if not ver:
             return
 
-        now_iso = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+        now_iso = dt.datetime.now(dt.UTC).isoformat().replace("+00:00", "Z")
         try:
             with self._connection() as conn:
                 cur = conn.cursor()
@@ -309,7 +310,7 @@ class CatalogAuthorityStore:
                 f"Failed to mark version bootstrapped for '{eff_app}', {pf} '{ver}': {e}"
             ) from e
 
-    def get_known_versions(self, app_id: str, platform: Optional[str] = None) -> List[str]:
+    def get_known_versions(self, app_id: str, platform: str | None = None) -> list[str]:
         """Returns sorted list of distinct app_versions tracked in authority store."""
         eff_app = str(app_id or self.app_id or "default").strip()
         try:
@@ -379,7 +380,7 @@ class CatalogAuthorityStore:
         except sqlite3.Error as e:
             raise AuthorityStoreError(f"Failed to clear app '{eff_app}': {e}") from e
 
-    def get_metadata(self, key: str) -> Optional[str]:
+    def get_metadata(self, key: str) -> str | None:
         """Reads a key from authority_metadata table."""
         try:
             with self._connection() as conn:
@@ -407,7 +408,7 @@ class CatalogAuthorityStore:
         except sqlite3.Error as e:
             raise AuthorityStoreError(f"Failed to set metadata key '{key}': {e}") from e
 
-    def is_bootstrap_complete(self, app_id: Optional[str] = None) -> bool:
+    def is_bootstrap_complete(self, app_id: str | None = None) -> bool:
         """Checks whether bootstrap completion has been marked in authority metadata."""
         eff_app = app_id or self.app_id
         if eff_app:
@@ -417,7 +418,7 @@ class CatalogAuthorityStore:
         global_val = self.get_metadata("bootstrap_complete")
         return global_val == "1"
 
-    def mark_bootstrap_complete(self, app_id: Optional[str] = None, complete: bool = True) -> None:
+    def mark_bootstrap_complete(self, app_id: str | None = None, complete: bool = True) -> None:
         """Marks bootstrap completion in authority metadata."""
         val = "1" if complete else "0"
         eff_app = app_id or self.app_id
@@ -448,7 +449,7 @@ class CatalogAuthorityStore:
                 pass
             self._conn = None
 
-    def __enter__(self) -> "CatalogAuthorityStore":
+    def __enter__(self) -> CatalogAuthorityStore:
         if not self.is_memory and self._explicit_conn is None:
             self._explicit_conn = sqlite3.connect(str(self.db_path), timeout=10.0, check_same_thread=False)
             self._explicit_conn.row_factory = sqlite3.Row

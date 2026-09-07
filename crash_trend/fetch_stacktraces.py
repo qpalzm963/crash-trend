@@ -27,6 +27,7 @@ import time
 import yaml
 
 try:
+    from crash_trend.analyze_gemini import score_issues
     from crash_trend.config import (
         ROOT,
         app_argparser,
@@ -36,9 +37,9 @@ try:
         out_dir,
         write_json,
     )
-    from crash_trend.analyze_gemini import score_issues
     from crash_trend.normalize import bq_issues_to_unified, load_if_exists, norm_error_type
 except ImportError:
+    from analyze_gemini import score_issues
     from config import (
         ROOT,
         app_argparser,
@@ -48,7 +49,6 @@ except ImportError:
         out_dir,
         write_json,
     )
-    from analyze_gemini import score_issues
     from normalize import bq_issues_to_unified, load_if_exists, norm_error_type
 
 THROTTLE_SEC = 12  # v1alpha quota 很小，call 之間固定歇一下
@@ -219,7 +219,7 @@ def fetch_mcp_report(client: McpClient, app_ids: dict, days: int, errors: dict, 
     """BQ 未接時：每平台 4 個 call（topIssues＋三種分布報表）。單一報表失敗記 errors 不中斷。"""
     issues, dists = [], {}
 
-    end = dt.datetime.now(dt.timezone.utc)
+    end = dt.datetime.now(dt.UTC)
     start = end - dt.timedelta(days=days)
 
     def safe(app_id: str, platform: str, report: str, page: int) -> list:
@@ -261,7 +261,7 @@ def fetch_weekly_trend(client: McpClient, app_name: str, app_ids: dict, errors: 
     hist_path = hist_dir / "mcp.json"
     hist: dict = load_if_exists(hist_path) or {}
 
-    now = dt.datetime.now(dt.timezone.utc)
+    now = dt.datetime.now(dt.UTC)
     now_iso = now.strftime("%Y-%m-%dT%H:%M:%SZ")
     this_monday = (now - dt.timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
     fetched = 0
@@ -299,7 +299,7 @@ def fetch_weekly_trend(client: McpClient, app_name: str, app_ids: dict, errors: 
 def fetch_platform(client: McpClient, app_id: str, wanted_ids: list[str], days: int, groups: list | None) -> tuple[dict, list[str]]:
     """一個平台最多 2 個 call：topIssues 對映 issue→sampleEvent（可用快取）→ 批次抓 events。"""
     if groups is None:
-        end = dt.datetime.now(dt.timezone.utc)
+        end = dt.datetime.now(dt.UTC)
         groups = get_report_groups(client, app_id, "topIssues", REPORT_PAGE_SIZE,
                                    end - dt.timedelta(days=days), end)
         time.sleep(THROTTLE_SEC)
@@ -357,7 +357,7 @@ def main() -> None:
             print(f"  （App「{args.app}」MCP 快取仍有效（{age_days:.1f} 天 < {max_age_days} 天），略過重新抓取）")
             return
 
-    now = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     result: dict = {
         "app": args.app, "generated_at": now, "period_days": days,
         "app_ids": {}, "issues": {}, "missing": [], "errors": {},

@@ -7,11 +7,9 @@ self-contained embedding, multi-app switching, and explicit Unavailable semantic
 from __future__ import annotations
 
 import json
-import os
 import sys
 import tempfile
 import unittest
-from unittest import mock
 from pathlib import Path
 
 # Add project root to sys.path
@@ -19,7 +17,6 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from crash_trend.build_dashboard import (
-    DEFAULT_OUT_HTML,
     assemble_bundle_from_apps,
     build_html,
     collect_data,

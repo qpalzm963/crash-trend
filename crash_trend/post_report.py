@@ -14,7 +14,6 @@ import os
 import sys
 
 import requests
-
 from config import ROOT, app_argparser, get_app
 
 

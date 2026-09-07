@@ -7,7 +7,6 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
 import yaml
 
@@ -15,7 +14,6 @@ from crash_trend.ai_config_service import (
     get_effective_ai_policy,
     reset_app_ai_policy,
     update_ai_policy,
-    validate_ai_policy_update,
 )
 from crash_trend.ai_provider import DEFAULT_GEMINI_MODEL
 
@@ -60,7 +58,7 @@ class TestAIAdmin(unittest.TestCase):
 
     def test_1_get_effective_ai_policy_redacts_secrets(self) -> None:
         """Test 1: get_effective_ai_policy resolves configuration without leaking API keys."""
-        with open(self.cfg_path, "r", encoding="utf-8") as f:
+        with open(self.cfg_path, encoding="utf-8") as f:
             cfg = yaml.safe_load(f)
 
         # Global policy
@@ -146,6 +144,7 @@ class TestAIAdmin(unittest.TestCase):
         """Test 6: AIConfigHTTPHandler serves GET /api/ai_policy and POST /api/ai_policy with token auth and origin protection."""
         import io
         from unittest.mock import MagicMock
+
         from crash_trend.ai_config_service import AIConfigHTTPHandler
 
         AIConfigHTTPHandler.config_path = self.cfg_path
@@ -325,6 +324,7 @@ class TestAIAdmin(unittest.TestCase):
         """Test 9: Untrusted Origin is rejected at line 1 of do_POST with 403, preventing any disk write."""
         import io
         from unittest.mock import MagicMock
+
         from crash_trend.ai_config_service import AIConfigHTTPHandler
 
         AIConfigHTTPHandler.config_path = self.cfg_path

@@ -42,8 +42,6 @@ from crash_trend.lifecycle import (
 )
 from crash_trend.schema_v2 import (
     AppDashboardV2Data,
-    IssueLifecycle,
-    LifecycleStatus,
     validate_app_dashboard_v2,
 )
 

@@ -12,33 +12,29 @@ Covers:
 from __future__ import annotations
 
 import datetime as dt
-import json
 import unittest
 from unittest import mock
-from pathlib import Path
 
-from crash_trend.schema_v2 import (
-    AppDashboardV2Data,
-    AppPeriodSnapshot,
-    validate_app_dashboard_v2,
-)
-from crash_trend.fetch_bigquery import (
-    transform_bq_to_v2,
-    transform_bq_period_snapshot,
-)
-from crash_trend.fetch_sessions import (
-    enrich_app_dashboard_with_sessions,
-    build_unavailable_sessions_result,
-)
-from crash_trend.fetch_issue_details import (
-    enrich_top_issues,
-)
 from crash_trend.analyze_gemini import (
     enrich_app_data_with_priority_and_ai,
 )
 from crash_trend.build_dashboard import (
     build_html,
-    assemble_bundle_from_apps,
+)
+from crash_trend.fetch_bigquery import (
+    transform_bq_to_v2,
+)
+from crash_trend.fetch_issue_details import (
+    enrich_top_issues,
+)
+from crash_trend.fetch_sessions import (
+    build_unavailable_sessions_result,
+    enrich_app_dashboard_with_sessions,
+)
+from crash_trend.schema_v2 import (
+    AppDashboardV2Data,
+    AppPeriodSnapshot,
+    validate_app_dashboard_v2,
 )
 
 
@@ -46,7 +42,7 @@ class TestPeriodSwitchingSchema(unittest.TestCase):
     """Verifies Schema V2.3 periods field validation."""
 
     def setUp(self):
-        self.fixed_end = dt.datetime(2026, 9, 3, 12, 0, 0, tzinfo=dt.timezone.utc)
+        self.fixed_end = dt.datetime(2026, 9, 3, 12, 0, 0, tzinfo=dt.UTC)
         self.app_cfg = {
             "app_id": "test_app",
             "display_name": "Test App",
@@ -136,7 +132,7 @@ class TestDistinctUserOvercountingRegression(unittest.TestCase):
         }
 
         app_cfg = {"app_id": "demo", "firebase_project": "demo-proj", "platforms": ["android"]}
-        end_time = dt.datetime(2026, 9, 3, 23, 59, 59, tzinfo=dt.timezone.utc)
+        end_time = dt.datetime(2026, 9, 3, 23, 59, 59, tzinfo=dt.UTC)
         res = transform_bq_to_v2(mock_bq_regression, app_cfg, days=7, end_time=end_time)
 
         # Total events is 4
@@ -154,7 +150,7 @@ class TestMultiPeriodTransformation(unittest.TestCase):
     """Tests multi-period transformation from BigQuery periods dictionary."""
 
     def setUp(self):
-        self.end_time = dt.datetime(2026, 9, 3, 23, 59, 59, tzinfo=dt.timezone.utc)
+        self.end_time = dt.datetime(2026, 9, 3, 23, 59, 59, tzinfo=dt.UTC)
         self.app_cfg = {"app_id": "clock_in", "firebase_project": "mp-clockin", "platforms": ["android"]}
 
         self.mock_multi_period_bq = {
@@ -404,7 +400,7 @@ class TestPeriodSwitchingReviewRegressions(unittest.TestCase):
     """
 
     def setUp(self):
-        self.fixed_end = dt.datetime(2026, 9, 3, 12, 0, 0, tzinfo=dt.timezone.utc)
+        self.fixed_end = dt.datetime(2026, 9, 3, 12, 0, 0, tzinfo=dt.UTC)
         self.app_cfg = {
             "app_id": "test_app",
             "display_name": "Test App",
@@ -719,7 +715,7 @@ class TestPeriodSwitchingReviewRegressions(unittest.TestCase):
 
     def test_is_usable_period_snapshot_logic_in_dashboard(self):
         """Regression 5: Dashboard JS must include isUsablePeriodSnapshot and guard switchApp/renderHeader/getCurPeriodSnapshot."""
-        from crash_trend.schema_v2 import SnapshotStatus, AppPeriodSnapshot
+        from crash_trend.schema_v2 import SnapshotStatus
 
         # Verify SnapshotStatus typing and AppPeriodSnapshot contract
         self.assertIn("insufficient_data", SnapshotStatus.__args__)

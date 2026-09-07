@@ -22,7 +22,6 @@ import os
 import sys
 
 import requests
-
 from config import app_argparser, get_app, out_dir
 
 
@@ -85,11 +84,11 @@ def main() -> None:
             totals = weekly_totals(json.loads(unified_path.read_text(encoding="utf-8")))
 
     if not totals:
-        print(f"  （無足夠趨勢資料，跳過暴增偵測）")
+        print("  （無足夠趨勢資料，跳過暴增偵測）")
         return
 
     # 排除本週（進行中）；週 key 與 BQ/fetch_stacktraces 同用「週一起點 %Y-%W」
-    now = dt.datetime.now(dt.timezone.utc)
+    now = dt.datetime.now(dt.UTC)
     this_week = (now - dt.timedelta(days=now.weekday())).strftime("%Y-%W")
     weeks = sorted(k for k in totals if k < this_week)
     if len(weeks) < 2:

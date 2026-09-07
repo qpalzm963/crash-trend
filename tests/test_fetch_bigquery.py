@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import datetime as dt
-import json
 import sys
 import unittest
 from pathlib import Path
@@ -24,7 +23,6 @@ from crash_trend.fetch_bigquery import (
 )
 from crash_trend.schema_v2 import (
     DashboardV2Bundle,
-    is_valid_date,
     is_valid_iso8601_utc,
     validate_app_dashboard_v2,
     validate_dashboard_v2,
@@ -158,7 +156,7 @@ class TestTimestampAndDataHelpers(unittest.TestCase):
     """驗證時間戳格式轉換與輔助函式。"""
 
     def test_format_iso_utc_with_datetime(self) -> None:
-        dt_utc = dt.datetime(2026, 9, 2, 14, 30, 0, tzinfo=dt.timezone.utc)
+        dt_utc = dt.datetime(2026, 9, 2, 14, 30, 0, tzinfo=dt.UTC)
         self.assertEqual(format_iso_utc(dt_utc), "2026-09-02T14:30:00Z")
 
         dt_naive = dt.datetime(2026, 9, 2, 14, 30, 0)
@@ -205,7 +203,7 @@ class TestBigQueryDataTransformation(unittest.TestCase):
     """驗證 BigQuery 查詢結果轉換為 Schema V2 AppDashboardV2Data 的正確性。"""
 
     def setUp(self) -> None:
-        self.fixed_end_time = dt.datetime(2026, 9, 2, 14, 0, 0, tzinfo=dt.timezone.utc)
+        self.fixed_end_time = dt.datetime(2026, 9, 2, 14, 0, 0, tzinfo=dt.UTC)
         self.app_cfg = {
             "app_id": "shop_app",
             "display_name": "E-Commerce Shop",
@@ -552,17 +550,17 @@ class TestBigQuerySchemaV2Compliance(unittest.TestCase):
 
         app_data = transform_bq_to_v2(mock_bq, app_cfg, days=30)
         errors = validate_app_dashboard_v2(app_data)
-        self.assertEqual(errors, [], f"AppDashboardV2Data validation failed with errors:\n" + "\n".join(errors))
+        self.assertEqual(errors, [], "AppDashboardV2Data validation failed with errors:\n" + "\n".join(errors))
 
         # Bundle validation
         bundle: DashboardV2Bundle = {
             "schema_version": "2.0",
-            "generated_at": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "generated_at": dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "default_app": "shop_app",
             "apps": {"shop_app": app_data},
         }
         bundle_errors = validate_dashboard_v2(bundle)
-        self.assertEqual(bundle_errors, [], f"DashboardV2Bundle validation failed:\n" + "\n".join(bundle_errors))
+        self.assertEqual(bundle_errors, [], "DashboardV2Bundle validation failed:\n" + "\n".join(bundle_errors))
 
 
 class TestBigQueryEdgeCases(unittest.TestCase):

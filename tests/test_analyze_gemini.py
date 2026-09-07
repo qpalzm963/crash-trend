@@ -8,7 +8,7 @@ import os
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -18,7 +18,6 @@ from crash_trend.analyze_gemini import (
     enrich_app_data_with_priority_and_ai,
     generate_disabled_ai_summary,
     generate_disabled_issue_analysis,
-    generate_error_ai_summary,
     map_score_to_level,
     parse_gemini_response,
     score_issues,
@@ -27,7 +26,6 @@ from crash_trend.analyze_gemini import (
 from crash_trend.schema_v2 import (
     is_valid_iso8601_utc,
     validate_app_dashboard_v2,
-    validate_dashboard_v2,
 )
 
 

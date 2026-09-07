@@ -20,21 +20,17 @@ import os
 import secrets
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 import yaml
 
 from .ai_provider import (
-    DEFAULT_GEMINI_MODEL,
-    DEFAULT_OPENROUTER_MODEL,
     SUPPORTED_PROVIDERS,
 )
 from .ai_router import (
-    DEFAULT_LIGHTWEIGHT_MODEL,
     FREE_TIER_GEMINI_MODELS,
     SUPPORTED_ROUTING_MODES,
-    AIRouterConfig,
     is_free_gemini_model,
     is_free_openrouter_model,
     resolve_router_config,
@@ -45,7 +41,7 @@ from .pipeline_health import sanitize_error_message
 ADMIN_TOKEN_FILE = ROOT / "out" / ".admin_token"
 
 
-def get_or_create_admin_token(token_override: Optional[str] = None) -> str:
+def get_or_create_admin_token(token_override: str | None = None) -> str:
     """Retrieves or creates a cryptographically secure token for Admin API writeback."""
     if token_override:
         return token_override.strip()
@@ -72,9 +68,9 @@ def get_or_create_admin_token(token_override: Optional[str] = None) -> str:
 
 
 def get_effective_ai_policy(
-    app_name: Optional[str] = None,
-    cfg: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+    app_name: str | None = None,
+    cfg: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Resolves and returns the effective AI policy for an app or global defaults.
 
     Ensures that NO API keys, secret URLs, or private tokens are returned in the payload.
@@ -132,8 +128,8 @@ def get_effective_ai_policy(
 
 
 def validate_ai_policy_update(
-    updates: Dict[str, Any],
-    current_policy: Dict[str, Any],
+    updates: dict[str, Any],
+    current_policy: dict[str, Any],
     explicit_paid_opt_in: bool = False,
 ) -> None:
     """Validates proposed AI policy changes against Cost Guard and enum rules."""
@@ -190,11 +186,11 @@ def validate_ai_policy_update(
 
 
 def update_ai_policy(
-    app_name: Optional[str] = None,
-    updates: Optional[Dict[str, Any]] = None,
-    config_path: Optional[Path] = None,
+    app_name: str | None = None,
+    updates: dict[str, Any] | None = None,
+    config_path: Path | None = None,
     explicit_paid_opt_in: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Validates and writes AI policy updates to apps.yaml cleanly.
 
     Returns the new effective policy.
@@ -203,7 +199,7 @@ def update_ai_policy(
     if not target_path.exists():
         raise FileNotFoundError(f"Configuration file not found: {target_path}")
 
-    with open(target_path, "r", encoding="utf-8") as f:
+    with open(target_path, encoding="utf-8") as f:
         cfg = yaml.safe_load(f) or {}
 
     current_policy = get_effective_ai_policy(app_name, cfg)
@@ -264,14 +260,14 @@ def update_ai_policy(
 
 def reset_app_ai_policy(
     app_name: str,
-    config_path: Optional[Path] = None,
-) -> Dict[str, Any]:
+    config_path: Path | None = None,
+) -> dict[str, Any]:
     """Removes per-app AI policy override in apps.yaml, reverting to global policy."""
     target_path = Path(config_path) if config_path else APPS_YAML
     if not target_path.exists():
         raise FileNotFoundError(f"Configuration file not found: {target_path}")
 
-    with open(target_path, "r", encoding="utf-8") as f:
+    with open(target_path, encoding="utf-8") as f:
         cfg = yaml.safe_load(f) or {}
 
     apps = cfg.get("apps") or {}
@@ -288,14 +284,14 @@ def reset_app_ai_policy(
 
 class AIConfigHTTPHandler(http.server.BaseHTTPRequestHandler):
     """Lightweight HTTP Handler serving the AI Policy Admin REST API."""
-    config_path: Optional[Path] = None
-    admin_token: Optional[str] = None
+    config_path: Path | None = None
+    admin_token: str | None = None
 
     def log_message(self, format: str, *args: Any) -> None:
         # Suppress noisy standard output in background server mode
         pass
 
-    def _get_allowed_origin(self) -> Optional[str]:
+    def _get_allowed_origin(self) -> str | None:
         origin = self.headers.get("Origin")
         if not origin or origin == "null":
             return "null"
@@ -303,7 +299,7 @@ class AIConfigHTTPHandler(http.server.BaseHTTPRequestHandler):
             return origin
         return None
 
-    def _send_cors_json(self, status: int, data: Dict[str, Any]) -> None:
+    def _send_cors_json(self, status: int, data: dict[str, Any]) -> None:
         origin = self._get_allowed_origin()
         if origin is None:
             self.send_response(403)
@@ -418,8 +414,8 @@ class AIConfigHTTPHandler(http.server.BaseHTTPRequestHandler):
 def serve_admin_api(
     port: int = 8080,
     host: str = "127.0.0.1",
-    config_path: Optional[Path] = None,
-    token: Optional[str] = None,
+    config_path: Path | None = None,
+    token: str | None = None,
 ) -> None:
     """Runs a local administrative HTTP API server for Dashboard AI Policy controls."""
     sec_token = get_or_create_admin_token(token_override=token)
@@ -467,7 +463,7 @@ def main() -> None:
         print(f"✓ App「{args.app}」AI 設定已重置回 Global Policy：\n{json.dumps(res, indent=2, ensure_ascii=False)}")
         return
 
-    updates: Dict[str, Any] = {}
+    updates: dict[str, Any] = {}
     if args.mode:
         updates["mode"] = args.mode
     if args.primary_provider:

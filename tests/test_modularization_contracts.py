@@ -21,14 +21,13 @@ Validates:
 
 from __future__ import annotations
 
-import copy
 import inspect
 import json
-from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import crash_trend.build_dashboard as legacy_dashboard
