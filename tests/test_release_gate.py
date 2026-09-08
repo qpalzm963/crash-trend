@@ -1402,6 +1402,230 @@ class TestReleaseGateRound3ReviewFixes(unittest.TestCase):
             self.assertFalse(data["should_alert"])
 
 
+class TestReleaseGateRound4ReviewFixes(unittest.TestCase):
+    """Regression test suite for Round 4 review feedback (Review ID 5138307255).
+
+    Addresses:
+    - [P1] prev_rate == 0 && current_rate > 0 must NOT map to 0.0 / PASS (deterministic zero-baseline regression).
+    - prev_rate == 0 && current_rate == 0 evaluates cleanly to 0.0 / PASS.
+    - Fatal / ANR zero baseline follows the same principle, avoiding None -> skip hiding new regressions.
+    """
+
+    def test_zero_previous_crash_rate_with_positive_current_rate_fails_gate(self) -> None:
+        """Asserts that when previous release had 0 crashes and current release has crashes, Gate does NOT pass."""
+        policy = GatePolicy(min_sessions=1000)
+
+        # Previous release: 10,000 sessions, 0 crashes (rate = 0.0)
+        # Current release: 10,000 sessions, 5 crashes (rate = 0.0005)
+        curr_recent = {
+            "30d": {
+                "sessions_total": 10000,
+                "crash_events": 5,
+                "sample_sufficient": True,
+            }
+        }
+        prev_recent = {
+            "30d": {
+                "sessions_total": 10000,
+                "crash_events": 0,
+                "sample_sufficient": True,
+            }
+        }
+
+        cmp_res = compute_previous_release_comparison(
+            v_curr_info={"recent_health": curr_recent},
+            v_prev_info={"recent_health": prev_recent},
+            v_prev="1.0.0",
+            recent_health=curr_recent,
+            introduced_count=0,
+            prev_introduced_count=0,
+            min_sessions=1000,
+        )
+
+        # Must not be 0.0!
+        self.assertNotEqual(cmp_res["crash_rate_change_pct"], 0.0)
+        self.assertEqual(cmp_res["crash_rate_change_pct"], 1.0)
+        self.assertTrue(cmp_res.get("zero_baseline_crash"))
+        self.assertEqual(cmp_res["stability"], "degrading")
+        self.assertEqual(cmp_res["stability_status"], "regressed")
+
+        item = {
+            "version": "1.1.0",
+            "platform": "android",
+            "recent_health": curr_recent,
+            "vs_previous": cmp_res,
+        }
+        eval_res = evaluate_release(item, policy)
+
+        # Gate MUST NOT PASS
+        self.assertNotEqual(eval_res["gate_status"], "pass")
+        self.assertEqual(eval_res["gate_status"], "fail")
+        self.assertTrue(eval_res["alert"]["should_alert"])
+        self.assertEqual(eval_res["alert"]["alert_severity"], "critical")
+
+        cr_rule = next(r for r in eval_res["rule_results"] if r["rule_name"] == "crash_rate_regression")
+        self.assertEqual(cr_rule["status"], "fail")
+        self.assertIn("零基準退化", cr_rule["reason"])
+
+    def test_zero_previous_and_zero_current_crash_rate_passes_gate(self) -> None:
+        """Asserts that when both previous and current releases have 0 crashes, Gate passes with 0.00% change."""
+        policy = GatePolicy(min_sessions=1000)
+
+        curr_recent = {
+            "30d": {
+                "sessions_total": 10000,
+                "crash_events": 0,
+                "sample_sufficient": True,
+            }
+        }
+        prev_recent = {
+            "30d": {
+                "sessions_total": 10000,
+                "crash_events": 0,
+                "sample_sufficient": True,
+            }
+        }
+
+        cmp_res = compute_previous_release_comparison(
+            v_curr_info={"recent_health": curr_recent},
+            v_prev_info={"recent_health": prev_recent},
+            v_prev="1.0.0",
+            recent_health=curr_recent,
+            introduced_count=0,
+            prev_introduced_count=0,
+            min_sessions=1000,
+        )
+
+        self.assertEqual(cmp_res["crash_rate_change_pct"], 0.0)
+        self.assertFalse(cmp_res.get("zero_baseline_crash"))
+        self.assertEqual(cmp_res["stability"], "stable")
+
+        item = {
+            "version": "1.1.0",
+            "platform": "android",
+            "recent_health": curr_recent,
+            "vs_previous": cmp_res,
+        }
+        eval_res = evaluate_release(item, policy)
+        self.assertEqual(eval_res["gate_status"], "pass")
+        self.assertFalse(eval_res["alert"]["should_alert"])
+
+        cr_rule = next(r for r in eval_res["rule_results"] if r["rule_name"] == "crash_rate_regression")
+        self.assertEqual(cr_rule["status"], "pass")
+        self.assertIn("0.00%", cr_rule["reason"])
+
+    def test_zero_previous_fatal_and_anr_with_positive_current_fails_gate(self) -> None:
+        """Asserts that fatal and ANR zero baselines fail the gate when new events are observed (never skip)."""
+        policy = GatePolicy(min_sessions=1000)
+
+        curr_recent = {
+            "30d": {
+                "sessions_total": 10000,
+                "crash_events": 10,
+                "fatal_events": 2,
+                "anr_events": 3,
+                "sample_sufficient": True,
+            }
+        }
+        prev_recent = {
+            "30d": {
+                "sessions_total": 10000,
+                "crash_events": 10,
+                "fatal_events": 0,
+                "anr_events": 0,
+                "sample_sufficient": True,
+            }
+        }
+
+        cmp_res = compute_previous_release_comparison(
+            v_curr_info={"recent_health": curr_recent},
+            v_prev_info={"recent_health": prev_recent},
+            v_prev="1.0.0",
+            recent_health=curr_recent,
+            introduced_count=0,
+            prev_introduced_count=0,
+            min_sessions=1000,
+        )
+
+        self.assertEqual(cmp_res["fatal_rate_change_pct"], 1.0)
+        self.assertEqual(cmp_res["anr_rate_change_pct"], 1.0)
+        self.assertTrue(cmp_res.get("zero_baseline_fatal"))
+        self.assertTrue(cmp_res.get("zero_baseline_anr"))
+        self.assertEqual(cmp_res["stability"], "degrading")
+
+        item = {
+            "version": "1.1.0",
+            "platform": "android",
+            "recent_health": curr_recent,
+            "vs_previous": cmp_res,
+        }
+        eval_res = evaluate_release(item, policy)
+        self.assertEqual(eval_res["gate_status"], "fail")
+
+        fat_rule = next(r for r in eval_res["rule_results"] if r["rule_name"] == "fatal_rate_regression")
+        self.assertEqual(fat_rule["status"], "fail")
+        self.assertIn("Fatal", fat_rule["reason"])
+        self.assertIn("零基準退化", fat_rule["reason"])
+
+        anr_rule = next(r for r in eval_res["rule_results"] if r["rule_name"] == "anr_rate_regression")
+        self.assertEqual(anr_rule["status"], "fail")
+        self.assertIn("ANR", anr_rule["reason"])
+        self.assertIn("零基準退化", anr_rule["reason"])
+
+    def test_zero_previous_fatal_and_anr_with_zero_current_passes_gate(self) -> None:
+        """Asserts that fatal and ANR zero baselines pass with 0.00% change when both releases have 0 events."""
+        policy = GatePolicy(min_sessions=1000)
+
+        curr_recent = {
+            "30d": {
+                "sessions_total": 10000,
+                "crash_events": 10,
+                "fatal_events": 0,
+                "anr_events": 0,
+                "sample_sufficient": True,
+            }
+        }
+        prev_recent = {
+            "30d": {
+                "sessions_total": 10000,
+                "crash_events": 10,
+                "fatal_events": 0,
+                "anr_events": 0,
+                "sample_sufficient": True,
+            }
+        }
+
+        cmp_res = compute_previous_release_comparison(
+            v_curr_info={"recent_health": curr_recent},
+            v_prev_info={"recent_health": prev_recent},
+            v_prev="1.0.0",
+            recent_health=curr_recent,
+            introduced_count=0,
+            prev_introduced_count=0,
+            min_sessions=1000,
+        )
+
+        self.assertEqual(cmp_res["fatal_rate_change_pct"], 0.0)
+        self.assertEqual(cmp_res["anr_rate_change_pct"], 0.0)
+        self.assertFalse(cmp_res.get("zero_baseline_fatal"))
+        self.assertFalse(cmp_res.get("zero_baseline_anr"))
+
+        item = {
+            "version": "1.1.0",
+            "platform": "android",
+            "recent_health": curr_recent,
+            "vs_previous": cmp_res,
+        }
+        eval_res = evaluate_release(item, policy)
+        fat_rule = next(r for r in eval_res["rule_results"] if r["rule_name"] == "fatal_rate_regression")
+        self.assertEqual(fat_rule["status"], "pass")
+        self.assertIn("0.00%", fat_rule["reason"])
+
+        anr_rule = next(r for r in eval_res["rule_results"] if r["rule_name"] == "anr_rate_regression")
+        self.assertEqual(anr_rule["status"], "pass")
+        self.assertIn("0.00%", anr_rule["reason"])
+
+
 if __name__ == "__main__":
     unittest.main()
 

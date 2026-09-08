@@ -106,6 +106,10 @@ def compute_previous_release_comparison(
                 break
 
     prev_sess_val: int = 0
+    zero_base_cr = False
+    zero_base_fatal = False
+    zero_base_anr = False
+
     if matched_c_w and matched_p_w:
         c_w = matched_c_w
         p_w = matched_p_w
@@ -117,7 +121,15 @@ def compute_previous_release_comparison(
         if c_se > 0 and p_se > 0:
             rate_curr = c_ev / c_se
             rate_prev = p_ev / p_se
-            crash_rate_diff = round((rate_curr - rate_prev) / rate_prev, 4) if rate_prev > 0 else 0.0
+            if rate_prev > 0:
+                crash_rate_diff = round((rate_curr - rate_prev) / rate_prev, 4)
+            elif rate_curr == 0 and rate_prev == 0:
+                crash_rate_diff = 0.0
+            elif rate_curr > 0 and rate_prev == 0:
+                crash_rate_diff = 1.0
+                zero_base_cr = True
+            elif rate_curr == 0 and rate_prev > 0:
+                crash_rate_diff = -1.0
 
             c_fat = c_w.get("fatal_events") if c_w.get("fatal_events") is not None else c_w.get("fatal_count")
             p_fat = p_w.get("fatal_events") if p_w.get("fatal_events") is not None else p_w.get("fatal_count")
@@ -128,6 +140,11 @@ def compute_previous_release_comparison(
                     fatal_rate_diff = round((r_fat_curr - r_fat_prev) / r_fat_prev, 4)
                 elif r_fat_curr == 0 and r_fat_prev == 0:
                     fatal_rate_diff = 0.0
+                elif r_fat_curr > 0 and r_fat_prev == 0:
+                    fatal_rate_diff = 1.0
+                    zero_base_fatal = True
+                elif r_fat_curr == 0 and r_fat_prev > 0:
+                    fatal_rate_diff = -1.0
 
             c_anr = c_w.get("anr_events") if c_w.get("anr_events") is not None else c_w.get("anr_count")
             p_anr = p_w.get("anr_events") if p_w.get("anr_events") is not None else p_w.get("anr_count")
@@ -138,6 +155,11 @@ def compute_previous_release_comparison(
                     anr_rate_diff = round((r_anr_curr - r_anr_prev) / r_anr_prev, 4)
                 elif r_anr_curr == 0 and r_anr_prev == 0:
                     anr_rate_diff = 0.0
+                elif r_anr_curr > 0 and r_anr_prev == 0:
+                    anr_rate_diff = 1.0
+                    zero_base_anr = True
+                elif r_anr_curr == 0 and r_anr_prev > 0:
+                    anr_rate_diff = -1.0
     else:
         c_sess = v_curr_info.get("sessions_total")
         p_sess = v_prev_info.get("sessions_total")
@@ -150,7 +172,15 @@ def compute_previous_release_comparison(
             if raw_c_ev is not None and raw_p_ev is not None:
                 rate_curr = int(raw_c_ev) / c_se
                 rate_prev = int(raw_p_ev) / p_se
-                crash_rate_diff = round((rate_curr - rate_prev) / rate_prev, 4) if rate_prev > 0 else 0.0
+                if rate_prev > 0:
+                    crash_rate_diff = round((rate_curr - rate_prev) / rate_prev, 4)
+                elif rate_curr == 0 and rate_prev == 0:
+                    crash_rate_diff = 0.0
+                elif rate_curr > 0 and rate_prev == 0:
+                    crash_rate_diff = 1.0
+                    zero_base_cr = True
+                elif rate_curr == 0 and rate_prev > 0:
+                    crash_rate_diff = -1.0
 
             # Fallback: strictly require window-scoped fatal_events / fatal_count matching sessions.
             # NEVER fall back to lifetime_fatal or lifetime_anr!
@@ -163,6 +193,11 @@ def compute_previous_release_comparison(
                     fatal_rate_diff = round((r_fat_curr - r_fat_prev) / r_fat_prev, 4)
                 elif r_fat_curr == 0 and r_fat_prev == 0:
                     fatal_rate_diff = 0.0
+                elif r_fat_curr > 0 and r_fat_prev == 0:
+                    fatal_rate_diff = 1.0
+                    zero_base_fatal = True
+                elif r_fat_curr == 0 and r_fat_prev > 0:
+                    fatal_rate_diff = -1.0
             else:
                 fatal_rate_diff = None
 
@@ -175,6 +210,11 @@ def compute_previous_release_comparison(
                     anr_rate_diff = round((r_anr_curr - r_anr_prev) / r_anr_prev, 4)
                 elif r_anr_curr == 0 and r_anr_prev == 0:
                     anr_rate_diff = 0.0
+                elif r_anr_curr > 0 and r_anr_prev == 0:
+                    anr_rate_diff = 1.0
+                    zero_base_anr = True
+                elif r_anr_curr == 0 and r_anr_prev > 0:
+                    anr_rate_diff = -1.0
             else:
                 anr_rate_diff = None
 
@@ -197,7 +237,9 @@ def compute_previous_release_comparison(
     new_issues_diff = introduced_count - prev_introduced_count
 
     stability: Literal["improving", "stable", "degrading", "baseline"] = "stable"
-    if crash_rate_diff is not None:
+    if zero_base_cr or zero_base_fatal or zero_base_anr:
+        stability = "degrading"
+    elif crash_rate_diff is not None:
         if crash_rate_diff <= -0.05:
             stability = "improving"
         elif crash_rate_diff >= 0.05:
@@ -229,4 +271,7 @@ def compute_previous_release_comparison(
         "comparison_window": comp_w,
         "previous_sample_sufficient": prev_sample_ok,
         "previous_sessions_total": prev_sess_val,
+        "zero_baseline_crash": zero_base_cr,
+        "zero_baseline_fatal": zero_base_fatal,
+        "zero_baseline_anr": zero_base_anr,
     }

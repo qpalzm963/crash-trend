@@ -238,10 +238,14 @@ def evaluate_release(
 
     # Rule 1: Crash rate change percentage
     cr_diff = vs_p.get("crash_rate_change_pct")
+    is_zero_base_cr = bool(vs_p.get("zero_baseline_crash"))
     if cr_diff is not None:
         cr_val = float(cr_diff)
         cr_st: RuleStatus
-        if cr_val >= policy.crash_rate_change_pct.fail:
+        if is_zero_base_cr:
+            cr_st = "fail"
+            cr_msg = "前版基準無崩潰 (0 事件)，本版出現崩潰事件，判定為零基準退化 (Zero-baseline Regression)"
+        elif cr_val >= policy.crash_rate_change_pct.fail:
             cr_st = "fail"
             cr_msg = f"崩潰率上升 {cr_val * 100:+.2f}%，達到失敗門檻 (+{policy.crash_rate_change_pct.fail * 100:.1f}%)"
         elif cr_val >= policy.crash_rate_change_pct.warn:
@@ -311,10 +315,14 @@ def evaluate_release(
 
     # Rule 3: Fatal rate change percentage
     fatal_diff = vs_p.get("fatal_rate_change_pct") if vs_p.get("fatal_rate_change_pct") is not None else vs_p.get("fatal_change_pct")
+    is_zero_base_fat = bool(vs_p.get("zero_baseline_fatal"))
     if fatal_diff is not None:
         fat_val = float(fatal_diff)
         fat_st: RuleStatus
-        if fat_val >= policy.fatal_rate_change_pct.fail:
+        if is_zero_base_fat:
+            fat_st = "fail"
+            fat_msg = "前版基準無 Fatal 崩潰 (0 事件)，本版出現 Fatal 崩潰事件，判定為零基準退化 (Zero-baseline Regression)"
+        elif fat_val >= policy.fatal_rate_change_pct.fail:
             fat_st = "fail"
             fat_msg = f"Fatal 崩潰率上升 {fat_val * 100:+.2f}%，達到失敗門檻 (+{policy.fatal_rate_change_pct.fail * 100:.1f}%)"
         elif fat_val >= policy.fatal_rate_change_pct.warn:
@@ -347,10 +355,14 @@ def evaluate_release(
 
     # Rule 4: ANR rate change percentage
     anr_diff = vs_p.get("anr_rate_change_pct") if vs_p.get("anr_rate_change_pct") is not None else vs_p.get("anr_change_pct")
+    is_zero_base_anr = bool(vs_p.get("zero_baseline_anr"))
     if anr_diff is not None:
         anr_val = float(anr_diff)
         anr_st: RuleStatus
-        if anr_val >= policy.anr_rate_change_pct.fail:
+        if is_zero_base_anr:
+            anr_st = "fail"
+            anr_msg = "前版基準無 ANR (0 事件)，本版出現 ANR 事件，判定為零基準退化 (Zero-baseline Regression)"
+        elif anr_val >= policy.anr_rate_change_pct.fail:
             anr_st = "fail"
             anr_msg = f"ANR 率上升 {anr_val * 100:+.2f}%，達到失敗門檻 (+{policy.anr_rate_change_pct.fail * 100:.1f}%)"
         elif anr_val >= policy.anr_rate_change_pct.warn:

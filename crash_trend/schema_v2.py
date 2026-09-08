@@ -329,6 +329,9 @@ class PreviousReleaseComparison(TypedDict):
     comparison_window: NotRequired[str | None]
     previous_sample_sufficient: NotRequired[bool]
     previous_sessions_total: NotRequired[int | None]
+    zero_baseline_crash: NotRequired[bool]
+    zero_baseline_fatal: NotRequired[bool]
+    zero_baseline_anr: NotRequired[bool]
 
 
 class ReleaseIssueLifecycle(TypedDict):
@@ -698,6 +701,12 @@ def validate_release_catalog(catalog: Any, errors: list[str], p: str = "") -> No
                     errors.append(f"{cp}vs_previous.previous_sample_sufficient must be a boolean")
                 if "previous_sessions_total" in vp and vp["previous_sessions_total"] is not None and not isinstance(vp["previous_sessions_total"], int):
                     errors.append(f"{cp}vs_previous.previous_sessions_total must be an integer or null")
+                if "zero_baseline_crash" in vp and not isinstance(vp["zero_baseline_crash"], bool):
+                    errors.append(f"{cp}vs_previous.zero_baseline_crash must be a boolean")
+                if "zero_baseline_fatal" in vp and not isinstance(vp["zero_baseline_fatal"], bool):
+                    errors.append(f"{cp}vs_previous.zero_baseline_fatal must be a boolean")
+                if "zero_baseline_anr" in vp and not isinstance(vp["zero_baseline_anr"], bool):
+                    errors.append(f"{cp}vs_previous.zero_baseline_anr must be a boolean")
 
         if "issue_lifecycle" in item and item["issue_lifecycle"] is not None:
             il = item["issue_lifecycle"]
