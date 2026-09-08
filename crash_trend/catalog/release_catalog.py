@@ -13,9 +13,11 @@ from typing import Any, Literal, cast
 
 from crash_trend.catalog.comparison import compute_previous_release_comparison
 from crash_trend.catalog.issue_lifecycle import is_version_sample_sufficient
+from crash_trend.gate.policy import load_gate_policy
 from crash_trend.schema_v2 import (
     PreviousReleaseComparison,
     ReleaseCatalogItem,
+    ReleaseGateSummary,
     ReleaseIssueLifecycle,
     ReleaseRecentHealth,
 )
@@ -137,8 +139,26 @@ def build_release_catalog(
     app_data: dict | None = None,
     platform: str | None = None,
     reference_date: Any | None = None,
+    gate_policy: Any | None = None,
 ) -> list[ReleaseCatalogItem]:
     """Constructs the decoupled persistent release catalog conforming to ReleaseCatalogItem."""
+    if gate_policy is not None:
+        eff_policy = gate_policy
+    else:
+        effective_app_id = (
+            getattr(catalog, "app_id", None)
+            or (app_data.get("metadata", {}).get("app_id") if isinstance(app_data, dict) else None)
+        )
+        app_cfg = None
+        if effective_app_id:
+            try:
+                from crash_trend.config import load_config
+                cfg = load_config()
+                app_cfg = (cfg.get("apps") or {}).get(effective_app_id)
+            except Exception:
+                app_cfg = None
+        eff_policy = load_gate_policy(app_cfg)
+
     ref_dt = dt.datetime.now(dt.UTC)
     if reference_date is not None:
         if isinstance(reference_date, dt.datetime):
@@ -368,6 +388,7 @@ def build_release_catalog(
             if v_prev:
                 prev_info = catalog.app_versions.get(pf, {}).get(v_prev, {})
                 prev_introduced_cnt = len([i for i in pf_issues if i.get("first_seen_version") == v_prev])
+
                 vs_previous = compute_previous_release_comparison(
                     v_curr_info=v_info,
                     v_prev_info=prev_info,
@@ -375,11 +396,15 @@ def build_release_catalog(
                     recent_health=recent_health,
                     introduced_count=len(introduced_ids),
                     prev_introduced_count=prev_introduced_cnt,
+                    target_window=None,
+                    min_adoption_rate=eff_policy.min_adoption_rate,
+                    min_sessions=eff_policy.min_sessions,
+                    min_version_events=eff_policy.min_version_events,
                 )
 
             stability_status = vs_previous.get("stability", "baseline") if vs_previous else "baseline"
 
-            catalog_items.append({
+            rel_item: ReleaseCatalogItem = {
                 "version": ver,
                 "platform": cast(Literal["ios", "android"], pf),
                 "first_seen": first_seen,
@@ -395,7 +420,28 @@ def build_release_catalog(
                 "recent_health": recent_health,
                 "issue_lifecycle": issue_lifecycle,
                 "vs_previous": vs_previous,
-            })
+            }
+            if eff_policy.enabled:
+                from crash_trend.gate.evaluator import evaluate_release
+
+                gate_eval = evaluate_release(cast(dict[str, Any], rel_item), eff_policy)
+                rel_item["release_gate"] = cast(
+                    ReleaseGateSummary,
+                    {
+                        "status": gate_eval["gate_status"],
+                        "should_alert": gate_eval["alert"]["should_alert"],
+                        "alert_severity": gate_eval["alert"]["alert_severity"],
+                        "alert_summary": gate_eval["alert"]["alert_summary"],
+                        "rules_triggered": gate_eval["alert"]["trigger_rules"],
+                        "sample_sufficient": gate_eval["sample_sufficient"],
+                        "rule_results": gate_eval["rule_results"],
+                        "comparison_window": gate_eval.get("comparison_window"),
+                        "evaluated_at": gate_eval["evaluated_at"],
+                    },
+                )
+            else:
+                rel_item["release_gate"] = None
+            catalog_items.append(rel_item)
 
     final_items: list[ReleaseCatalogItem] = []
     for pf in target_platforms:

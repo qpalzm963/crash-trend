@@ -10,6 +10,7 @@ import json
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 # Add project root to sys.path

@@ -30,16 +30,21 @@ def is_version_sample_sufficient(
     if not isinstance(version_info, dict):
         return False
 
+    if version_info.get("sample_sufficient") is False:
+        return False
+
     if version_info.get("sample_sufficient") is True:
         return True
 
     adoption_rate = version_info.get("adoption_rate")
     if adoption_rate is not None and isinstance(adoption_rate, (int, float)):
-        return float(adoption_rate) >= min_adoption_rate
+        if float(adoption_rate) >= min_adoption_rate:
+            return True
 
     sessions_total = version_info.get("sessions_total")
     if sessions_total is not None and isinstance(sessions_total, (int, float)):
-        return int(sessions_total) >= min_sessions
+        if int(sessions_total) >= min_sessions:
+            return True
 
     crash_events = version_info.get("crash_events", 0)
     if isinstance(crash_events, (int, float)) and crash_events >= min_version_events:

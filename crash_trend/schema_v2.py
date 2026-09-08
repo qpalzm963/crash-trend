@@ -326,6 +326,12 @@ class PreviousReleaseComparison(TypedDict):
     anr_rate_change_pct: NotRequired[float | None]
     new_issues_count: NotRequired[int | None]
     stability_status: NotRequired[str | None]
+    comparison_window: NotRequired[str | None]
+    previous_sample_sufficient: NotRequired[bool]
+    previous_sessions_total: NotRequired[int | None]
+    zero_baseline_crash: NotRequired[bool]
+    zero_baseline_fatal: NotRequired[bool]
+    zero_baseline_anr: NotRequired[bool]
 
 
 class ReleaseIssueLifecycle(TypedDict):
@@ -341,6 +347,29 @@ class ReleaseIssueLifecycle(TypedDict):
     persistent_issues: NotRequired[list[str]]
     regressed_issues: NotRequired[list[str]]
     resolved_issues: NotRequired[list[str]]
+
+
+class RuleEvaluationResult(TypedDict):
+    rule_name: str
+    metric_name: str
+    current_value: float | int | None
+    previous_value: float | int | None
+    warn_threshold: float | int
+    fail_threshold: float | int
+    status: Literal["pass", "warn", "fail", "skip", "insufficient_data"]
+    reason: str
+
+
+class ReleaseGateSummary(TypedDict):
+    status: Literal["pass", "warn", "fail", "insufficient_data", "baseline"]
+    should_alert: bool
+    alert_severity: Literal["none", "warning", "critical"]
+    alert_summary: str
+    rules_triggered: list[str]
+    sample_sufficient: NotRequired[bool]
+    rule_results: NotRequired[list[RuleEvaluationResult]]
+    comparison_window: NotRequired[str | None]
+    evaluated_at: NotRequired[str]
 
 
 class ReleaseCatalogItem(TypedDict):
@@ -359,6 +388,7 @@ class ReleaseCatalogItem(TypedDict):
     stability_status: NotRequired[str | None]
     issue_lifecycle: NotRequired[ReleaseIssueLifecycle]
     vs_previous: NotRequired[PreviousReleaseComparison | None]
+    release_gate: NotRequired[ReleaseGateSummary | None]
 
 
 class CatalogVersionHistory(TypedDict):
@@ -665,6 +695,18 @@ def validate_release_catalog(catalog: Any, errors: list[str], p: str = "") -> No
             else:
                 if "stability" in vp and vp["stability"] not in valid_stabilities:
                     errors.append(f"{cp}vs_previous.stability must be one of {valid_stabilities}")
+                if "comparison_window" in vp and vp["comparison_window"] is not None and not isinstance(vp["comparison_window"], str):
+                    errors.append(f"{cp}vs_previous.comparison_window must be a string or null")
+                if "previous_sample_sufficient" in vp and not isinstance(vp["previous_sample_sufficient"], bool):
+                    errors.append(f"{cp}vs_previous.previous_sample_sufficient must be a boolean")
+                if "previous_sessions_total" in vp and vp["previous_sessions_total"] is not None and not isinstance(vp["previous_sessions_total"], int):
+                    errors.append(f"{cp}vs_previous.previous_sessions_total must be an integer or null")
+                if "zero_baseline_crash" in vp and not isinstance(vp["zero_baseline_crash"], bool):
+                    errors.append(f"{cp}vs_previous.zero_baseline_crash must be a boolean")
+                if "zero_baseline_fatal" in vp and not isinstance(vp["zero_baseline_fatal"], bool):
+                    errors.append(f"{cp}vs_previous.zero_baseline_fatal must be a boolean")
+                if "zero_baseline_anr" in vp and not isinstance(vp["zero_baseline_anr"], bool):
+                    errors.append(f"{cp}vs_previous.zero_baseline_anr must be a boolean")
 
         if "issue_lifecycle" in item and item["issue_lifecycle"] is not None:
             il = item["issue_lifecycle"]
@@ -674,6 +716,27 @@ def validate_release_catalog(catalog: Any, errors: list[str], p: str = "") -> No
                 for cnt_f in ("introduced_count", "persistent_count", "regressed_count", "resolved_count"):
                     if cnt_f in il and (not isinstance(il[cnt_f], int) or il[cnt_f] < 0):
                         errors.append(f"{cp}issue_lifecycle.{cnt_f} must be a non-negative integer")
+
+        if "release_gate" in item and item["release_gate"] is not None:
+            rg = item["release_gate"]
+            if not isinstance(rg, dict):
+                errors.append(f"{cp}release_gate must be an object or null")
+            else:
+                valid_gate_statuses = {"pass", "warn", "fail", "insufficient_data", "baseline"}
+                if "status" in rg and rg["status"] not in valid_gate_statuses:
+                    errors.append(f"{cp}release_gate.status must be one of: {', '.join(sorted(valid_gate_statuses))}")
+                if "should_alert" in rg and not isinstance(rg["should_alert"], bool):
+                    errors.append(f"{cp}release_gate.should_alert must be a boolean")
+                if "alert_severity" in rg and rg["alert_severity"] not in {"none", "warning", "critical"}:
+                    errors.append(f"{cp}release_gate.alert_severity must be one of: none, warning, critical")
+                if "sample_sufficient" in rg and not isinstance(rg["sample_sufficient"], bool):
+                    errors.append(f"{cp}release_gate.sample_sufficient must be a boolean")
+                if "comparison_window" in rg and rg["comparison_window"] is not None and not isinstance(rg["comparison_window"], str):
+                    errors.append(f"{cp}release_gate.comparison_window must be a string or null")
+                if "evaluated_at" in rg and not isinstance(rg["evaluated_at"], str):
+                    errors.append(f"{cp}release_gate.evaluated_at must be an ISO 8601 string")
+                if "rule_results" in rg and not isinstance(rg["rule_results"], list):
+                    errors.append(f"{cp}release_gate.rule_results must be a list")
 
 
 def validate_historical_catalog(data: dict) -> list[str]:

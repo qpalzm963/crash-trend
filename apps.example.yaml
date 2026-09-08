@@ -50,6 +50,16 @@ apps:
     custom_keys:                          # App 埋設之 Crashlytics Custom Keys 監控清單
       - user_tier
       - network_type
+    release_gate:                         # 版本品質退化閘門設定 (選填；Dashboard V2.7 - Issue #57)
+      enabled: true                       # 是否啟用品質退化評估（預設 true）
+      min_sessions: 1000                  # 判定門檻之最小工作階段數（低於此數標記為 insufficient_data）
+      thresholds:
+        crash_rate_change_pct: { warn: 0.10, fail: 0.25 }   # 崩潰率上升幅度（+10% 預警, +25% 失敗阻擋）
+        crash_free_users_drop: { warn: 0.005, fail: 0.015 } # 無崩潰用戶率下降（0.5% 預警, 1.5% 失敗阻擋）
+        fatal_rate_change_pct: { warn: 0.10, fail: 0.25 }   # Fatal 率上升幅度
+        anr_rate_change_pct: { warn: 0.10, fail: 0.25 }     # ANR 率上升幅度
+        regressed_issues_count: { warn: 1, fail: 3 }        # 復發問題數門檻
+        introduced_issues_count: { warn: 5, fail: 10 }      # 新引入問題數門檻
 
   rider_app:                              # 範例 2：Crashlytics-only 模式 (推薦：輕量、不佔 Sessions 儲存)
     display_name: 外送司機端
