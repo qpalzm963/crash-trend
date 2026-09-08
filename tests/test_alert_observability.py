@@ -697,63 +697,23 @@ class TestSchemaV2AlertDelivery(unittest.TestCase):
         self.assertEqual(errors, [])
 
     def test_validate_app_dashboard_v2_with_alert_delivery(self) -> None:
-        app_data = {
-            "metadata": {
-                "app_id": "test_app",
-                "display_name": "Test App",
-                "firebase_project_id": "test-proj",
-                "platforms": ["android"],
-                "source_repo": None,
-                "custom_keys_monitored": [],
-            },
-            "period": {
-                "days": 7,
-                "start_time": "2026-09-01T00:00:00Z",
-                "end_time": "2026-09-08T00:00:00Z",
-                "comparison_period": None,
-            },
-            "sources": {},
-            "kpi": {
-                "crash_free_users_rate": 0.99,
-                "crash_free_sessions_rate": 0.999,
-                "total_crashes": 10,
-                "total_fatal": 0,
-                "total_anr": 0,
-                "total_affected_users": 5,
-                "total_sessions": 10000,
-            },
-            "daily_trend": [],
-            "version_health": [],
-            "distributions": {
-                "platform": [],
-                "device_models": [],
-                "os_versions": [],
-                "app_versions": [],
-            },
-            "top_issues": [],
-            "ai_summary": {
-                "overall_health_assessment": "Good",
-                "trend_analysis": "Stable",
-                "distribution_insights": "None",
-                "recommended_actions": [],
-                "data_limitations": None,
-            },
-            "limitations": [],
-            "alert_delivery": {
+        fixture_path = ROOT / "tests" / "fixtures" / "dashboard_v2.json"
+        data = json.loads(fixture_path.read_text(encoding="utf-8"))
+        shop_app = data["apps"]["shop_app"]
+        shop_app["alert_delivery"] = {
+            "provider": "google_chat",
+            "health": {
+                "status": "healthy",
                 "provider": "google_chat",
-                "health": {
-                    "status": "healthy",
-                    "provider": "google_chat",
-                    "sent_24h": 1,
-                    "failed_24h": 0,
-                    "suppressed_24h": 0,
-                    "latest_success_at": "2026-09-08T00:00:00Z",
-                    "latest_failure_at": None,
-                },
-                "recent": [],
+                "sent_24h": 1,
+                "failed_24h": 0,
+                "suppressed_24h": 0,
+                "latest_success_at": "2026-09-08T00:00:00Z",
+                "latest_failure_at": None,
             },
+            "recent": [],
         }
-        errors = validate_app_dashboard_v2(app_data)
+        errors = validate_app_dashboard_v2(shop_app)
         self.assertEqual(errors, [])
 
 
