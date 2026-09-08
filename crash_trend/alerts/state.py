@@ -271,19 +271,41 @@ class AlertDeliveryStore:
         self,
         app_id: str,
         platform: str | None = None,
+        version: str | None = None,
         limit: int = 50,
     ) -> list[DeliveryRecord]:
-        """Returns recent audit delivery records."""
+        """Returns recent audit delivery records with optional platform and version filtering."""
         query = "SELECT * FROM alert_deliveries WHERE app_id = ?"
         params: list[Any] = [app_id.strip()]
         if platform:
             query += " AND platform = ?"
             params.append(platform.strip().lower())
-        query += " ORDER BY id DESC LIMIT ?"
+        if version:
+            query += " AND version = ?"
+            params.append(version.strip())
+        query += " ORDER BY attempted_at DESC, id DESC LIMIT ?"
         params.append(max(1, limit))
 
         with self._connection() as conn:
             cur = conn.execute(query, params)
+            return [self._row_to_record(row) for row in cur.fetchall()]
+
+    def get_deliveries_in_window(
+        self,
+        app_id: str,
+        start_iso: str,
+        end_iso: str,
+    ) -> list[DeliveryRecord]:
+        """Returns audit records attempted within a specific ISO 8601 UTC timestamp window."""
+        query = """
+            SELECT * FROM alert_deliveries
+            WHERE app_id = ?
+              AND attempted_at >= ?
+              AND attempted_at <= ?
+            ORDER BY attempted_at DESC, id DESC
+        """
+        with self._connection() as conn:
+            cur = conn.execute(query, (app_id.strip(), start_iso.strip(), end_iso.strip()))
             return [self._row_to_record(row) for row in cur.fetchall()]
 
     @staticmethod

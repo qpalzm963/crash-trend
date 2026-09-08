@@ -242,6 +242,37 @@ def assemble_bundle_from_apps(cfg: dict | None = None, root_dir: str | Path | No
                 except Exception:
                     pass
 
+            # Enrich with Alert Delivery Observability & Release Alert History (Issue #63)
+            alert_db = eff_root / "out" / app_id / "alert_delivery.sqlite3"
+            try:
+                from crash_trend.alerts.observability import (
+                    get_alert_observability_bundle,
+                    get_release_alert_history,
+                )
+                alert_bundle = get_alert_observability_bundle(app_id, custom_path=alert_db)
+                a_data["alert_delivery"] = alert_bundle
+                for p_val in (a_data.get("periods") or {}).values():
+                    if isinstance(p_val, dict):
+                        p_val["alert_delivery"] = alert_bundle
+
+                if alert_db.is_file():
+                    all_catalogs = []
+                    if isinstance(a_data.get("release_catalog"), list):
+                        all_catalogs.append(a_data["release_catalog"])
+                    for p_val in (a_data.get("periods") or {}).values():
+                        if isinstance(p_val, dict) and isinstance(p_val.get("release_catalog"), list):
+                            all_catalogs.append(p_val["release_catalog"])
+
+                    for cat_list in all_catalogs:
+                        for c_item in cat_list:
+                            if isinstance(c_item, dict) and c_item.get("version") and c_item.get("platform"):
+                                if not c_item.get("alert_deliveries"):
+                                    deliveries = get_release_alert_history(app_id, c_item["platform"], c_item["version"], limit=20, custom_path=alert_db)
+                                    if deliveries:
+                                        c_item["alert_deliveries"] = [d.to_dict() for d in deliveries]
+            except Exception:
+                pass
+
 
 
     # 驗證組裝之 bundle 是否符合 Schema V2，失敗時不寫入正式檔案

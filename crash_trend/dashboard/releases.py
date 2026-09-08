@@ -623,6 +623,87 @@ function renderReleaseModalBody(item) {
       `;
     }
 
+    // Alert Delivery Timeline (Issue #63)
+    let alertDeliveryTimelineHtml = "";
+    const alertDeliveries = item.alert_deliveries || [];
+    if (alertDeliveries.length > 0) {
+      const deliveryRows = alertDeliveries.map((ad, adIdx) => {
+        let stBadge = "";
+        const adSt = (ad.status || "").toLowerCase();
+        if (adSt === "sent") {
+          stBadge = '<span class="badge" style="background:#e6f4ea;color:#137333;font-weight:600">SENT</span>';
+        } else if (adSt === "failed") {
+          stBadge = '<span class="badge badge-fatal" style="font-weight:600">FAILED</span>';
+        } else if (adSt === "suppressed") {
+          stBadge = '<span class="badge" style="background:#fef7e0;color:#b06000;font-weight:600">SUPPRESSED</span>';
+        } else {
+          stBadge = '<span class="badge" style="background:var(--bg-subtle);color:var(--text-muted)">PENDING</span>';
+        }
+
+        let recBadge = "";
+        if (ad.is_recovery) {
+          recBadge = '<span class="badge" style="background:#ceead6;color:#0d652d;font-weight:700;font-size:10.5px">復原通知 ↗</span>';
+        }
+        let dryRunBadge = "";
+        if (ad.dry_run) {
+          dryRunBadge = '<span class="badge" style="background:var(--bg-subtle);font-size:10px;color:var(--text-muted)">dry-run</span>';
+        }
+
+        let gateBadge = "";
+        const gst = (ad.gate_status || "").toLowerCase();
+        if (gst === "pass") {
+          gateBadge = '<span class="badge" style="background:#e6f4ea;color:#137333;font-size:10px">Gate: PASS</span>';
+        } else if (gst === "warn") {
+          gateBadge = '<span class="badge" style="background:#fef7e0;color:#b06000;font-size:10px">Gate: WARN</span>';
+        } else if (gst === "fail") {
+          gateBadge = '<span class="badge badge-fatal" style="font-size:10px">Gate: FAIL</span>';
+        } else if (gst) {
+          gateBadge = `<span class="badge" style="background:var(--bg-subtle);font-size:10px">Gate: ${esc(gst.toUpperCase())}</span>`;
+        }
+
+        const httpInfo = ad.http_status ? `<span class="badge" style="background:var(--bg-subtle);border:1px solid var(--border);font-size:10px;font-family:var(--font-mono)">HTTP ${ad.http_status}</span>` : "";
+        const attemptsInfo = ad.attempt_count > 1 ? `<span class="badge" style="background:var(--bg-subtle);border:1px solid var(--border);font-size:10px">嘗試 ${ad.attempt_count} 次</span>` : "";
+
+        const detailMsg = ad.suppression_reason || ad.error_message || "";
+        const detailHtml = detailMsg ? `<div style="font-size:11px;color:${adSt === 'failed' ? '#c5221f' : 'var(--text-muted)'};margin-top:2px;word-break:break-all">${esc(detailMsg)}</div>` : "";
+
+        const timeDisp = esc((ad.attempted_at || "").replace("T", " ").replace("Z", " UTC"));
+        const borderStyle = adIdx < alertDeliveries.length - 1 ? "border-bottom:1px solid var(--border);" : "";
+
+        return `
+          <div style="display:flex;gap:10px;padding:6px 0;${borderStyle}align-items:flex-start">
+            <div style="min-width:130px;font-size:11px;font-family:var(--font-mono);color:var(--text-muted);padding-top:2px">
+              ${timeDisp}
+            </div>
+            <div style="min-width:85px">${stBadge}</div>
+            <div style="flex:1">
+              <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+                ${recBadge}
+                ${dryRunBadge}
+                ${gateBadge}
+                ${httpInfo}
+                ${attemptsInfo}
+                <span class="badge" style="background:var(--bg-subtle);font-size:10px;color:var(--text-muted)">${esc(ad.provider || "google_chat")}</span>
+              </div>
+              ${detailHtml}
+            </div>
+          </div>
+        `;
+      }).join("");
+
+      alertDeliveryTimelineHtml = `
+        <div style="margin-top:12px;padding-top:10px;border-top:1px dashed var(--border)">
+          <div style="font-size:12px;font-weight:600;color:var(--text-main);margin-bottom:6px;display:flex;align-items:center;gap:6px">
+            <span>通知發送紀錄時間軸 (Alert Delivery Timeline)</span>
+            <span class="badge" style="background:var(--bg-surface);border:1px solid var(--border);font-size:10.5px">${alertDeliveries.length} 次紀錄</span>
+          </div>
+          <div style="background:var(--bg-surface);border-radius:var(--radius-sm);padding:6px 10px;border:1px solid var(--border)">
+            ${deliveryRows}
+          </div>
+        </div>
+      `;
+    }
+
     gateCardHtml = `
       <div>
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
@@ -635,9 +716,76 @@ function renderReleaseModalBody(item) {
           ${metaBar}
           ${rulesTableHtml}
           ${timelineHtml}
+          ${alertDeliveryTimelineHtml}
         </div>
       </div>
     `;
+  } else {
+    const alertDeliveries = item.alert_deliveries || [];
+    if (alertDeliveries.length > 0) {
+      const deliveryRows = alertDeliveries.map((ad, adIdx) => {
+        let stBadge = "";
+        const adSt = (ad.status || "").toLowerCase();
+        if (adSt === "sent") {
+          stBadge = '<span class="badge" style="background:#e6f4ea;color:#137333;font-weight:600">SENT</span>';
+        } else if (adSt === "failed") {
+          stBadge = '<span class="badge badge-fatal" style="font-weight:600">FAILED</span>';
+        } else if (adSt === "suppressed") {
+          stBadge = '<span class="badge" style="background:#fef7e0;color:#b06000;font-weight:600">SUPPRESSED</span>';
+        } else {
+          stBadge = '<span class="badge" style="background:var(--bg-subtle);color:var(--text-muted)">PENDING</span>';
+        }
+
+        let recBadge = "";
+        if (ad.is_recovery) {
+          recBadge = '<span class="badge" style="background:#ceead6;color:#0d652d;font-weight:700;font-size:10.5px">復原通知 ↗</span>';
+        }
+        let dryRunBadge = "";
+        if (ad.dry_run) {
+          dryRunBadge = '<span class="badge" style="background:var(--bg-subtle);font-size:10px;color:var(--text-muted)">dry-run</span>';
+        }
+
+        const httpInfo = ad.http_status ? `<span class="badge" style="background:var(--bg-subtle);border:1px solid var(--border);font-size:10px;font-family:var(--font-mono)">HTTP ${ad.http_status}</span>` : "";
+        const attemptsInfo = ad.attempt_count > 1 ? `<span class="badge" style="background:var(--bg-subtle);border:1px solid var(--border);font-size:10px">嘗試 ${ad.attempt_count} 次</span>` : "";
+        const detailMsg = ad.suppression_reason || ad.error_message || "";
+        const detailHtml = detailMsg ? `<div style="font-size:11px;color:${adSt === 'failed' ? '#c5221f' : 'var(--text-muted)'};margin-top:2px;word-break:break-all">${esc(detailMsg)}</div>` : "";
+        const timeDisp = esc((ad.attempted_at || "").replace("T", " ").replace("Z", " UTC"));
+        const borderStyle = adIdx < alertDeliveries.length - 1 ? "border-bottom:1px solid var(--border);" : "";
+
+        return `
+          <div style="display:flex;gap:10px;padding:6px 0;${borderStyle}align-items:flex-start">
+            <div style="min-width:130px;font-size:11px;font-family:var(--font-mono);color:var(--text-muted);padding-top:2px">
+              ${timeDisp}
+            </div>
+            <div style="min-width:85px">${stBadge}</div>
+            <div style="flex:1">
+              <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+                ${recBadge}
+                ${dryRunBadge}
+                ${httpInfo}
+                ${attemptsInfo}
+                <span class="badge" style="background:var(--bg-subtle);font-size:10px;color:var(--text-muted)">${esc(ad.provider || "google_chat")}</span>
+              </div>
+              ${detailHtml}
+            </div>
+          </div>
+        `;
+      }).join("");
+
+      gateCardHtml = `
+        <div>
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+            <h4 style="margin:0;font-size:13.5px;color:var(--text-main)">通知發送歷史時間軸 (Alert Delivery Timeline)</h4>
+            <span class="badge" style="background:var(--bg-surface);border:1px solid var(--border);font-size:10.5px">${alertDeliveries.length} 次紀錄</span>
+          </div>
+          <div style="background:var(--bg-subtle);border-radius:var(--radius-md);padding:12px 14px;border:1px solid var(--border)">
+            <div style="background:var(--bg-surface);border-radius:var(--radius-sm);padding:6px 10px;border:1px solid var(--border)">
+              ${deliveryRows}
+            </div>
+          </div>
+        </div>
+      `;
+    }
   }
 
 

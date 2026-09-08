@@ -23,6 +23,17 @@ from crash_trend.alerts.models import (
     DeliveryResult,
     DispatchDecision,
 )
+from crash_trend.alerts.observability import (
+    AlertDeliveryHealth,
+    AlertDeliveryItem,
+    AlertHealthStatus,
+    get_alert_observability_bundle,
+    get_latest_release_delivery,
+    get_recent_alert_deliveries,
+    get_release_alert_history,
+    record_to_delivery_item,
+    summarize_alert_delivery_health,
+)
 from crash_trend.alerts.policy import (
     AlertPolicy,
     compute_alert_fingerprint,
@@ -40,13 +51,16 @@ from crash_trend.alerts.state import (
 )
 
 __all__ = [
+    "AlertDeliveryHealth",
+    "AlertDeliveryItem",
+    "AlertDeliveryStore",
     "AlertDispatchSummary",
     "AlertDispatcher",
+    "AlertHealthStatus",
     "AlertMessage",
     "AlertPolicy",
     "AlertProvider",
     "AlertStoreError",
-    "AlertDeliveryStore",
     "DeliveryRecord",
     "DeliveryResult",
     "DispatchDecision",
@@ -55,7 +69,14 @@ __all__ = [
     "compute_alert_fingerprint",
     "dispatch_alerts_for_app",
     "evaluate_alert_decision",
+    "get_alert_observability_bundle",
+    "get_latest_release_delivery",
+    "get_recent_alert_deliveries",
+    "get_release_alert_history",
     "load_alert_policy",
+    "record_to_delivery_item",
     "redact_url",
     "sanitize_audit_text",
+    "summarize_alert_delivery_health",
 ]
+
