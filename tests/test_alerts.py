@@ -165,7 +165,7 @@ class TestAlertDecisionLogic(unittest.TestCase):
             store=self.store,
         )
         self.assertEqual(dec.decision, "suppressed")
-        self.assertIn("Pass status suppressed", dec.reason)
+        self.assertIn("not in configured notify_on list", dec.reason)
 
     def test_baseline_and_insufficient_data_suppressed_by_default(self) -> None:
         for st in ("baseline", "insufficient_data"):
@@ -249,6 +249,26 @@ class TestAlertDecisionLogic(unittest.TestCase):
             store=self.store,
         )
         self.assertEqual(dec.decision, "suppressed")
+
+    def test_configured_pass_in_notify_on_triggers_send(self) -> None:
+        """Verifies that if notify_on explicitly includes 'pass', clean PASS alerts are sent."""
+        pass_policy = AlertPolicy(
+            enabled=True,
+            notify_on=("pass", "fail", "warn"),
+            cooldown_minutes=360,
+        )
+        dec = evaluate_alert_decision(
+            app_id="app1",
+            platform="android",
+            target_version="3.2.0",
+            gate_status="pass",
+            triggered_reasons=[],
+            policy=pass_policy,
+            store=self.store,
+        )
+        self.assertEqual(dec.decision, "send")
+        self.assertFalse(dec.is_recovery)
+        self.assertIn("Initial alert", dec.reason)
 
 
 class TestDeduplicationAndCooldown(unittest.TestCase):
@@ -846,6 +866,47 @@ class TestPipelineAndDispatcherIntegration(unittest.TestCase):
         self.assertEqual(summary.total_failed, 1)
         # Gate verdict is strictly unchanged
         self.assertEqual(artifact["overall_status"], "fail")
+
+    def test_audit_attempted_at_uses_current_time_not_artifact_generated_at(self) -> None:
+        """Verifies audit attempted_at reflects actual attempt time, not old artifact generated_at."""
+        store = AlertDeliveryStore(db_path=":memory:")
+        # Artifact was generated 7 days ago
+        artifact = make_sample_artifact(app_id="demo", platform="android", version="1.0.0", gate_status="fail")
+        artifact["generated_at"] = "2026-09-01T09:00:00Z"
+        policy = AlertPolicy(enabled=True, notify_on=("fail", "warn"))
+
+        sent_msg_holder: list[AlertMessage] = []
+        mock_provider = MagicMock()
+
+        def capture_send(msg: AlertMessage) -> DeliveryResult:
+            sent_msg_holder.append(msg)
+            return DeliveryResult(
+                status="sent",
+                attempt_count=1,
+                delivered_at="2026-09-08T15:00:01Z",
+                http_status=200,
+            )
+
+        mock_provider.send.side_effect = capture_send
+        dispatcher = AlertDispatcher(store=store, provider=mock_provider)
+
+        current_attempt_time = dt.datetime(2026, 9, 8, 15, 0, 0, tzinfo=dt.UTC)
+        summary = dispatcher.dispatch(
+            app_id="demo",
+            artifact=artifact,
+            policy=policy,
+            now=current_attempt_time,
+        )
+
+        self.assertEqual(summary.total_sent, 1)
+        # Message body correctly reflects when the gate was evaluated
+        self.assertEqual(len(sent_msg_holder), 1)
+        self.assertEqual(sent_msg_holder[0].evaluated_at, "2026-09-01T09:00:00Z")
+
+        # But audit attempted_at in SQLite must record the CURRENT attempt time!
+        hist = store.get_history("demo")
+        self.assertEqual(len(hist), 1)
+        self.assertEqual(hist[0].attempted_at, "2026-09-08T15:00:00Z")
 
 
 class TestAlertsCLIAndMain(unittest.TestCase):

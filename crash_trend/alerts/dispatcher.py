@@ -155,20 +155,20 @@ def evaluate_alert_decision(
 
     # Force bypasses cooldown and deduplication
     if force:
-        if st in policy.notify_on:
-            return DispatchDecision(
-                platform=pf,
-                decision="send",
-                reason="Forced delivery via --force",
-                is_recovery=False,
-                fingerprint=fp,
-            )
         if st == "pass" and policy.notify_recovery and last_sent and last_sent.gate_status in ("fail", "warn"):
             return DispatchDecision(
                 platform=pf,
                 decision="send",
                 reason="Forced recovery delivery via --force",
                 is_recovery=True,
+                fingerprint=fp,
+            )
+        if st in policy.notify_on:
+            return DispatchDecision(
+                platform=pf,
+                decision="send",
+                reason="Forced delivery via --force",
+                is_recovery=False,
                 fingerprint=fp,
             )
         return DispatchDecision(
@@ -178,23 +178,13 @@ def evaluate_alert_decision(
             fingerprint=fp,
         )
 
-    # Recovery Evaluation
-    if st == "pass":
-        if policy.notify_recovery:
-            if last_sent and last_sent.gate_status in ("fail", "warn"):
-                # Transition from regression to pass -> send recovery!
-                return DispatchDecision(
-                    platform=pf,
-                    decision="send",
-                    reason=f"Quality recovered to pass after previous {last_sent.gate_status.upper()} alert",
-                    is_recovery=True,
-                    fingerprint=fp,
-                )
+    # Recovery transition check (warn/fail -> pass)
+    if st == "pass" and policy.notify_recovery and last_sent and last_sent.gate_status in ("fail", "warn"):
         return DispatchDecision(
             platform=pf,
-            decision="suppressed",
-            reason="Pass status suppressed (no active regression to recover from)",
-            is_recovery=False,
+            decision="send",
+            reason=f"Quality recovered to pass after previous {last_sent.gate_status.upper()} alert",
+            is_recovery=True,
             fingerprint=fp,
         )
 
@@ -299,7 +289,9 @@ class AlertDispatcher:
         total_suppressed = 0
         total_failed = 0
 
-        eval_at = artifact.get("generated_at") or dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        now_dt = now or dt.datetime.now(dt.UTC)
+        attempt_time_iso = now_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+        eval_at = artifact.get("generated_at") or attempt_time_iso
 
         for pf_name, pf_res in artifact.get("platforms", {}).items():
             target_version = str(pf_res.get("target_version", "")).strip()
@@ -336,7 +328,7 @@ class AlertDispatcher:
                         alert_fingerprint=decision.fingerprint,
                         gate_status=gate_status,
                         reason_text=decision.reason,
-                        attempted_at=eval_at,
+                        attempted_at=attempt_time_iso,
                         reasons=triggered_reasons,
                         thread_key=f"crash-trend:{app_id}:{pf_name}:{target_version}" if policy.use_threads else None,
                         dry_run=False,
@@ -370,7 +362,7 @@ class AlertDispatcher:
                 results[pf_name] = DeliveryResult(
                     status="sent",
                     attempt_count=0,
-                    delivered_at=eval_at,
+                    delivered_at=attempt_time_iso,
                     thread_key=msg.thread_key,
                     error_message="[DRY-RUN] Alert preview generated successfully (no network requests made).",
                 )
@@ -384,7 +376,7 @@ class AlertDispatcher:
                 provider=policy.provider,
                 alert_fingerprint=decision.fingerprint,
                 gate_status=gate_status,
-                attempted_at=eval_at,
+                attempted_at=attempt_time_iso,
                 reasons=triggered_reasons,
                 thread_key=msg.thread_key,
                 dry_run=False,
