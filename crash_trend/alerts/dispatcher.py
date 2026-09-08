@@ -13,7 +13,7 @@ from __future__ import annotations
 import datetime as dt
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from crash_trend.alerts.models import (
     AlertDispatchSummary,
@@ -155,7 +155,8 @@ def evaluate_alert_decision(
     last_sent = store.get_last_sent_delivery(app_id, pf, target_version)
 
     # Gate History Authority recovery check (Issue #61)
-    gate_authority_recovery = False
+    # Tri-state history authority: "known_recovery" | "known_non_recovery" | "unavailable"
+    history_authority_state: Literal["known_recovery", "known_non_recovery", "unavailable"] = "unavailable"
     if history_store is not None:
         try:
             history = history_store.get_release_gate_history(app_id, pf, target_version)
@@ -163,16 +164,29 @@ def evaluate_alert_decision(
                 if history[-1].gate_status.lower() == st:
                     if len(history) >= 2:
                         prev_snap = history[-2]
-                        gate_authority_recovery = prev_snap.gate_status.lower() in ("fail", "warn")
+                        if prev_snap.gate_status.lower() in ("fail", "warn"):
+                            history_authority_state = "known_recovery"
+                        else:
+                            history_authority_state = "known_non_recovery"
+                    else:
+                        history_authority_state = "unavailable"
                 else:
-                    gate_authority_recovery = history[-1].gate_status.lower() in ("fail", "warn")
+                    if history[-1].gate_status.lower() in ("fail", "warn"):
+                        history_authority_state = "known_recovery"
+                    else:
+                        history_authority_state = "known_non_recovery"
         except Exception:
-            gate_authority_recovery = False
+            history_authority_state = "unavailable"
 
     # Force bypasses cooldown and deduplication
     if force:
         if st == "pass" and policy.notify_recovery:
-            is_rec = gate_authority_recovery or (last_sent is not None and last_sent.gate_status in ("fail", "warn"))
+            if history_authority_state == "known_recovery":
+                is_rec = True
+            elif history_authority_state == "known_non_recovery":
+                is_rec = False
+            else:
+                is_rec = last_sent is not None and last_sent.gate_status in ("fail", "warn")
             if is_rec:
                 return DispatchDecision(
                     platform=pf,
@@ -198,7 +212,14 @@ def evaluate_alert_decision(
 
     # Recovery transition check (warn/fail -> pass aligned with Gate history authority)
     if st == "pass" and policy.notify_recovery:
-        is_rec_transition = gate_authority_recovery if history_store is not None else (last_sent is not None and last_sent.gate_status in ("fail", "warn"))
+        if history_authority_state == "known_recovery":
+            is_rec_transition = True
+        elif history_authority_state == "known_non_recovery":
+            is_rec_transition = False
+        else:
+            # Fallback to delivery store legacy semantics when history store is unavailable, empty, or single-entry
+            is_rec_transition = last_sent is not None and last_sent.gate_status in ("fail", "warn")
+
         if is_rec_transition:
             if last_sent is not None and last_sent.gate_status == "pass":
                 return DispatchDecision(
@@ -210,10 +231,11 @@ def evaluate_alert_decision(
                 )
 
             if last_sent is not None and last_sent.gate_status in ("fail", "warn"):
+                align_note = " (aligned with Gate history authority)" if history_authority_state == "known_recovery" else ""
                 return DispatchDecision(
                     platform=pf,
                     decision="send",
-                    reason=f"Quality recovered to pass after previous {last_sent.gate_status.upper()} alert (aligned with Gate history authority)",
+                    reason=f"Quality recovered to pass after previous {last_sent.gate_status.upper()} alert{align_note}",
                     is_recovery=True,
                     fingerprint=fp,
                 )

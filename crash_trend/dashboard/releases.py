@@ -572,6 +572,18 @@ function renderReleaseModalBody(item) {
           }
         }
 
+        const metaBadges = [];
+        if (h.comparison_window) {
+          metaBadges.push(`<span class="badge" style="background:var(--bg-subtle);border:1px solid var(--border);font-size:10px;color:var(--text-muted)">視窗: ${esc(h.comparison_window)}</span>`);
+        }
+        if (h.policy_version) {
+          const polIdStr = h.policy_identity ? ` (${esc(h.policy_identity)})` : "";
+          metaBadges.push(`<span class="badge" style="background:var(--bg-subtle);border:1px solid var(--border);font-size:10px;color:var(--text-muted)">政策: v${esc(h.policy_version)}${polIdStr}</span>`);
+        }
+        const metaBadgesHtml = metaBadges.length > 0
+          ? `<div style="margin-top:3px;display:flex;gap:4px;flex-wrap:wrap">${metaBadges.join("")}</div>`
+          : "";
+
         const triggered = (h.rules_triggered && h.rules_triggered.length > 0)
           ? `<div style="margin-top:3px;display:flex;gap:4px;flex-wrap:wrap">
                ${h.rules_triggered.map(r => `<span class="badge badge-fatal" style="font-size:10px">${esc(r)}</span>`).join("")}
@@ -591,6 +603,7 @@ function renderReleaseModalBody(item) {
                 ${transBadge}
                 <span style="font-size:11.5px;color:var(--text-main)">${esc(h.summary || "無評估摘要")}</span>
               </div>
+              ${metaBadgesHtml}
               ${triggered}
             </div>
           </div>

@@ -1,7 +1,7 @@
 """CLI entrypoint for Release Gate Evaluation History and Trend Query (Issue #61).
 
 Usage:
-    python -m crash_trend.release_gate_history --app <app> [--platform <pf>] [--version <ver>] [--trend] [--json]
+    python -m crash_trend.release_gate_history --app <app> [--platform <pf>] [--version <ver>] [--trend] [--prune-older-than-days <N>] [--json]
 """
 
 from __future__ import annotations

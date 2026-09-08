@@ -159,6 +159,7 @@ class GateSnapshot:
     rule_results: list[RuleEvaluationResult]
     normalized_metrics: dict[str, Any]
     summary: str
+    policy_identity: str = ""
     schema_version: str = "1.0"
     created_at: str = ""
     id: int | None = None
@@ -174,6 +175,7 @@ class GateSnapshot:
             "gate_status": self.gate_status,
             "sample_sufficient": self.sample_sufficient,
             "policy_version": self.policy_version,
+            "policy_identity": self.policy_identity,
             "comparison_window": self.comparison_window,
             "evaluated_at": self.evaluated_at,
             "evaluation_key": self.evaluation_key,
@@ -219,16 +221,35 @@ class ReleaseGateTrendItem:
         }
 
 
+def compute_policy_identity(policy: dict[str, Any] | Any | None, policy_version: str = "1.0") -> str:
+    """Computes a deterministic SHA-256 fingerprint of the effective gate policy rules & thresholds."""
+    if policy is None:
+        raw_dict = {"policy_version": policy_version}
+    elif hasattr(policy, "to_dict"):
+        raw_dict = policy.to_dict()
+    elif isinstance(policy, dict):
+        raw_dict = policy
+    else:
+        raw_dict = {"policy_version": str(policy)}
+    canonical_json = json.dumps(raw_dict, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()[:16]
+
+
 def compute_evaluation_key(
     app_id: str,
     platform: str,
     version: str,
     evaluated_at: str,
     policy_version: str,
+    policy_identity: str = "",
 ) -> str:
     """Computes a deterministic SHA-256 evaluation key for idempotency."""
-    raw = f"{app_id.strip().lower()}:{platform.strip().lower()}:{version.strip()}:{evaluated_at.strip()}:{policy_version.strip()}"
+    raw = (
+        f"{app_id.strip().lower()}:{platform.strip().lower()}:{version.strip()}:"
+        f"{evaluated_at.strip()}:{policy_version.strip()}:{policy_identity.strip()}"
+    )
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
 
 
 class ReleaseGateHistoryStore:
@@ -252,6 +273,7 @@ class ReleaseGateHistoryStore:
         gate_status TEXT NOT NULL,
         sample_sufficient INTEGER NOT NULL,
         policy_version TEXT NOT NULL,
+        policy_identity TEXT NOT NULL DEFAULT '',
         comparison_window TEXT,
         evaluated_at TEXT NOT NULL,
         evaluation_key TEXT NOT NULL UNIQUE,
@@ -279,11 +301,20 @@ class ReleaseGateHistoryStore:
             Path(db_path).parent.mkdir(parents=True, exist_ok=True)
             with self._connect() as conn:
                 conn.executescript(self.SCHEMA_SQL)
+                self._migrate_schema(conn)
         else:
             # For :memory:, keep a persistent connection so tables aren't lost across calls
             self._persistent_conn = sqlite3.connect(":memory:")
             self._persistent_conn.row_factory = sqlite3.Row
             self._persistent_conn.executescript(self.SCHEMA_SQL)
+            self._migrate_schema(self._persistent_conn)
+
+    def _migrate_schema(self, conn: sqlite3.Connection) -> None:
+        """Applies backward-compatible column migrations if necessary."""
+        try:
+            conn.execute("ALTER TABLE release_gate_snapshots ADD COLUMN policy_identity TEXT NOT NULL DEFAULT ''")
+        except sqlite3.OperationalError:
+            pass
 
     def _connect(self) -> sqlite3.Connection:
         if self._is_memory and self._persistent_conn is not None:
@@ -305,7 +336,7 @@ class ReleaseGateHistoryStore:
             self._persistent_conn = None
 
     def record_snapshot(self, snapshot: GateSnapshot) -> tuple[GateSnapshot, bool]:
-        """Records an evaluation snapshot idempotently.
+        """Records an evaluation snapshot idempotently using atomic INSERT OR IGNORE.
 
         Returns:
             (saved_snapshot, is_new_record)
@@ -315,8 +346,9 @@ class ReleaseGateHistoryStore:
         ver = snapshot.version.strip()
         eval_at = snapshot.evaluated_at.strip()
         pol_ver = snapshot.policy_version.strip()
+        pol_ident = snapshot.policy_identity.strip()
 
-        eval_key = snapshot.evaluation_key or compute_evaluation_key(app_id, pf, ver, eval_at, pol_ver)
+        eval_key = snapshot.evaluation_key or compute_evaluation_key(app_id, pf, ver, eval_at, pol_ver, pol_ident)
         created_at = snapshot.created_at or dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
         tr_json = json.dumps(snapshot.triggered_reasons, ensure_ascii=False)
@@ -325,27 +357,17 @@ class ReleaseGateHistoryStore:
 
         conn = self._connect()
         try:
-            # Check existing first for fast idempotent return
-            cur = conn.execute(
-                "SELECT * FROM release_gate_snapshots WHERE evaluation_key = ?",
-                (eval_key,),
-            )
-            existing = cur.fetchone()
-            if existing:
-                existing_snap = self._row_to_snapshot(existing)
-                return existing_snap, False
-
-            # Insert new snapshot
+            # Atomic idempotent insert: UNIQUE(evaluation_key) prevents race conditions
             with conn:
                 cur = conn.execute(
                     """
-                    INSERT INTO release_gate_snapshots (
+                    INSERT OR IGNORE INTO release_gate_snapshots (
                         app_id, platform, version, previous_version, gate_status,
-                        sample_sufficient, policy_version, comparison_window,
+                        sample_sufficient, policy_version, policy_identity, comparison_window,
                         evaluated_at, evaluation_key, triggered_reasons_json,
                         rule_results_json, normalized_metrics_json, summary,
                         schema_version, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         app_id,
@@ -355,6 +377,7 @@ class ReleaseGateHistoryStore:
                         snapshot.gate_status,
                         1 if snapshot.sample_sufficient else 0,
                         pol_ver,
+                        pol_ident,
                         snapshot.comparison_window,
                         eval_at,
                         eval_key,
@@ -366,15 +389,24 @@ class ReleaseGateHistoryStore:
                         created_at,
                     ),
                 )
-                row_id = cur.lastrowid
+                is_new = cur.rowcount > 0
+
+            # Fetch authoritative record from DB
+            cur = conn.execute(
+                "SELECT * FROM release_gate_snapshots WHERE evaluation_key = ?",
+                (eval_key,),
+            )
+            row = cur.fetchone()
+            if row is not None:
+                return self._row_to_snapshot(row), is_new
 
             saved = dataclasses.replace(
                 snapshot,
-                id=row_id,
                 evaluation_key=eval_key,
+                policy_identity=pol_ident,
                 created_at=created_at,
             )
-            return saved, True
+            return saved, is_new
         finally:
             if not self._is_memory:
                 conn.close()
@@ -383,10 +415,16 @@ class ReleaseGateHistoryStore:
         self,
         artifact: ReleaseGateArtifact,
         policy_version: str | None = None,
+        policy_identity: str | None = None,
     ) -> list[GateSnapshot]:
         """Extracts platform-level evaluations from ReleaseGateArtifact and stores snapshots."""
         app_id = artifact.get("app_id", "").strip()
         pol_ver = policy_version or artifact.get("policy_version", "1.0")
+        pol_ident = (
+            policy_identity
+            or artifact.get("policy_identity")
+            or compute_policy_identity(artifact.get("policy"), pol_ver)
+        )
         results: list[GateSnapshot] = []
 
         platforms = artifact.get("platforms") or {}
@@ -413,7 +451,7 @@ class ReleaseGateHistoryStore:
                     normalized_metrics[f"{m_name}_current"] = r.get("current_value")
                     normalized_metrics[f"{m_name}_previous"] = r.get("previous_value")
 
-            eval_key = compute_evaluation_key(app_id, pf_name, ver, eval_at, pol_ver)
+            eval_key = compute_evaluation_key(app_id, pf_name, ver, eval_at, pol_ver, pol_ident)
 
             snap = GateSnapshot(
                 app_id=app_id,
@@ -423,6 +461,7 @@ class ReleaseGateHistoryStore:
                 gate_status=st,
                 sample_sufficient=sufficient,
                 policy_version=pol_ver,
+                policy_identity=pol_ident,
                 comparison_window=cmp_win,
                 evaluated_at=eval_at,
                 evaluation_key=eval_key,
@@ -553,6 +592,8 @@ class ReleaseGateHistoryStore:
         except Exception:
             norm_metrics = {}
 
+        pol_ident = row["policy_identity"] if "policy_identity" in row.keys() else ""
+
         return GateSnapshot(
             id=row["id"],
             app_id=row["app_id"],
@@ -562,6 +603,7 @@ class ReleaseGateHistoryStore:
             gate_status=row["gate_status"],
             sample_sufficient=bool(row["sample_sufficient"]),
             policy_version=row["policy_version"],
+            policy_identity=pol_ident,
             comparison_window=row["comparison_window"],
             evaluated_at=row["evaluated_at"],
             evaluation_key=row["evaluation_key"],
@@ -572,6 +614,55 @@ class ReleaseGateHistoryStore:
             schema_version=row["schema_version"],
             created_at=row["created_at"],
         )
+
+    def prune_snapshots(
+        self,
+        app_id: str,
+        older_than_days: int = 90,
+        before: dt.datetime | str | None = None,
+    ) -> int:
+        """Prunes older snapshots while preserving the latest evaluation for EVERY release and platform.
+
+        Retention Policy (Scope I):
+        - Default: Full retention, append-only.
+        - Invariant: The latest snapshot (MAX(id) group by platform, version) is NEVER pruned.
+
+        Args:
+            app_id: Application identifier.
+            older_than_days: Prune records older than N days (used if `before` is None).
+            before: Specific cutoff timestamp (ISO string or datetime). Records evaluated prior to this are pruned.
+
+        Returns:
+            Number of deleted snapshots.
+        """
+        if before is None:
+            cutoff = (dt.datetime.now(dt.UTC) - dt.timedelta(days=older_than_days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        elif isinstance(before, dt.datetime):
+            cutoff = before.strftime("%Y-%m-%dT%H:%M:%SZ")
+        else:
+            cutoff = str(before).strip()
+
+        conn = self._connect()
+        try:
+            with conn:
+                cur = conn.execute(
+                    """
+                    DELETE FROM release_gate_snapshots
+                    WHERE app_id = ?
+                      AND evaluated_at < ?
+                      AND id NOT IN (
+                          SELECT MAX(id)
+                          FROM release_gate_snapshots
+                          WHERE app_id = ?
+                          GROUP BY platform, version
+                      )
+                    """,
+                    (app_id.strip(), cutoff, app_id.strip()),
+                )
+                return cur.rowcount
+        finally:
+            if not self._is_memory:
+                conn.close()
 
 
 def get_gate_history_store(app_id: str, custom_path: Path | None = None) -> ReleaseGateHistoryStore:
@@ -588,11 +679,17 @@ def main() -> None:
     parser.add_argument("--version", default=None, help="指定版本號")
     parser.add_argument("--trend", action="store_true", help="顯示最近版本品質趨勢")
     parser.add_argument("--limit", type=int, default=5, help="趨勢查詢版本數量上限 (預設 5)")
+    parser.add_argument("--prune-older-than-days", type=int, default=None, help="清理指定天數以前的舊快照 (保留各版本最新快照)")
     parser.add_argument("--db", type=Path, default=None, help="自訂 SQLite 資料庫路徑")
     parser.add_argument("--json", action="store_true", help="以 JSON 格式輸出")
     args = parser.parse_args()
 
     store = get_gate_history_store(args.app, custom_path=args.db)
+
+    if args.prune_older_than_days is not None:
+        deleted = store.prune_snapshots(args.app, older_than_days=args.prune_older_than_days)
+        print(f"[{args.app}] 已清理 {args.prune_older_than_days} 天以前的歷史評估快照，共刪除 {deleted} 筆 (各版本最新快照已保留)")
+        sys.exit(0)
 
     platforms = [args.platform.lower()] if args.platform else ["android", "ios"]
 

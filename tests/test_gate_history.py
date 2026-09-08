@@ -19,6 +19,7 @@ import json
 import sqlite3
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -30,11 +31,14 @@ if str(ROOT) not in sys.path:
 from crash_trend.alerts.dispatcher import evaluate_alert_decision
 from crash_trend.alerts.policy import AlertPolicy
 from crash_trend.alerts.state import AlertDeliveryStore
+from crash_trend.dashboard.releases import get_releases_js
 from crash_trend.gate.artifact import ReleaseGateArtifact
 from crash_trend.gate.history import (
     GateSnapshot,
     ReleaseGateHistoryStore,
     classify_gate_transition,
+    compute_evaluation_key,
+    compute_policy_identity,
 )
 from crash_trend.gate.history import (
     main as history_cli_main,
@@ -170,6 +174,149 @@ class TestReleaseGateHistoryStore(unittest.TestCase):
         conn = self.store._connect()
         cur = conn.execute("SELECT COUNT(*) as cnt FROM release_gate_snapshots")
         self.assertEqual(cur.fetchone()["cnt"], 1)
+
+    def test_concurrent_recording_atomic_idempotency(self) -> None:
+        """Verifies concurrent writes to same evaluation_key do not crash and result in exactly 1 record."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            file_db = Path(tmpdir) / "concurrent.sqlite3"
+            shared_store = ReleaseGateHistoryStore(file_db)
+
+            snap = GateSnapshot(
+                app_id="race_app",
+                platform="ios",
+                version="3.0.0",
+                previous_version="2.9.0",
+                gate_status="fail",
+                sample_sufficient=True,
+                policy_version="1.0",
+                policy_identity="hash123",
+                comparison_window="30d",
+                evaluated_at="2026-09-08T12:00:00Z",
+                evaluation_key="",
+                triggered_reasons=["crash_spike"],
+                rule_results=[],
+                normalized_metrics={},
+                summary="Race test",
+            )
+
+            results: list[tuple[GateSnapshot, bool]] = []
+            errors: list[Exception] = []
+
+            def worker() -> None:
+                try:
+                    thread_store = ReleaseGateHistoryStore(file_db)
+                    res = thread_store.record_snapshot(snap)
+                    results.append(res)
+                    thread_store.close()
+                except Exception as e:
+                    errors.append(e)
+
+            threads = [threading.Thread(target=worker) for _ in range(10)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+            self.assertEqual(len(errors), 0, f"Concurrent workers raised exceptions: {errors}")
+            self.assertEqual(len(results), 10)
+
+            # Exactly one worker reports is_new=True
+            new_counts = sum(1 for _, is_new in results if is_new)
+            self.assertEqual(new_counts, 1)
+
+            # Database has exactly 1 row
+            conn = shared_store._connect()
+            cur = conn.execute("SELECT COUNT(*) as cnt FROM release_gate_snapshots WHERE app_id='race_app'")
+            self.assertEqual(cur.fetchone()["cnt"], 1)
+            shared_store.close()
+
+    def test_policy_identity_affects_evaluation_key(self) -> None:
+        """Verifies policy changes alter policy_identity and allow distinct evaluation_key."""
+        pol1 = {"rules": [{"metric_name": "crash_rate_pct", "threshold": 20}]}
+        pol2 = {"rules": [{"metric_name": "crash_rate_pct", "threshold": 50}]}
+
+        id1 = compute_policy_identity(pol1, "1.0")
+        id2 = compute_policy_identity(pol2, "1.0")
+        self.assertNotEqual(id1, id2)
+
+        k1 = compute_evaluation_key("demo", "android", "1.0.0", "2026-09-08T10:00:00Z", "1.0", id1)
+        k2 = compute_evaluation_key("demo", "android", "1.0.0", "2026-09-08T10:00:00Z", "1.0", id2)
+        self.assertNotEqual(k1, k2)
+
+        snap1 = GateSnapshot(
+            app_id="demo", platform="android", version="1.0.0", previous_version=None,
+            gate_status="fail", sample_sufficient=True, policy_version="1.0", policy_identity=id1,
+            comparison_window="30d", evaluated_at="2026-09-08T10:00:00Z", evaluation_key=k1,
+            triggered_reasons=[], rule_results=[], normalized_metrics={}, summary="Fail under pol1",
+        )
+        snap2 = GateSnapshot(
+            app_id="demo", platform="android", version="1.0.0", previous_version=None,
+            gate_status="pass", sample_sufficient=True, policy_version="1.0", policy_identity=id2,
+            comparison_window="30d", evaluated_at="2026-09-08T10:00:00Z", evaluation_key=k2,
+            triggered_reasons=[], rule_results=[], normalized_metrics={}, summary="Pass under pol2",
+        )
+
+        _, is_new1 = self.store.record_snapshot(snap1)
+        _, is_new2 = self.store.record_snapshot(snap2)
+        self.assertTrue(is_new1)
+        self.assertTrue(is_new2)
+
+        history = self.store.get_release_gate_history("demo", "android", "1.0.0")
+        self.assertEqual(len(history), 2)
+        self.assertEqual(history[0].policy_identity, id1)
+        self.assertEqual(history[1].policy_identity, id2)
+
+    def test_prune_snapshots_preserves_latest_invariant(self) -> None:
+        """Verifies older snapshots are pruned, but the latest evaluation snapshot is NEVER pruned."""
+        app = "prune_app"
+        pf = "ios"
+
+        # Release 1.0.0 has 3 evaluations from 2020
+        for day in ("01", "02", "03"):
+            self.store.record_snapshot(GateSnapshot(
+                app_id=app, platform=pf, version="1.0.0", previous_version=None,
+                gate_status="fail" if day != "03" else "pass", sample_sufficient=True,
+                policy_version="1.0", policy_identity="", comparison_window="30d",
+                evaluated_at=f"2020-01-{day}T10:00:00Z", evaluation_key="",
+                triggered_reasons=[], rule_results=[], normalized_metrics={}, summary=f"Day {day}",
+            ))
+
+        # Release 2.0.0 has 1 evaluation from 2020
+        self.store.record_snapshot(GateSnapshot(
+            app_id=app, platform=pf, version="2.0.0", previous_version="1.0.0",
+            gate_status="warn", sample_sufficient=True,
+            policy_version="1.0", policy_identity="", comparison_window="30d",
+            evaluated_at="2020-01-01T10:00:00Z", evaluation_key="",
+            triggered_reasons=[], rule_results=[], normalized_metrics={}, summary="Only eval",
+        ))
+
+        # Release 3.0.0 has 1 evaluation from 2026
+        self.store.record_snapshot(GateSnapshot(
+            app_id=app, platform=pf, version="3.0.0", previous_version="2.0.0",
+            gate_status="pass", sample_sufficient=True,
+            policy_version="1.0", policy_identity="", comparison_window="30d",
+            evaluated_at="2026-09-08T10:00:00Z", evaluation_key="",
+            triggered_reasons=[], rule_results=[], normalized_metrics={}, summary="Recent eval",
+        ))
+
+        # Prune older than 2025-01-01
+        deleted = self.store.prune_snapshots(app, before="2025-01-01T00:00:00Z")
+        self.assertEqual(deleted, 2)  # The first two evaluations of 1.0.0 (day 01 and 02)
+
+        # Confirm 1.0.0 latest (day 03) is preserved
+        h1 = self.store.get_release_gate_history(app, pf, "1.0.0")
+        self.assertEqual(len(h1), 1)
+        self.assertEqual(h1[0].evaluated_at, "2020-01-03T10:00:00Z")
+        self.assertEqual(h1[0].gate_status, "pass")
+
+        # Confirm 2.0.0 single snapshot is preserved despite being from 2020
+        h2 = self.store.get_release_gate_history(app, pf, "2.0.0")
+        self.assertEqual(len(h2), 1)
+        self.assertEqual(h2[0].gate_status, "warn")
+
+        # Confirm 3.0.0 is preserved
+        h3 = self.store.get_release_gate_history(app, pf, "3.0.0")
+        self.assertEqual(len(h3), 1)
 
     def test_timeline_state_evolution(self) -> None:
         """Verifies sequential timeline tracking: insufficient -> warn -> fail -> pass."""
@@ -493,6 +640,72 @@ class TestGoogleChatRecoveryAlignment(unittest.TestCase):
         self.assertEqual(decision2.decision, "suppressed")
         self.assertIn("already delivered", decision2.reason.lower())
 
+    def test_recovery_fallback_when_history_store_is_empty_or_new(self) -> None:
+        """Verifies regression fix: if history store is newly created/empty, fallback to delivery store sends recovery."""
+        app = "chat_app"
+        pf = "ios"
+        ver = "2.1.0"
+
+        # 1. Delivery store recorded a prior FAIL alert
+        rec_id = self.delivery_store.record_attempt(
+            app_id=app,
+            platform=pf,
+            version=ver,
+            provider="google_chat",
+            alert_fingerprint="fp-fail-210",
+            gate_status="fail",
+            attempted_at="2026-09-08T08:00:00Z",
+            reasons=["crash_rate_pct"],
+        )
+        self.delivery_store.update_result(rec_id, status="sent", delivered_at="2026-09-08T08:00:01Z", attempt_count=1)
+
+        # 2. History store is completely empty (no evaluations for 2.1.0)
+        self.assertEqual(len(self.history_store.get_release_gate_history(app, pf, ver)), 0)
+
+        # 3. New evaluation is PASS -> Must send recovery alert via fallback to delivery store
+        decision = evaluate_alert_decision(
+            app_id=app,
+            platform=pf,
+            target_version=ver,
+            gate_status="pass",
+            triggered_reasons=[],
+            policy=self.policy,
+            store=self.delivery_store,
+            history_store=self.history_store,
+        )
+
+        self.assertEqual(decision.decision, "send")
+        self.assertTrue(decision.is_recovery)
+        self.assertIn("recovered to pass after previous fail alert", decision.reason.lower())
+
+    def test_recovery_suppressed_when_history_confirms_prior_was_not_failure(self) -> None:
+        """Verifies recovery is suppressed if Gate history authority confirms prior evaluation was already pass."""
+        app = "chat_app"
+        pf = "android"
+        ver = "2.2.0"
+
+        # Gate history confirms prior was PASS
+        self.history_store.record_snapshot(GateSnapshot(
+            app_id=app, platform=pf, version=ver, previous_version=None,
+            gate_status="pass", sample_sufficient=True, policy_version="1.0",
+            comparison_window="30d", evaluated_at="2026-09-08T08:00:00Z", evaluation_key="",
+            triggered_reasons=[], rule_results=[], normalized_metrics={}, summary="All pass",
+        ))
+
+        # Current evaluation is still PASS
+        decision = evaluate_alert_decision(
+            app_id=app,
+            platform=pf,
+            target_version=ver,
+            gate_status="pass",
+            triggered_reasons=[],
+            policy=self.policy,
+            store=self.delivery_store,
+            history_store=self.history_store,
+        )
+
+        self.assertEqual(decision.decision, "suppressed")
+
 
 class TestDashboardSchemaWithGateHistory(unittest.TestCase):
     """Tests schema validation for release catalog items containing gate_history."""
@@ -551,6 +764,9 @@ class TestDashboardSchemaWithGateHistory(unittest.TestCase):
                     "summary": "Passed",
                     "rules_triggered": [],
                     "transition": {"transition_type": "recovery", "is_recovery": True, "is_regression": False},
+                    "policy_version": "1.0",
+                    "policy_identity": "abcdef123456",
+                    "comparison_window": "30d",
                 },
             ],
         }
@@ -558,6 +774,14 @@ class TestDashboardSchemaWithGateHistory(unittest.TestCase):
         errors: list[str] = []
         validate_release_catalog([catalog_item], errors)
         self.assertEqual(errors, [])
+
+    def test_dashboard_js_contains_timeline_badges(self) -> None:
+        """Verifies release dashboard JavaScript includes visual metadata badges in timeline."""
+        js_code = get_releases_js()
+        self.assertIn("視窗:", js_code)
+        self.assertIn("政策: v", js_code)
+        self.assertIn("comparison_window", js_code)
+        self.assertIn("policy_identity", js_code)
 
 
 class TestHistoryCLI(unittest.TestCase):
@@ -599,6 +823,36 @@ class TestHistoryCLI(unittest.TestCase):
             self.assertIn("android", parsed)
             self.assertEqual(len(parsed["android"]), 1)
             self.assertEqual(parsed["android"][0]["version"], "1.0.1")
+
+    def test_cli_prune_older_than_days(self) -> None:
+        """Verifies CLI --prune-older-than-days operates correctly."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test_hist.sqlite3"
+            store = ReleaseGateHistoryStore(db_path)
+            store.record_snapshot(GateSnapshot(
+                app_id="cli_app", platform="android", version="1.0.0", previous_version=None,
+                gate_status="fail", sample_sufficient=True, policy_version="1.0",
+                policy_identity="", comparison_window="30d", evaluated_at="2020-01-01T10:00:00Z",
+                evaluation_key="", triggered_reasons=[], rule_results=[], normalized_metrics={}, summary="Old",
+            ))
+            store.record_snapshot(GateSnapshot(
+                app_id="cli_app", platform="android", version="1.0.0", previous_version=None,
+                gate_status="pass", sample_sufficient=True, policy_version="1.0",
+                policy_identity="", comparison_window="30d", evaluated_at="2020-01-02T10:00:00Z",
+                evaluation_key="", triggered_reasons=[], rule_results=[], normalized_metrics={}, summary="Latest",
+            ))
+            store.close()
+
+            captured = io.StringIO()
+            with patch("sys.stdout", captured):
+                with patch("sys.argv", ["gate.history", "--app", "cli_app", "--prune-older-than-days", "30", "--db", str(db_path)]):
+                    with self.assertRaises(SystemExit) as cm:
+                        history_cli_main()
+                    self.assertEqual(cm.exception.code, 0)
+
+            out = captured.getvalue()
+            self.assertIn("已清理 30 天以前的歷史評估快照", out)
+            self.assertIn("共刪除 1 筆", out)
 
 
 if __name__ == "__main__":

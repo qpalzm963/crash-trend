@@ -53,6 +53,7 @@ class ReleaseGateArtifact(TypedDict):
     platforms: dict[str, PlatformGateResult]
     policy_version: str
     policy: dict[str, Any]
+    policy_identity: NotRequired[str]
 
 
 def _is_valid_iso8601_utc(val: Any) -> bool:
@@ -114,6 +115,9 @@ def validate_release_gate_artifact(data: Any) -> list[str]:
 
     if "should_alert" in data and not isinstance(data["should_alert"], bool):
         errors.append("should_alert must be a boolean")
+
+    if "policy_identity" in data and not isinstance(data["policy_identity"], str):
+        errors.append("policy_identity must be a string")
 
     # Platform checks
     platforms = data.get("platforms")

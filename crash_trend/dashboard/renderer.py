@@ -233,6 +233,8 @@ def assemble_bundle_from_apps(cfg: dict | None = None, root_dir: str | Path | No
                                                 "transition": s.transition.to_dict() if s.transition else None,
                                                 "evaluation_key": s.evaluation_key,
                                                 "policy_version": s.policy_version,
+                                                "policy_identity": s.policy_identity,
+                                                "comparison_window": s.comparison_window,
                                                 "rule_results": list(s.rule_results),
                                             }
                                             for s in snaps

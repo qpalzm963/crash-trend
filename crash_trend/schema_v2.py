@@ -381,6 +381,8 @@ class GateHistoryPoint(TypedDict):
     transition: NotRequired[dict[str, Any] | None]
     evaluation_key: NotRequired[str]
     policy_version: NotRequired[str]
+    policy_identity: NotRequired[str]
+    comparison_window: NotRequired[str | None]
     rule_results: NotRequired[list[RuleEvaluationResult]]
 
 
@@ -766,6 +768,12 @@ def validate_release_catalog(catalog: Any, errors: list[str], p: str = "") -> No
                         errors.append(f"{ghp}evaluated_at must be an ISO 8601 string")
                     if "gate_status" in pt and not isinstance(pt["gate_status"], str):
                         errors.append(f"{ghp}gate_status must be a string")
+                    if "policy_version" in pt and not isinstance(pt["policy_version"], str):
+                        errors.append(f"{ghp}policy_version must be a string")
+                    if "policy_identity" in pt and not isinstance(pt["policy_identity"], str):
+                        errors.append(f"{ghp}policy_identity must be a string")
+                    if "comparison_window" in pt and pt["comparison_window"] is not None and not isinstance(pt["comparison_window"], str):
+                        errors.append(f"{ghp}comparison_window must be a string or null")
 
 
 
