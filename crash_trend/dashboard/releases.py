@@ -443,6 +443,89 @@ function renderReleaseModalBody(item) {
          </div>`
       : "";
 
+    let rulesTableHtml = "";
+    if (rg.rule_results && rg.rule_results.length > 0) {
+      const rows = rg.rule_results.map(r => {
+        let badge = "";
+        if (r.status === "pass") {
+          badge = '<span class="badge" style="background:#e6f4ea;color:#137333;font-size:11px;font-weight:600">PASS</span>';
+        } else if (r.status === "warn") {
+          badge = '<span class="badge" style="background:#fef7e0;color:#b06000;font-size:11px;font-weight:600">WARN</span>';
+        } else if (r.status === "fail") {
+          badge = '<span class="badge badge-fatal" style="font-size:11px;font-weight:600">FAIL</span>';
+        } else if (r.status === "insufficient_data") {
+          badge = '<span class="badge" style="background:var(--bg-subtle);color:var(--text-muted);font-size:11px">INSUFFICIENT</span>';
+        } else {
+          badge = '<span class="badge" style="background:var(--bg-subtle);color:var(--text-muted);font-size:11px">SKIP</span>';
+        }
+
+        let curDisplay = "—";
+        if (r.current_value != null) {
+          if (typeof r.current_value === 'number' && (r.metric_name.includes("pct") || r.metric_name.includes("diff") || r.metric_name.includes("rate"))) {
+            curDisplay = `${r.current_value > 0 ? '+' : ''}${(r.current_value * 100).toFixed(2)}%`;
+          } else {
+            curDisplay = `${r.current_value}`;
+          }
+        }
+
+        let threshDisplay = "—";
+        if (r.warn_threshold != null && r.fail_threshold != null) {
+          if (typeof r.warn_threshold === 'number' && typeof r.fail_threshold === 'number' && (r.metric_name.includes("pct") || r.metric_name.includes("drop") || r.metric_name.includes("rate"))) {
+            const wPct = `${(r.warn_threshold * 100).toFixed(1)}%`;
+            const fPct = `${(r.fail_threshold * 100).toFixed(1)}%`;
+            threshDisplay = `warn: ${wPct} / fail: ${fPct}`;
+          } else {
+            threshDisplay = `warn: ${r.warn_threshold} / fail: ${r.fail_threshold}`;
+          }
+        }
+
+        return `
+          <tr style="border-bottom:1px solid var(--border)">
+            <td style="padding:6px 8px;font-family:var(--font-mono);font-size:11.5px">${esc(r.rule_name)}</td>
+            <td style="padding:6px 8px">${badge}</td>
+            <td style="padding:6px 8px;font-family:var(--font-mono);font-size:11.5px">${curDisplay}</td>
+            <td style="padding:6px 8px;font-size:11px;color:var(--text-muted)">${threshDisplay}</td>
+            <td style="padding:6px 8px;font-size:11.5px;color:var(--text-main)">${esc(r.reason)}</td>
+          </tr>
+        `;
+      }).join("");
+
+      rulesTableHtml = `
+        <div style="margin-top:12px;overflow-x:auto">
+          <table style="width:100%;border-collapse:collapse;font-size:12px;text-align:left">
+            <thead>
+              <tr style="border-bottom:1px solid var(--border);color:var(--text-muted);font-size:11.5px">
+                <th style="padding:6px 8px">規則項目 (Rule)</th>
+                <th style="padding:6px 8px">狀態</th>
+                <th style="padding:6px 8px">評估數值</th>
+                <th style="padding:6px 8px">門檻標準 (Thresholds)</th>
+                <th style="padding:6px 8px">判定原因 (Reason)</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rows}
+            </tbody>
+          </table>
+        </div>
+      `;
+    }
+
+    const metaParts = [];
+    if (rg.comparison_window) {
+      metaParts.push(`<span>比較視窗：<b class="mono-num">${esc(rg.comparison_window)}</b></span>`);
+    }
+    if (rg.sample_sufficient != null) {
+      metaParts.push(`<span>樣本充足：<b>${rg.sample_sufficient ? "是 (充足)" : "否 (不足)"}</b></span>`);
+    }
+    if (rg.evaluated_at) {
+      metaParts.push(`<span>評估時間：<b class="mono-num">${esc(rg.evaluated_at.replace("T", " ").replace("Z", " UTC"))}</b></span>`);
+    }
+    const metaBar = metaParts.length > 0
+      ? `<div style="margin-top:8px;padding-top:8px;border-top:1px dashed var(--border);font-size:11.5px;color:var(--text-muted);display:flex;flex-wrap:wrap;gap:16px">
+           ${metaParts.join("")}
+         </div>`
+      : "";
+
     gateCardHtml = `
       <div>
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
@@ -452,6 +535,8 @@ function renderReleaseModalBody(item) {
         <div style="background:var(--bg-subtle);border-radius:var(--radius-md);padding:12px 14px;border:1px solid var(--border)">
           ${alertBox}
           ${triggeredPills}
+          ${metaBar}
+          ${rulesTableHtml}
         </div>
       </div>
     `;

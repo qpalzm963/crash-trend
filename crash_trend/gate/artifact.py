@@ -8,24 +8,13 @@ from __future__ import annotations
 import datetime as dt
 import json
 from pathlib import Path
-from typing import Any, Literal, TypedDict, cast
+from typing import Any, Literal, NotRequired, TypedDict, cast
+
+from crash_trend.schema_v2 import RuleEvaluationResult
 
 GateStatus = Literal["pass", "warn", "fail", "insufficient_data", "baseline"]
 RuleStatus = Literal["pass", "warn", "fail", "skip", "insufficient_data"]
 AlertSeverity = Literal["none", "warning", "critical"]
-
-
-class RuleEvaluationResult(TypedDict):
-    """Detailed evaluation outcome for an individual threshold rule."""
-
-    rule_name: str
-    metric_name: str
-    current_value: float | int | None
-    previous_value: float | int | None
-    warn_threshold: float | int
-    fail_threshold: float | int
-    status: RuleStatus
-    reason: str
 
 
 class AlertHookPayload(TypedDict):
@@ -48,6 +37,7 @@ class PlatformGateResult(TypedDict):
     rule_results: list[RuleEvaluationResult]
     alert: AlertHookPayload
     evaluated_at: str
+    comparison_window: NotRequired[str | None]
 
 
 class ReleaseGateArtifact(TypedDict):
@@ -150,6 +140,8 @@ def validate_release_gate_artifact(data: Any) -> list[str]:
                 errors.append(f"platforms['{pf_name}'].gate_status '{pf_res['gate_status']}' is invalid")
             if "rule_results" in pf_res and not isinstance(pf_res["rule_results"], list):
                 errors.append(f"platforms['{pf_name}'].rule_results must be a list")
+            if "comparison_window" in pf_res and pf_res["comparison_window"] is not None and not isinstance(pf_res["comparison_window"], str):
+                errors.append(f"platforms['{pf_name}'].comparison_window must be a string or null")
     elif platforms is not None:
         errors.append("platforms must be a dictionary")
 

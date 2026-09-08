@@ -27,7 +27,7 @@ def _is_sample_sufficient(
     item: dict[str, Any] | None,
     recent_health: dict[str, Any] | None,
     policy: GatePolicy,
-) -> tuple[bool, int, str]:
+) -> tuple[bool, int, str, str | None]:
     """Inspects recent health windows and release item using unified is_version_sample_sufficient."""
     min_adopt = policy.min_adoption_rate
     min_sess = policy.min_sessions
@@ -45,6 +45,7 @@ def _is_sample_sufficient(
                     min_sessions=min_sess,
                     min_version_events=min_ev,
                 ):
+                    norm_w = f"{candidate_w.rstrip('d')}d"
                     if win_data.get("sample_sufficient") is True:
                         reason = f"{candidate_w} 視窗顯式標記為樣本充足"
                     elif (win_data.get("adoption_rate") or 0) >= min_adopt:
@@ -54,7 +55,7 @@ def _is_sample_sufficient(
                     else:
                         ev = int(win_data.get("crash_events") or 0)
                         reason = f"{candidate_w} 視窗事件數充足 ({ev} events >= {min_ev})"
-                    return True, sess_int, reason
+                    return True, sess_int, reason, norm_w
 
         # Check all other windows in recent_health
         for w_name, win_data in recent_health.items():
@@ -66,7 +67,8 @@ def _is_sample_sufficient(
                     min_sessions=min_sess,
                     min_version_events=min_ev,
                 ):
-                    return True, sess_int, f"{w_name} 視窗樣本充足"
+                    norm_w = f"{w_name.rstrip('d')}d" if w_name.rstrip('d').isdigit() else w_name
+                    return True, sess_int, f"{w_name} 視窗樣本充足", norm_w
 
     # 2. Inspect top-level item if applicable
     if isinstance(item, dict):
@@ -86,7 +88,7 @@ def _is_sample_sufficient(
             else:
                 ev = int(item.get("lifetime_crashes") or item.get("crash_events") or 0)
                 reason = f"版本事件數充足 ({ev} events >= {min_ev})"
-            return True, sess_int, reason
+            return True, sess_int, reason, None
 
     # Determine maximum observed sessions for informative diagnostics
     max_sess = 0
@@ -97,7 +99,7 @@ def _is_sample_sufficient(
     if isinstance(item, dict):
         max_sess = max(max_sess, int(item.get("sessions_total") or 0))
 
-    return False, max_sess, f"數據未達充足門檻（未滿足採用率 {min_adopt:.1%}、工作階段 {min_sess} 或事件數 {min_ev} 標準）"
+    return False, max_sess, f"數據未達充足門檻（未滿足採用率 {min_adopt:.1%}、工作階段 {min_sess} 或事件數 {min_ev} 標準）", None
 
 
 def evaluate_release(
@@ -127,10 +129,11 @@ def evaluate_release(
             "rule_results": [],
             "alert": dis_alert,
             "evaluated_at": now_iso,
+            "comparison_window": None,
         }
 
     recent_health = item.get("recent_health") or {}
-    sample_ok, total_sess, sess_reason = _is_sample_sufficient(item, recent_health, policy)
+    sample_ok, total_sess, sess_reason, suff_w = _is_sample_sufficient(item, recent_health, policy)
 
     # 1. Sample Sufficiency Guard
     if not sample_ok:
@@ -159,6 +162,7 @@ def evaluate_release(
             "rule_results": [insuf_rule],
             "alert": insuf_alert,
             "evaluated_at": now_iso,
+            "comparison_window": None,
         }
 
     # 2. Baseline Check (No previous version on platform)
@@ -191,6 +195,7 @@ def evaluate_release(
             "rule_results": [base_rule],
             "alert": base_alert,
             "evaluated_at": now_iso,
+            "comparison_window": None,
         }
 
     # 3. Normalized Metric Rules Evaluation
@@ -419,6 +424,8 @@ def evaluate_release(
         "trigger_rules": trigger_names,
     }
 
+    comp_win = (vs_p.get("comparison_window") if isinstance(vs_p, dict) else None) or suff_w
+
     return {
         "platform": pf,
         "target_version": ver,
@@ -428,6 +435,7 @@ def evaluate_release(
         "rule_results": rules,
         "alert": alert_payload,
         "evaluated_at": now_iso,
+        "comparison_window": comp_win,
     }
 
 

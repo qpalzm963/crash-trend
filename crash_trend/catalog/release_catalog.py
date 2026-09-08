@@ -388,6 +388,14 @@ def build_release_catalog(
             if v_prev:
                 prev_info = catalog.app_versions.get(pf, {}).get(v_prev, {})
                 prev_introduced_cnt = len([i for i in pf_issues if i.get("first_seen_version") == v_prev])
+                target_w: str | None = None
+                if eff_policy.enabled:
+                    from crash_trend.gate.evaluator import _is_sample_sufficient
+
+                    sample_ok, _, _, suff_w = _is_sample_sufficient(v_info, recent_health, eff_policy)
+                    if sample_ok and suff_w:
+                        target_w = suff_w
+
                 vs_previous = compute_previous_release_comparison(
                     v_curr_info=v_info,
                     v_prev_info=prev_info,
@@ -395,6 +403,10 @@ def build_release_catalog(
                     recent_health=recent_health,
                     introduced_count=len(introduced_ids),
                     prev_introduced_count=prev_introduced_cnt,
+                    target_window=target_w,
+                    min_adoption_rate=eff_policy.min_adoption_rate,
+                    min_sessions=eff_policy.min_sessions,
+                    min_version_events=eff_policy.min_version_events,
                 )
 
             stability_status = vs_previous.get("stability", "baseline") if vs_previous else "baseline"
@@ -428,6 +440,10 @@ def build_release_catalog(
                         "alert_severity": gate_eval["alert"]["alert_severity"],
                         "alert_summary": gate_eval["alert"]["alert_summary"],
                         "rules_triggered": gate_eval["alert"]["trigger_rules"],
+                        "sample_sufficient": gate_eval["sample_sufficient"],
+                        "rule_results": gate_eval["rule_results"],
+                        "comparison_window": gate_eval.get("comparison_window"),
+                        "evaluated_at": gate_eval["evaluated_at"],
                     },
                 )
             else:

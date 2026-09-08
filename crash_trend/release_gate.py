@@ -63,19 +63,24 @@ def load_app_release_catalog(app_name: str) -> list[dict[str, Any]]:
         except Exception:
             pass
 
-    # 3. Fallback: try loading historical catalog authority store to build catalog
-    try:
-        from crash_trend.authority_store import CatalogAuthorityStore
-        from crash_trend.catalog.release_catalog import build_release_catalog
+    # 3. Fallback: try loading historical catalog to build catalog
+    cat_path = out_dir(app_name) / "historical_catalog.json"
+    if cat_path.is_file():
+        try:
+            from crash_trend.catalog.historical import IssueHistoricalCatalog
+            from crash_trend.catalog.release_catalog import build_release_catalog
 
-        store = CatalogAuthorityStore(app_name)
-        cat_items = build_release_catalog(store)
-        if cat_items:
-            return cat_items  # type: ignore[return-value]
-    except Exception:
-        pass
+            with IssueHistoricalCatalog(catalog_path=cat_path, app_id=app_name) as cat:
+                cat.load()
+                cat_items = build_release_catalog(cat)
+                if cat_items:
+                    return cat_items  # type: ignore[return-value]
+        except Exception:
+            pass
 
-    return []
+    raise FileNotFoundError(
+        f"找不到 App「{app_name}」之 release_catalog 產物或歷史目錄檔案（請先執行 pipeline 產出資料）"
+    )
 
 
 def run_release_gate_for_app(
@@ -94,6 +99,10 @@ def run_release_gate_for_app(
         policy = load_gate_policy(app_cfg)
 
     catalog_items = load_app_release_catalog(app_name)
+    if not catalog_items:
+        raise FileNotFoundError(
+            f"找不到 App「{app_name}」之 release_catalog 產物或歷史目錄檔案（請先執行 pipeline 產出資料）"
+        )
     target_platforms = app_cfg.get("platforms")
 
     artifact = evaluate_app_release_gate(

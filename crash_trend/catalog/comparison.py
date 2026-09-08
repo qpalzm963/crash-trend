@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
+from crash_trend.catalog.issue_lifecycle import is_version_sample_sufficient
 from crash_trend.schema_v2 import PreviousReleaseComparison
 
 
@@ -19,11 +20,16 @@ def compute_previous_release_comparison(
     recent_health: dict[str, Any],
     introduced_count: int,
     prev_introduced_count: int,
+    target_window: str | None = None,
+    min_adoption_rate: float = 0.05,
+    min_sessions: int = 1000,
+    min_version_events: int = 20,
 ) -> PreviousReleaseComparison:
     """Computes comparison metrics between current release and previous release.
 
-    Prefers matching recent_health windows (30d -> 90d -> 7d) with valid sessions_total
-    for normalized exposure comparison. Falls back to lifetime sessions/events.
+    Prefers matching recent_health windows (30d -> 90d -> 7d) that satisfy sample
+    sufficiency with valid sessions_total for normalized exposure comparison.
+    Falls back to any matching window with sessions, then lifetime sessions/events.
     """
     prev_recent = v_prev_info.get("recent_health", {})
 
@@ -31,17 +37,59 @@ def compute_previous_release_comparison(
     crash_rate_diff: float | None = None
     fatal_rate_diff: float | None = None
     anr_rate_diff: float | None = None
-    comp_w = None
-    for candidate_w in ("30", "90", "7"):
-        c_w = recent_health.get(candidate_w)
-        p_w = prev_recent.get(candidate_w) if isinstance(prev_recent, dict) else None
-        if c_w and p_w and c_w.get("sessions_total") and p_w.get("sessions_total"):
-            comp_w = candidate_w
-            break
+    comp_w: str | None = None
+    matched_c_w: dict[str, Any] | None = None
+    matched_p_w: dict[str, Any] | None = None
 
-    if comp_w:
-        c_w = recent_health[comp_w]
-        p_w = prev_recent[comp_w]
+    # 1. Caller specified target_window (e.g. from sample-sufficiency check)
+    if target_window:
+        tw_clean = target_window.rstrip("d")
+        for key in (tw_clean, f"{tw_clean}d"):
+            c_cand = recent_health.get(key)
+            p_cand = prev_recent.get(key) if isinstance(prev_recent, dict) else None
+            if c_cand and p_cand and c_cand.get("sessions_total") and p_cand.get("sessions_total"):
+                comp_w = f"{tw_clean}d"
+                matched_c_w = c_cand
+                matched_p_w = p_cand
+                break
+
+    # 2. Auto-select: Pass 1 - prefer window satisfying sample sufficiency
+    if not comp_w:
+        for candidate_w in ("30", "90", "7"):
+            for key in (candidate_w, f"{candidate_w}d"):
+                c_cand = recent_health.get(key)
+                p_cand = prev_recent.get(key) if isinstance(prev_recent, dict) else None
+                if c_cand and p_cand and c_cand.get("sessions_total") and p_cand.get("sessions_total"):
+                    if is_version_sample_sufficient(
+                        c_cand,
+                        min_adoption_rate=min_adoption_rate,
+                        min_sessions=min_sessions,
+                        min_version_events=min_version_events,
+                    ):
+                        comp_w = f"{candidate_w}d"
+                        matched_c_w = c_cand
+                        matched_p_w = p_cand
+                        break
+            if comp_w:
+                break
+
+    # 3. Auto-select: Pass 2 - fall back to any matching window with sessions
+    if not comp_w:
+        for candidate_w in ("30", "90", "7"):
+            for key in (candidate_w, f"{candidate_w}d"):
+                c_cand = recent_health.get(key)
+                p_cand = prev_recent.get(key) if isinstance(prev_recent, dict) else None
+                if c_cand and p_cand and c_cand.get("sessions_total") and p_cand.get("sessions_total"):
+                    comp_w = f"{candidate_w}d"
+                    matched_c_w = c_cand
+                    matched_p_w = p_cand
+                    break
+            if comp_w:
+                break
+
+    if matched_c_w and matched_p_w:
+        c_w = matched_c_w
+        p_w = matched_p_w
         c_ev = int(c_w.get("crash_events") or 0)
         c_se = int(c_w.get("sessions_total") or 0)
         p_ev = int(p_w.get("crash_events") or 0)
@@ -158,4 +206,5 @@ def compute_previous_release_comparison(
         "new_issues_count": new_issues_diff,
         "stability": stability,
         "stability_status": stability_status,
+        "comparison_window": comp_w,
     }

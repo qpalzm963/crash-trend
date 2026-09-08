@@ -34,6 +34,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from crash_trend.catalog.comparison import compute_previous_release_comparison
 from crash_trend.catalog.release_catalog import build_release_catalog
 from crash_trend.gate import (
     GatePolicy,
@@ -47,7 +48,7 @@ from crash_trend.gate import (
     validate_release_gate_artifact,
 )
 from crash_trend.pipeline_run import run_pipeline
-from crash_trend.release_gate import run_release_gate_for_app
+from crash_trend.release_gate import load_app_release_catalog, run_release_gate_for_app
 from crash_trend.schema_v2 import validate_release_catalog
 
 
@@ -1015,6 +1016,226 @@ class TestReleaseGateFeedbackFixes(unittest.TestCase):
             self.assertEqual(artifact["platforms"]["android"]["gate_status"], v2_item["release_gate"]["status"])
 
 
+class TestReleaseGateRound2ReviewFixes(unittest.TestCase):
+    """Regression test suite for Round 2 review feedback (Issue #57, PR #58).
+
+    Addresses:
+    1. [P1] Window Alignment between Sample Sufficiency and Comparison.
+    2. [P1] Missing Catalog Error Handling in Standalone CLI.
+    3. [P2] Comprehensive Gate Detail Scope in Dashboard & Schema Parity.
+    """
+
+    def test_window_alignment_sample_sufficiency_regression(self) -> None:
+        """Asserts comparison aligns with sample-sufficient window (90d) instead of insufficient window (30d)."""
+        policy = GatePolicy(min_sessions=1000)
+
+        # 30d: 50 sessions (insufficient, min_sessions=1000). If evaluated, 10/50 = 0.20 rate (+1900% vs prev 0.01) -> FAIL!
+        # 90d: 2000 sessions (sufficient). If evaluated, 20/2000 = 0.01 rate (0.0% vs prev 0.01) -> PASS!
+        curr_recent = {
+            "30d": {
+                "sessions_total": 50,
+                "crash_events": 10,
+                "fatal_events": 0,
+                "anr_events": 0,
+                "sample_sufficient": False,
+            },
+            "90d": {
+                "sessions_total": 2000,
+                "crash_events": 20,
+                "fatal_events": 0,
+                "anr_events": 0,
+                "sample_sufficient": True,
+            },
+        }
+
+        prev_recent = {
+            "30d": {
+                "sessions_total": 1000,
+                "crash_events": 10,
+                "fatal_events": 0,
+                "anr_events": 0,
+            },
+            "90d": {
+                "sessions_total": 2000,
+                "crash_events": 20,
+                "fatal_events": 0,
+                "anr_events": 0,
+            },
+        }
+
+        # 1. Automatic window selection: must prefer sample-sufficient window (90d), NOT 30d
+        cmp_auto = compute_previous_release_comparison(
+            v_curr_info={"recent_health": curr_recent},
+            v_prev_info={"recent_health": prev_recent},
+            v_prev="1.9.0",
+            recent_health=curr_recent,
+            introduced_count=0,
+            prev_introduced_count=0,
+            min_sessions=1000,
+        )
+
+        self.assertEqual(cmp_auto["comparison_window"], "90d")
+        self.assertAlmostEqual(cmp_auto["crash_rate_change_pct"], 0.0, places=4)
+
+        # Evaluate release: Gate must PASS because 90d sample-sufficient metrics are evaluated
+        item_aligned = {
+            "version": "2.0.0",
+            "platform": "android",
+            "recent_health": curr_recent,
+            "vs_previous": cmp_auto,
+        }
+        res_aligned = evaluate_release(item_aligned, policy)
+        self.assertEqual(res_aligned["gate_status"], "pass")
+        self.assertEqual(res_aligned["comparison_window"], "90d")
+        self.assertTrue(res_aligned["sample_sufficient"])
+
+        # 2. Contrast check: If forced to 30d, crash_rate_change_pct is +1900% and Gate FAILS
+        cmp_forced_30 = compute_previous_release_comparison(
+            v_curr_info={"recent_health": curr_recent},
+            v_prev_info={"recent_health": prev_recent},
+            v_prev="1.9.0",
+            recent_health=curr_recent,
+            introduced_count=0,
+            prev_introduced_count=0,
+            target_window="30d",
+            min_sessions=1000,
+        )
+        self.assertEqual(cmp_forced_30["comparison_window"], "30d")
+        self.assertAlmostEqual(cmp_forced_30["crash_rate_change_pct"], 19.0, places=2)
+
+        item_unaligned = {
+            "version": "2.0.0",
+            "platform": "android",
+            "recent_health": curr_recent,
+            "vs_previous": cmp_forced_30,
+        }
+        res_unaligned = evaluate_release(item_unaligned, policy)
+        self.assertEqual(res_unaligned["gate_status"], "fail")
+
+    def test_missing_catalog_error_handling_and_exit_code_1(self) -> None:
+        """Asserts missing catalog inputs raise FileNotFoundError and standalone CLI exits with code 1."""
+        from crash_trend.release_gate import main as release_gate_main
+
+        # 1. load_app_release_catalog raises FileNotFoundError on missing files
+        with self.assertRaises(FileNotFoundError):
+            load_app_release_catalog("valid_unbuilt_app")
+
+        # 2. Standalone CLI exits with code 1 (NOT code 0 false green!)
+        mock_cfg = {"apps": {"valid_unbuilt_app": {"platforms": ["android"]}}}
+        with patch("crash_trend.release_gate.load_config", return_value=mock_cfg), \
+             patch("crash_trend.release_gate.get_app", return_value={"platforms": ["android"]}):
+
+            with patch.object(sys, "argv", ["release_gate.py", "--app", "valid_unbuilt_app", "--quiet"]):
+                with self.assertRaises(SystemExit) as ctx:
+                    release_gate_main()
+                self.assertEqual(ctx.exception.code, 1)
+
+            # 3. Standalone CLI with --fail-on-regression also exits with code 1 (runtime error, not regression fail 2)
+            with patch.object(sys, "argv", ["release_gate.py", "--app", "valid_unbuilt_app", "--fail-on-regression", "--quiet"]):
+                with self.assertRaises(SystemExit) as ctx:
+                    release_gate_main()
+                self.assertEqual(ctx.exception.code, 1)
+
+        # 4. Fallback rebuild via IssueHistoricalCatalog when historical_catalog.json exists
+        with tempfile.TemporaryDirectory() as tmpdir:
+            app_dir = Path(tmpdir) / "demo_app"
+            app_dir.mkdir(parents=True, exist_ok=True)
+            hist_cat = {
+                "schema_version": "2.3.0",
+                "updated_at": "2026-09-08T00:00:00Z",
+                "issues": {},
+                "app_versions": {
+                    "android": {
+                        "1.0.0": {
+                            "sessions_total": 5000,
+                            "crash_events": 10,
+                            "first_seen": "2026-09-01T00:00:00Z",
+                            "last_seen": "2026-09-08T00:00:00Z",
+                        }
+                    }
+                },
+            }
+            (app_dir / "historical_catalog.json").write_text(json.dumps(hist_cat), encoding="utf-8")
+
+            with patch("crash_trend.release_gate.out_dir", return_value=app_dir):
+                items = load_app_release_catalog("demo_app")
+                self.assertTrue(len(items) > 0)
+                self.assertEqual(items[0]["version"], "1.0.0")
+
+    def test_release_gate_detail_scope_and_schema_validation(self) -> None:
+        """Asserts ReleaseGateSummary includes complete detail fields and passes strict schema validation."""
+        item: dict[str, Any] = {
+            "version": "2.0.0",
+            "platform": "android",
+            "first_seen": "2026-09-01T00:00:00Z",
+            "last_seen": "2026-09-08T00:00:00Z",
+            "release_date": "2026-09-01",
+            "status": "latest",
+            "lifetime_crashes": 50,
+            "lifetime_issues": 3,
+            "lifetime_affected_users": 40,
+            "lifetime_fatal": 5,
+            "lifetime_anr": 2,
+            "recent_health": {
+                "30d": {
+                    "sessions_total": 10000,
+                    "crash_events": 50,
+                    "affected_users": 40,
+                    "sample_sufficient": True,
+                }
+            },
+            "vs_previous": {
+                "previous_version": "1.9.0",
+                "crash_rate_change_pct": 0.02,
+                "crash_free_users_diff": 0.001,
+                "fatal_change_pct": 0.0,
+                "anr_change_pct": 0.0,
+                "new_issues_diff": 1,
+                "stability": "stable",
+                "comparison_window": "30d",
+            },
+            "release_gate": {
+                "status": "pass",
+                "should_alert": False,
+                "alert_severity": "none",
+                "alert_summary": "版本 2.0.0 (android) 品質閘門通過",
+                "rules_triggered": [],
+                "sample_sufficient": True,
+                "comparison_window": "30d",
+                "evaluated_at": "2026-09-08T12:00:00Z",
+                "rule_results": [
+                    {
+                        "rule_name": "crash_rate_regression",
+                        "metric_name": "crash_rate_change_pct",
+                        "current_value": 0.02,
+                        "previous_value": 0.0,
+                        "warn_threshold": 0.10,
+                        "fail_threshold": 0.25,
+                        "status": "pass",
+                        "reason": "崩潰率變動於正常範圍",
+                    }
+                ],
+            },
+        }
+
+        # Validate release catalog item schema
+        errors: list[str] = []
+        validate_release_catalog([item], errors)
+        self.assertEqual(errors, [])
+
+        # Validate release gate artifact schema with comparison_window
+        artifact = evaluate_app_release_gate(
+            app_id="demo_app",
+            catalog_items=[item],
+            policy=GatePolicy(),
+            target_platforms=["android"],
+        )
+        self.assertEqual(artifact["platforms"]["android"]["comparison_window"], "30d")
+        artifact_errors = validate_release_gate_artifact(artifact)
+        self.assertEqual(artifact_errors, [])
+
+
 if __name__ == "__main__":
     unittest.main()
+
 
