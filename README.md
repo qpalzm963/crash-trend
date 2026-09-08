@@ -1,6 +1,6 @@
 # crash-trend
 
-**Firebase Crashlytics 趨勢分析與 Dashboard V2.6** — 將 Crashlytics BigQuery、Firebase Sessions 與可選的 Crashlytics MCP 資料整合成可排序的修復優先級、AI 分析、Pipeline Health、Persistent Release Catalog、週期報表與自包含式 Dashboard。
+**Firebase Crashlytics 趨勢分析與 Dashboard V2.7** — 將 Crashlytics BigQuery、Firebase Sessions 與可選的 Crashlytics MCP 資料整合成可排序的修復優先級、AI 分析、Pipeline Health、Persistent Release Catalog、版本退化閘門（Release Regression Gate）、Google Chat 品質通知與觀測度審計，以及自包含式 Dashboard。
 
 ![dashboard](docs/screenshot.png)
 
@@ -13,6 +13,8 @@ Firebase Crashlytics 很適合查看單一 crash，但要回答下面這些問�
 - Crash-free Users / Sessions 是否下降？
 - 問題集中在哪些版本、裝置或使用者族群？
 - 哪些 issue 需要進一步做 Root Cause 分析？
+- 發布版本是否符合品質要求？能否安全推進 Rollout？
+- Google Chat 警報是否即時送達？是否有重試失敗或抑制？
 - 本週資料源、AI 與同步流程是否正常？
 
 crash-trend 將這些工作整理成一條可重複執行的資料管線：
@@ -21,20 +23,23 @@ crash-trend 將這些工作整理成一條可重複執行的資料管線：
 Crashlytics BigQuery ──┐
 Firebase Sessions ─────┼─→ fetch / enrich ─→ normalize ─→ deterministic priority (P0~P3)
 Crashlytics MCP ───────┘        │                         │
-                                │                         ├─→ AI Task Router
-                                │                         │    ├─ lightweight triage
-                                │                         │    └─ deep analysis
+                                │                         ├─→ AI Task Router (Gemini / OpenRouter)
                                 │                         │
                                 ├─→ SQLite Authority ─────┼─→ Persistent Release Catalog
-                                │    (exact dedupe/salt)  ├─→ dashboard.html
-                                │                         ├─→ pipeline health
-                                │                         ├─→ surge detection
-                                └─────────────────────────┴─→ monthly chat report
+                                │    (exact dedupe/salt)  ├─→ Release Regression Gate (pass/warn/fail)
+                                │                         │    ├─→ SQLite Gate History (snapshots/trends)
+                                │                         │    └─→ Google Chat Alerts (dedupe/cooldown)
+                                │                         │         └─→ SQLite Alert Delivery Audit
+                                │                         │
+                                └─────────────────────────┼─→ dashboard.html & JSON Bundle
+                                                          ├─→ pipeline health (pipeline_run.json)
+                                                          ├─→ surge detection
+                                                          └─→ monthly chat report
 ```
 
 ---
 
-## Dashboard V2.6 核心能力
+## Dashboard V2.7 核心能力
 
 ### Crash Intelligence Dashboard
 
@@ -65,15 +70,18 @@ Crashlytics MCP ───────┘        │                         │
 - **高效並行與安全**：啟用 SQLite WAL（Write-Ahead Logging）模式、`synchronous = NORMAL` 與 `busy_timeout = 5000`，確保背景執行緒與排程穩定寫入。
 - **JSON 去重解耦**：`historical_catalog.json` 與 `dashboard_v2.json` 絕不包含 raw installation IDs，僅記錄去重後的計數值與 authority metadata。
 
-### 三大解耦契約架構 (Three Distinct Contracts)
+### 六大解耦契約架構 (Six Distinct Decoupled Contracts)
 
-系統嚴格劃分三種獨立契約，確保責任邊界清晰與儲存效能最佳化：
+系統嚴格劃分六種獨立契約，確保責任邊界清晰與儲存效能最佳化：
 
 | 契約名稱 | 儲存檔案 | 核心職責 | 格式與特性 |
 | :--- | :--- | :--- | :--- |
-| **Dashboard JSON Contract** | `out/dashboard_v2.json` 或 `out/<app>/dashboard_v2.json` | 供前端 Web UI 呈現的聚合資料容器（Bundle） | 包含多週期快照、KPI、趨勢、問題排行與發佈版本目錄 |
+| **Dashboard JSON Contract** | `out/dashboard_v2.json` 或 `out/<app>/dashboard_v2.json` | 供前端 Web UI 呈現的聚合資料容器（Bundle） | 包含多週期快照、KPI、趨勢、問題排行、發佈目錄、閘門歷史與發送審計 |
 | **Historical Catalog JSON Contract** | `out/<app>/historical_catalog.json` | 跨視窗版本演進與 Issue 生命週期累積狀態 | 儲存版本時間戳、水線、生命週期與去重後指標，**零 raw IDs** |
+| **Release Gate Artifact JSON Contract** | `out/<app>/release_gate.json` | 單次最新版本退化判定機器產物與 CI 阻擋依據 | 結構化指標快照、違規原因、嚴重度與判定結果，**零 raw IDs** |
 | **SQLite Authority Store Contract** | `out/<app>/catalog_authority.sqlite3` | 受影響用戶去重的唯一事實來源（Single Source of Truth） | 本機 SQLite DB，儲存加鹽雜湊集合與版本權威狀態 |
+| **SQLite Gate History Store Contract** | `out/<app>/release_gate_history.sqlite3` | 閘門評估快照不可變歷史序列與品質演進趨勢 | 本機 SQLite DB，以 `evaluation_key` 保證冪等，追蹤狀態轉移軌跡 |
+| **SQLite Alert Delivery Audit Contract** | `out/<app>/alert_delivery.sqlite3` | 品質通知發送嘗試、去重冷卻、重試與健康度審計 | 本機 SQLite DB，嚴格抹除 Webhook URL / Token / UUID，支援唯讀模式 |
 
 ### 資料管線生命週期（Migration / Bootstrap / Incremental）
 
@@ -463,6 +471,61 @@ python3 -m crash_trend.ai_config_service --serve 8080
 
 ---
 
+## 歷史閘門快照與品質趨勢 (Historical Gate Trend - Issue #61)
+
+每次 Release Gate 評估結果均保存為不可變歷史快照，持久化於 SQLite 儲存庫 `out/<app>/release_gate_history.sqlite3`（資料表 `release_gate_snapshots`），作為品質演進趨勢分析之權威來源：
+
+- **不可變快照與冪等重試**：依據 `(app_id, platform, version, policy_identity, metrics_digest)` 產生 SHA-256 `evaluation_key`，以唯一索引搭配 `INSERT OR IGNORE` 保證重複執行或歷史重播完全冪等，絕不產生重複資料。
+- **狀態演進與轉移追蹤**：完整記錄版本從 `insufficient_data -> warn -> fail -> pass (recovery)` 的狀態演進軌跡，追蹤指標如何隨修復或新版本發佈逐步收斂。
+- **解耦失敗語意**：歷史快照儲存庫寫入異常絕不中斷主要管線，亦不影響 `release_gate.json` 或後續 `build_dashboard` 產出。
+- **Dashboard 前端整合**：
+  - **Release Detail Modal**：在發布版本詳情中呈現 **Gate Evaluation Timeline**，包含時間戳、Gate 判定狀態標籤、摘要、觸發規則清單與狀態轉移軌跡。
+  - **Quality Trend 概覽**：直觀呈現近期發佈版本的品質演進趨勢。
+- **CLI 查詢與資料修剪**：
+  ```bash
+  # 查詢指定版本歷史評估軌跡
+  python3 -m crash_trend.release_gate_history --app shop_app --platform android --version 3.2.0
+
+  # 查詢最近版本品質演進趨勢
+  python3 -m crash_trend.release_gate_history --app shop_app --platform android --trend --limit 10
+
+  # 修剪超過指定天數之歷史快照
+  python3 -m crash_trend.release_gate_history --app shop_app --prune-older-than-days 180
+  ```
+
+---
+
+## 告警觀測度與發送審計 (Alert Delivery Observability - Issue #63)
+
+系統提供完整的唯讀投影與查詢層 (`crash_trend/alerts/observability.py`)，將 Google Chat 品質通知之發送狀態、重試、去重冷卻與審計記錄安全呈現於 Dashboard 與 CLI：
+
+- **確定性健康度語意 (Transparent Health Semantics)**：
+  - `healthy`：最近一次真實（非 dry-run）投遞嘗試成功。
+  - `degraded`：最近一次真實投遞嘗試失敗。
+  - `no_data`：尚無真實投遞嘗試紀錄。
+  - `unavailable`：資料庫毀損或讀取異常（附帶清洗後之診斷資訊）。
+  - 去重冷卻抑制（`suppressed`）視為正常策略決策，**絕不使健康度降級**；`dry_run` 記錄嚴格排除於健康度統計之外。
+- **權威對齊之未解決失敗次數 (`unresolved_failures`)**：
+  - 連續失敗計數嚴格遵從 `(attempted_at DESC, id DESC)` 權威，計算自最新成功投遞以來的失敗次數，即便非同步 worker 延遲寫入仍保證與健康度狀態 100% 一致。
+- **全 Scheme 憑證防禦性清洗 (Zero-Secret Guarantees)**：
+  - `sanitize_audit_text()` 徹底抹除 Webhook URL、Token、密鑰、所有 HTTP 認證標頭（包含 `Bearer`, `Basic`, `ApiKey`, `Digest` 與 JSON 鍵值）以及 Raw UUID，確保導出資料與 Dashboard 絕不洩漏機密。
+- **唯讀安全模式 (Read-only Safe Observability)**：
+  - Dashboard 建置與 Observability 查詢連線嚴格使用 SQLite URI `mode=ro`，完全略過目錄建立、WAL 與 DDL 遷移。
+  - 讀取缺少 `is_recovery` 欄位之舊版資料庫或唯讀檔案系統（`chmod 444`）時安全回退，絕不產生 `attempt to write a readonly database`。
+- **Dashboard 前端整合**：
+  - **Release Detail Modal**：在 Gate Evaluation Timeline 下方呈現 **Alert Delivery Timeline**（發送狀態、嘗試次數、HTTP 碼、抑制原因 / 清洗後錯誤訊息、復原標記）。
+  - **Data Pipelines & Notifications View (`#view-notifications`)**：呈現 Google Chat 連線健康度卡片、24 小時發送統計（成功、失敗、抑制次數）與最近通知審計表格。
+- **CLI 審計查詢**：
+  ```bash
+  # 查詢最近 20 筆發送審計記錄
+  python3 -m crash_trend.alerts --history --app shop_app --limit 20
+
+  # 依平台與版本篩選並輸出結構化 JSON
+  python3 -m crash_trend.alerts --history --app shop_app --platform android --version 3.2.0 --json
+  ```
+
+---
+
 ## 週同步與通知
 
 `scripts/weekly_sync.sh` 會：
@@ -536,24 +599,113 @@ requirements.txt
 
 ---
 
-## 主要輸出
+## 主要輸出與儲存總表
 
-執行後的 runtime artifacts 預設不進 Git：
+執行後的 runtime artifacts 與資料庫預設不進 Git：
 
 ```text
 dashboard.html
 out/
-  pipeline_run.json           # 管線健康度與 stage 審計
-  dashboard_v2.json           # Dashboard V2 Bundle（前端渲染契約，頂層聚合）
+  pipeline_run.json                 # 管線健康度與 stage 審計
+  dashboard_v2.json                 # Dashboard V2 Bundle（前端渲染契約，頂層聚合）
   <app>/
-    dashboard_v2.json         # 單一 app 前端渲染契約
-    historical_catalog.json   # 跨週期版本目錄與 Issue 生命週期累積狀態契約
-    catalog_authority.sqlite3 # SQLite 受影響用戶去重權威儲存（不含 PII 的加鹽雜湊）
+    dashboard_v2.json               # 單一 app 前端渲染契約
+    historical_catalog.json         # 跨週期版本目錄與 Issue 生命週期累積狀態契約
+    release_gate.json               # 單次最新 Release Gate 評估結果產物
+    catalog_authority.sqlite3       # SQLite 受影響用戶去重權威儲存（不含 PII 的加鹽雜湊）
+    release_gate_history.sqlite3    # SQLite 閘門評估快照不可變歷史序列
+    alert_delivery.sqlite3          # SQLite 品質通知發送嘗試、去重冷卻與審計儲存
 reports/
 logs/
 ```
 
 `.env`、`apps.yaml`、Service Account JSON、Admin token 與 crash 原始輸出也已透過 `.gitignore` / Docker mount 策略避免直接提交到 repository。
+
+### 儲存架構與 Artifact 生命週期總表
+
+| 儲存項目 | 路徑 | 格式 / 引擎 | 擁有者 (Writer) | 讀取者 (Reader) | 權威性 / 生命週期 |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Pipeline Run Summary** | `out/pipeline_run.json` | JSON | `pipeline_run.py` | Dashboard, CI | 單次管線執行之健康度與 stage 審計資訊 |
+| **Multi-App Dashboard Bundle** | `out/dashboard_v2.json` | JSON | `pipeline_run.py` / `renderer.py` | Web UI (`dashboard.html`) | 聚合所有 App 當期與多週期快照之唯讀展示容器 |
+| **Single-App Dashboard Bundle** | `out/<app>/dashboard_v2.json` | JSON | `pipeline_run.py` / `renderer.py` | Web UI | 單一 App 專屬之完整前端資料容器 |
+| **Historical Catalog** | `out/<app>/historical_catalog.json` | JSON | `lifecycle.py` | Release Gate, Dashboard | 跨週期版本累積與 Issue 生命週期狀態（零 raw IDs） |
+| **Release Gate Artifact** | `out/<app>/release_gate.json` | JSON | `release_gate.py` | CI, Alerts Dispatcher, Dashboard | 最新一次 Release Gate 評估結果之機器可讀產物 |
+| **Catalog Authority Store** | `out/<app>/catalog_authority.sqlite3` | SQLite 3 (WAL) | `authority_store.py` | `lifecycle.py` | 設備級受影響用戶精確去重之唯一事實來源（加鹽 SHA-256） |
+| **Release Gate History Store** | `out/<app>/release_gate_history.sqlite3`| SQLite 3 (WAL) | `gate/history.py` | `release_gate.py`, Dashboard | 閘門評估快照不可變歷史序列與品質演進趨勢 |
+| **Alert Delivery Audit Store** | `out/<app>/alert_delivery.sqlite3` | SQLite 3 (WAL) | `alerts/state.py` | Observability, Dashboard | 發送嘗試、HTTP 結果、去重冷卻抑制原因與 24h 審計 |
+| **自包含靜態儀表板** | `dashboard.html` | Self-contained HTML | `build_dashboard.py` | 瀏覽器, Nginx | 內嵌前端 Bundle 與視覺化樣式之單一 HTML 檔案 |
+
+---
+
+## CLI 指令與 Exit Code 規範 (CLI Usage & Exit Code Contract)
+
+### Exit Code 契約
+
+crash-trend 的 CLI 工具在設計上與 CI/CD 工作流深度整合，嚴格遵循確定性的 Exit Code 語意：
+
+| Exit Code | 狀態定義 | 說明與觸發情境 |
+| :--- | :--- | :--- |
+| **`0`** | **成功 (Success)** | 管線正常執行完成；品質閘門判定為 `pass` / `warn` / `insufficient_data` / `baseline`（或未加 `--fail-on-regression`）；品質警報正常送出或被策略抑制（或未加 `--fail-on-alert-failure`）。 |
+| **`1`** | **運行期異常 (Runtime Error)** | BigQuery 查詢失敗、網路斷線、未捕捉例外或程式崩潰；或啟用 `--fail-on-alert-failure` 且品質通知 HTTP 傳送失敗。 |
+| **`2`** | **品質退化阻擋 (Gate Regression)** | 啟用 `--fail-on-regression` 且任何 App 之 Release Gate 判定為 `fail`（由 CI 捕獲以立即阻擋有問題的部署或發佈）。 |
+
+### 核心 CLI 工具速查
+
+| 模組 | 主要用途 | 常用參數範例 |
+| :--- | :--- | :--- |
+| `crash_trend.pipeline_run` | 端到端管線編排 | `python3 -m crash_trend.pipeline_run --app shop_app --days 30 --fail-on-regression` |
+| `crash_trend.release_gate` | 版本品質退化閘門獨立評估 | `python3 -m crash_trend.release_gate --app shop_app --platform android --fail-on-regression` |
+| `crash_trend.release_gate_history` | 閘門歷史快照與品質趨勢 | `python3 -m crash_trend.release_gate_history --app shop_app --trend --limit 10` |
+| `crash_trend.alerts` | 品質警報發送與審計查詢 | `python3 -m crash_trend.alerts --history --app shop_app --limit 20 --json` |
+| `crash_trend.ai_config_service` | AI 治理原則調整與 Admin API | `python3 -m crash_trend.ai_config_service --app shop_app --mode auto` |
+| `crash_trend.build_dashboard` | 手動獨立產出 Dashboard HTML | `python3 -m crash_trend.build_dashboard --in out/dashboard_v2.json --out dashboard.html` |
+
+---
+
+## 向下相容與遷移指南 (Backward Compatibility & Migration)
+
+- **V2.6 至 V2.7 零手動遷移 (Zero-Manual-Migration)**：
+  - 現有專案升級至 V2.7 完全無痛，不需手動執行任何資料庫遷移指令或 SQL script。
+  - 新增之 SQLite 儲存庫（`release_gate_history.sqlite3`, `alert_delivery.sqlite3`）於首次執行管線時自動在寫入路徑建立。
+- **唯讀環境安全相容 (Read-only Safe Observability)**：
+  - Dashboard 建置與 Observability 查詢在連線 SQLite 時一律使用 `mode=ro` URI 連線，完全略過目錄建立、WAL pragma 與 `CREATE TABLE`。
+  - 資料庫檔案尚未建立時，各查詢函式主動檢查 `_table_exists()` 並安全回傳空記錄或零統計值。
+  - 在唯讀掛載檔案系統或 `chmod 444` 環境下讀取舊版 SQLite（缺少 `is_recovery` 欄位）時，透過 `PRAGMA table_info` 偵測並安全降級回傳 `is_recovery=False`，**絕不觸發任何 DDL 寫入，徹底杜絕 `attempt to write a readonly database`**。
+- **Schema 欄位平滑演進**：
+  - 寫入路徑（Dispatcher / Store）在需要時自動以 `ALTER TABLE ADD COLUMN is_recovery` 增量遷移。
+  - `historical_catalog.json` 載入舊版含 `installation_ids` 之檔案時，自動遷移入 SQLite 加鹽雜湊庫，持久化 JSON 強制保證零 raw IDs。
+  - `schema_v2.py` 之 `SUPPORTED_SCHEMA_VERSIONS` 保持完整相容清單：`{"2.0", "2.3", "2.3.0", "2.6", "2.6.0", "2.7", "2.7.0"}`。
+
+---
+
+## Release Notes: Dashboard V2.7
+
+Dashboard V2.7 標誌著從單純的「事後監控與報表」邁向「主動品質退化守護與即時告警審計」的重大演進：
+
+1. **Issue #57 — Release Regression Gate & Quality Alerts**：
+   - 建立確定性版本退化判定核心，嚴格以正規化暴險指標（Crash Rate 變動率、Crash-free Users 降幅、Fatal/ANR 升幅、復發/新引入問題）客觀評估。
+   - 產出結構化機器可讀產物 `out/<app>/release_gate.json`。
+   - 整合 CI Pipeline 自動阻擋機制（`--fail-on-regression`，Exit code 2）。
+2. **Issue #59 — Google Chat Quality Alerts Delivery**：
+   - 整合 Google Chat Incoming Webhook，實踐版本退化（WARN / FAIL）與復原通知即時推送。
+   - 實作確定性 SHA-256 數位指紋與 6 小時去重冷卻，支援狀態變更與新原因即時重發。
+   - 支援版本專屬 `threadKey` 討論串收攏，以及嚴格金鑰隔離與 URL 脫敏。
+   - 提供 `--dry-run`、`--force` 與 `--fail-on-alert-failure` 獨立 CLI。
+3. **Issue #61 — Historical Gate Trend**：
+   - 建立 SQLite 不可變歷史評估快照庫 `out/<app>/release_gate_history.sqlite3`。
+   - 以 `evaluation_key` 保證重播與重試完全冪等。
+   - 追蹤 `insufficient_data -> warn -> fail -> pass` 之狀態演進軌跡與近期版本品質趨勢。
+   - 於 Dashboard Release Detail Modal 呈現 Gate Evaluation Timeline。
+4. **Issue #63 — Alert Delivery Observability**：
+   - 實作唯讀投影與查詢層（`crash_trend/alerts/observability.py`）。
+   - 定義確定性健康度狀態語意（healthy, degraded, no_data, unavailable），連續失敗計數嚴格對齊 `(attempted_at DESC, id DESC)` 權威。
+   - 實作全 Scheme 認證憑證防禦性清洗（Basic, ApiKey, Digest, Bearer, JSON）。
+   - 於 Dashboard Notifications 視圖呈現連線健康卡片、24h 統計與最近通知審計表；Release Detail 呈現發送軌跡。
+   - 支援唯讀模式（`read_only=True`, `mode=ro`）與舊版資料庫安全相容。
+5. **Issue #65 — Contract, Documentation & Technical Debt Cleanup**：
+   - 全面收斂六大解耦契約、升級主 README 與 Schema Spec。
+   - 補齊 apps.example.yaml、CLI 文件與儲存路徑總表。
+   - 規劃 V2.8 技術債與未來演進路線。
 
 ---
 
@@ -600,8 +752,8 @@ GitHub Actions (`.github/workflows/ci.yml`) 在每次 push 與 PR 時自動執�
 ## 文件
 
 - [`DEPLOY.md`](DEPLOY.md)：Docker / 排程 / 部署方式
-- [`docs/dashboard_v2_schema.md`](docs/dashboard_v2_schema.md)：Dashboard V2 資料契約
-- [`apps.example.yaml`](apps.example.yaml)：完整多 App / AI / Data Source 設定範例
+- [`docs/dashboard_v2_schema.md`](docs/dashboard_v2_schema.md)：Dashboard V2.7 資料契約體系規格
+- [`apps.example.yaml`](apps.example.yaml)：完整多 App / AI / Data Source / Release Gate & Alerts 設定範例
 
 ## License
 

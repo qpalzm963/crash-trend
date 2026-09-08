@@ -13,8 +13,8 @@ from __future__ import annotations
 import datetime as dt
 from typing import Any, Literal, NotRequired, TypedDict
 
-SCHEMA_VERSION = "2.6.0"
-SUPPORTED_SCHEMA_VERSIONS = {"2.0", "2.3", "2.3.0", "2.6", "2.6.0"}
+SCHEMA_VERSION = "2.7.0"
+SUPPORTED_SCHEMA_VERSIONS = {"2.0", "2.3", "2.3.0", "2.6", "2.6.0", "2.7", "2.7.0"}
 
 # ---------------------------------------------------------------------------
 # TypedDict Definitions (Required by default)

@@ -23,16 +23,19 @@ class TestDocsContracts(unittest.TestCase):
         cls.schema_doc_text = cls.schema_doc_path.read_text(encoding="utf-8")
 
     def test_canonical_paths_consistency(self) -> None:
-        """Verifies canonical paths out/<app>/historical_catalog.json and out/<app>/catalog_authority.sqlite3."""
-        # Check presence of canonical partitioned paths in README.md
-        self.assertIn("out/<app>/historical_catalog.json", self.readme_text)
-        self.assertIn("out/<app>/catalog_authority.sqlite3", self.readme_text)
+        """Verifies canonical paths for all V2.7 stores and artifacts in README and schema docs."""
+        canonical_paths = [
+            "out/<app>/historical_catalog.json",
+            "out/<app>/catalog_authority.sqlite3",
+            "out/<app>/release_gate.json",
+            "out/<app>/release_gate_history.sqlite3",
+            "out/<app>/alert_delivery.sqlite3",
+        ]
+        for cp in canonical_paths:
+            self.assertIn(cp, self.readme_text, f"Missing {cp} in README.md")
+            self.assertIn(cp, self.schema_doc_text, f"Missing {cp} in docs/dashboard_v2_schema.md")
 
-        # Check presence of canonical partitioned paths in docs/dashboard_v2_schema.md
-        self.assertIn("out/<app>/historical_catalog.json", self.schema_doc_text)
-        self.assertIn("out/<app>/catalog_authority.sqlite3", self.schema_doc_text)
-
-        # Verify no bare contract paths remain in contract declarations
+        # Verify no bare unpartitioned catalog paths remain in contract declarations
         self.assertNotIn("`out/historical_catalog.json`", self.readme_text)
         self.assertNotIn("`out/catalog_authority.sqlite3`", self.readme_text)
         self.assertNotIn("`out/historical_catalog.json`", self.schema_doc_text)
@@ -90,13 +93,24 @@ class TestDocsContracts(unittest.TestCase):
             cat_dict = json.loads(cat_path.read_text(encoding="utf-8"))
             self.assertEqual(cat_dict.get("schema_version"), "2.3.0")
 
-        # Document must mention Producer writes 2.3.0
+        # Document must mention Producer writes 2.3.0 and Bundle writes 2.7.0
         self.assertIn('"2.3.0"', self.schema_doc_text)
+        self.assertIn('"2.7.0"', self.schema_doc_text)
         self.assertIn("Producer", self.schema_doc_text)
 
-        # Validator must accept 2.3.0 as well as 2.6.0
+        # Validator must accept 2.3.0, 2.6.0 as well as 2.7.0
         self.assertIn("2.3.0", SUPPORTED_SCHEMA_VERSIONS)
         self.assertIn("2.6.0", SUPPORTED_SCHEMA_VERSIONS)
+        self.assertIn("2.7.0", SUPPORTED_SCHEMA_VERSIONS)
+
+    def test_exit_codes_and_cli_contracts_documented(self) -> None:
+        """Verifies that Exit Code contracts (0, 1, 2) and CLI flags are clearly documented."""
+        self.assertIn("--fail-on-regression", self.readme_text)
+        self.assertIn("--fail-on-alert-failure", self.readme_text)
+        self.assertIn("Exit Code", self.readme_text)
+        self.assertIn("`0`", self.readme_text)
+        self.assertIn("`1`", self.readme_text)
+        self.assertIn("`2`", self.readme_text)
 
     def test_recursive_zero_raw_ids_enforcement(self) -> None:
         """Verifies that validate_historical_catalog() recursively rejects raw IDs anywhere in the structure."""

@@ -1,17 +1,20 @@
-# Dashboard V2.6 Data Schema & Contracts Specification
+# Dashboard V2.7 Data Schema & Contracts Specification
 
-本文檔定義 **Crashlytics Engineering Dashboard V2.6** 的完整資料契約體系（Data Contracts）。
-本契約旨在徹底解耦資料擷取（BigQuery、Firebase Sessions、MCP、Console）、去重權威儲存（SQLite）、跨視窗歷史目錄（Historical Catalog）、AI 策略分析與前端 UI 呈現層，使系統各層級能以標準化、強型別、具備確定性與隱私保護的介面獨立演進。
+本文檔定義 **Crashlytics Engineering Dashboard V2.7** 的完整資料契約體系（Data Contracts）。
+本契約旨在徹底解耦資料擷取（BigQuery、Firebase Sessions、MCP、Console）、去重權威儲存（SQLite）、跨視窗歷史目錄（Historical Catalog）、版本退化閘門（Release Regression Gate）、品質通知傳送與觀測度（Alerts & Observability）、AI 策略分析與前端 UI 呈現層，使系統各層級能以標準化、強型別、具備確定性與隱私保護的介面獨立演進。
 
 ---
 
 ## 1. 設計原則與核心概念
 
-1. **三大契約職責分離（Three Distinct Decoupled Contracts）**：
-   系統嚴格劃分三種獨立且單向流動的資料契約：
+1. **六大契約職責分離（Six Distinct Decoupled Contracts）**：
+   系統嚴格劃分六種獨立且單向流動的資料契約：
     - **Dashboard JSON Contract** (`out/dashboard_v2.json` 或 `out/<app>/dashboard_v2.json`)：專供前端 Web UI 呈現的聚合容器（Bundle）。
     - **Historical Catalog JSON Contract** (`out/<app>/historical_catalog.json`)：跨視窗版本演進與 Issue 生命週期累積狀態。
-    - **SQLite Authority Store Contract** (`out/<app>/catalog_authority.sqlite3`)：設備級精確去重的唯一事實來源（Single Source of Truth）。
+    - **Release Gate Artifact JSON Contract** (`out/<app>/release_gate.json`)：單次最新版本品質退化閘門評估結果之 CI 機器可讀產物。
+    - **Catalog Authority SQLite Contract** (`out/<app>/catalog_authority.sqlite3`)：設備級精確去重的唯一事實來源（Single Source of Truth）。
+    - **Release Gate History SQLite Contract** (`out/<app>/release_gate_history.sqlite3`)：版本退化閘門歷史評估快照與演進趨勢之不可變儲存庫。
+    - **Alert Delivery Audit SQLite Contract** (`out/<app>/alert_delivery.sqlite3`)：品質通知投遞狀態、去重冷卻、重試與健康度審計之儲存庫。
 2. **前端與 Raw BigQuery 完全解耦**：
    UI 僅消費本 Schema 定義的聚合資料與結構化分析，不得直接解析 BigQuery raw JSON 或自行在前端執行重度聚合。
 3. **精確去重與隱私防護（Privacy-Preserving Deterministic Salted Hashing & Zero PII）**：
@@ -30,6 +33,12 @@
    所有時間戳一律使用標準 **ISO 8601 UTC** 字串（例：`2026-09-02T14:30:00Z`），必須以 `Z` 或 `+00:00` 結尾。版本發布日期 `release_date` 為權威日期，**嚴禁 fallback 至 `first_seen` 時間戳**。
 8. **冪等性與增量水線（Idempotency & Watermark Synchronization）**：
    透過事件時間戳水線（`watermark`）與 SQLite `INSERT OR IGNORE` 實現冪等追加寫入，保證重複執行管線不產生資料偏差。
+9. **確定性版本退化判定與不可變歷史快照（Deterministic Gating & Immutable Snapshots）**：
+   Release Gate 以正規化暴險指標（Normalized Exposure Rates）為基準進行客觀評估，評估結果保存為不可變快照寫入 SQLite，保證歷史重播與重試之完全冪等性。
+10. **告警投遞觀測性與零機密洩漏原則（Alert Observability & Zero Secret Storage）**：
+   Webhook URLs、Token、密鑰、認證標頭（`Bearer`, `Basic`, `ApiKey`, `Digest`）與 Raw UUID 徹底抹除，絕不持久化至資料庫或進入前端投影。
+11. **唯讀環境安全相容性（Read-only Safe Observability）**：
+   Dashboard 建置與 CLI 查詢以 SQLite URI 唯讀模式連線（`mode=ro`），在唯讀掛載/`chmod 444` 環境下保證零 DDL 變更與零 WAL 寫入副檔副作用。
 
 ---
 
@@ -49,7 +58,7 @@ flowchart TD
         Prio[Deterministic Priority]
     end
 
-    subgraph AuthorityContract [Contract 3: SQLite Authority Store]
+    subgraph AuthorityContract [Contract 4: SQLite Authority Store]
         DB[(catalog_authority.sqlite3)]
         DB_Inst[release_installations\nSalted SHA-256 Hashes]
         DB_Stat[version_authority_status\nBootstrap Status]
@@ -69,13 +78,28 @@ flowchart TD
         CatJSON --- Cat_Meta
     end
 
+    subgraph GateContract [Contract 3 & 5: Release Gate & History Store]
+        GateJSON[release_gate.json\nReleaseGateArtifact]
+        GateDB[(release_gate_history.sqlite3)]
+        GateDB_Snap[release_gate_snapshots\nImmutable Gate Evaluations]
+        GateDB --- GateDB_Snap
+    end
+
+    subgraph AlertContract [Contract 6: Alert Delivery Audit Store]
+        AlertDB[(alert_delivery.sqlite3)]
+        AlertDB_Rec[alert_deliveries\nAttempts, Cooldown & Zero Secrets]
+        AlertDB --- AlertDB_Rec
+    end
+
     subgraph DashboardContract [Contract 1: Dashboard JSON]
         DashJSON[dashboard_v2.json\nDashboardV2Bundle]
         Dash_Apps[apps: AppDashboardV2Data]
         Dash_Rel[release_catalog: ReleaseCatalogItem]
+        Dash_Alert[alert_delivery: Health & Audit]
         Dash_KPI[kpi / daily_trend / top_issues / ai_summary]
         DashJSON --- Dash_Apps
         Dash_Apps --- Dash_Rel
+        Dash_Apps --- Dash_Alert
         Dash_Apps --- Dash_KPI
     end
 
@@ -89,23 +113,29 @@ flowchart TD
     Norm -->|Salted SHA-256 Hashes| DB
     DB -->|Exact Deduplicated Counts| CatJSON
     Norm -->|Version & Issue States| CatJSON
-    CatJSON -->|Decoupled Release Catalog & Lifecycles| DashJSON
+    CatJSON -->|Decoupled Release Catalog & Lifecycles| GateJSON
+    GateJSON -->|Immutable Snapshots| GateDB
+    GateJSON -->|Trigger Alerts| AlertDB
+    CatJSON -->|Release Catalog & Lifecycles| DashJSON
+    GateJSON -->|Latest Verdict| DashJSON
+    GateDB -->|Gate History Timeline| DashJSON
+    AlertDB -->|Delivery Health & Audit Items| DashJSON
     AI -->|AI Summary & Analysis| DashJSON
     Prio -->|P0~P3 Priority Scores| DashJSON
     DashJSON --> UI
 ```
 
-### 三大契約特性對比矩陣
+### 六大契約特性對比矩陣
 
-| 特性維度 | 1. Dashboard JSON Contract | 2. Historical Catalog JSON Contract | 3. SQLite Authority Store Contract |
-| :--- | :--- | :--- | :--- |
-| **檔案路徑** | `out/dashboard_v2.json` 或 `out/<app>/dashboard_v2.json` | `out/<app>/historical_catalog.json` | `out/<app>/catalog_authority.sqlite3` |
-| **主要定位** | 前端呈現容器（Bundle） | 跨視窗版本演進與狀態累積 | 精確去重唯一事實來源（SSOT） |
-| **儲存引擎** | 純 JSON 檔案 | 純 JSON 檔案 | 本機 SQLite 3（WAL 模式） |
-| **Schema 版本** | `2.6.0`（相容 `2.0` ~ `2.6.0`） | Producer: `2.3.0`（Validator 相容 `2.0` ~ `2.6.0`） | `state_version: 1` |
-| **PII / 裝置 ID** | **完全零 IDs**（無 installation IDs） | **完全零 IDs**（無 installation IDs，Validator 強制檢核） | **加鹽雜湊集合**（SHA-256，零明文） |
-| **讀寫模式** | 每次 Pipeline Run 全量產出 | 每次 Pipeline Run 增量讀取並寫回 | 依水線批次追加（`INSERT OR IGNORE`） |
-| **生命週期行為** | 單次消費 / UI 渲染 | 跨週期持久化、水線推進 | 跨週期持久化、去重計算、權威標記 |
+| 特性維度 | 1. Dashboard JSON | 2. Historical Catalog | 3. Release Gate Artifact | 4. Authority Store | 5. Gate History Store | 6. Alert Delivery Store |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **檔案路徑** | `out/dashboard_v2.json` 或 `out/<app>/dashboard_v2.json` | `out/<app>/historical_catalog.json` | `out/<app>/release_gate.json` | `out/<app>/catalog_authority.sqlite3` | `out/<app>/release_gate_history.sqlite3` | `out/<app>/alert_delivery.sqlite3` |
+| **主要定位** | 前端呈現容器（Bundle） | 跨視窗版本演進與狀態累積 | 版本退化判定機器產物 | 精確去重事實來源（SSOT） | 閘門評估不可變歷史序列 | 發送嘗試、去重冷卻與審計 |
+| **儲存引擎** | 純 JSON 檔案 | 純 JSON 檔案 | 純 JSON 檔案 | SQLite 3（WAL 模式） | SQLite 3（WAL 模式） | SQLite 3（WAL 模式） |
+| **Schema 版本** | `2.7.0`（相容 `2.0` ~ `2.7.0`） | Producer: `2.3.0` | `1.0` | `state_version: 1` | `schema_version: 1` | `schema_version: 1` |
+| **PII / 機密安全**| **零 Raw IDs & 零機密** | **零 Raw IDs** | **零 Raw IDs & 零機密** | **加鹽雜湊集合** (SHA-256) | **零 Raw IDs & 零機密** | **全 Scheme 脫敏 & 零 Raw IDs** |
+| **讀寫模式** | 每次 Pipeline Run 全量產出 | 每次 Pipeline Run 增量讀取寫回 | 每次 Gate 評估全量寫入 | 水線批次追加 (`INSERT OR IGNORE`) | 評估完成冪等寫入 | 發送/抑制時追加寫入，唯讀查詢 |
+| **生命週期行為**| 單次消費 / UI 渲染 | 跨週期持久化、水線推進 | 單次評估 / CI 判定依據 | 跨週期持久化、去重計算 | 跨週期不可變歷史快照 | 跨週期審計與 24h 健康度統計 |
 
 ---
 
@@ -117,7 +147,7 @@ flowchart TD
 前端載入或 static dashboard 內嵌之頂層容器：
 | 欄位名稱 | 型別 | 必填 | 說明 | 範例 |
 | :--- | :--- | :--- | :--- | :--- |
-| `schema_version` | string | 是 | Schema 版本號，當前為 `"2.6.0"`（相容 `"2.0"`, `"2.3"`, `"2.3.0"`, `"2.6"`, `"2.6.0"`） | `"2.6.0"` |
+| `schema_version` | string | 是 | Schema 版本號，當前為 `"2.7.0"`（相容 `"2.0"`, `"2.3"`, `"2.3.0"`, `"2.6"`, `"2.6.0"`, `"2.7"`, `"2.7.0"`） | `"2.7.0"` |
 | `generated_at` | string (ISO 8601 UTC) | 是 | 報表產生時間（UTC，結尾必須為 `Z`） | `"2026-09-02T14:00:00Z"` |
 | `default_app` | string | 是 | 預設開啟的 App key（必須存在於 `apps` 鍵值中） | `"my_app"` |
 | `apps` | object | 是 | Key 為 app ID，Value 為 `AppDashboardV2Data` | `{ "my_app": { ... } }` |
@@ -142,6 +172,7 @@ flowchart TD
 | `periods` | object \| null | 否 | 多週期權威快照字典（Key 為天數 `"7"`, `"30"`, `"90"`） | 見下方 `AppPeriodSnapshot` |
 | `ai_policy` | object \| null | 否 | 該 App 專屬之 AI Policy 覆寫設定 | `{ "mode": "gemini_only" }` |
 | `release_catalog` | array[ReleaseCatalogItem] \| null | 否 | 獨立於單期快照之長期持續版本目錄 | 見第 3.9 節 `ReleaseCatalogItem` |
+| `alert_delivery` | AlertDeliveryAppData \| null | 否 | Google Chat 品質警報發送健康度與最近審計記錄 | 見第 3.12 節 `AlertDeliveryAppData` |
 
 #### `AppMetadata`
 | 欄位名稱 | 型別 | 必填 | 說明 | 範例 |
@@ -537,6 +568,9 @@ classDiagram
 | `stability_status`| string \| null | 否 | 穩定度文字標籤 | `"degrading"` |
 | `issue_lifecycle` | ReleaseIssueLifecycle | 否 | 該版本 Issue 生命週期分類計數與清單 | 見 `ReleaseIssueLifecycle` |
 | `vs_previous` | PreviousReleaseComparison \| null | 否 | 與前一相鄰版本之指標對比 | 見 `PreviousReleaseComparison` |
+| `release_gate` | ReleaseGateSummary \| null | 否 | 版本品質退化閘門最新評估概要 | 見第 3.10 節 `ReleaseGateSummary` |
+| `gate_history` | array[GateHistoryPoint] \| null | 否 | 該版本歷史評估快照序列與狀態轉移軌跡 | 見第 3.11 節 `GateHistoryPoint` |
+| `alert_deliveries`| array[AlertDeliveryRecordItem] \| null | 否 | 該版本之品質通知發送與審計歷史序列 | 見第 3.12 節 `AlertDeliveryRecordItem` |
 
 #### `ReleaseRecentHealth`
 `recent_health` 字典支援以天數 `"7"`, `"30"`, `"90"`（或 `"7d"`, `"30d"`, `"90d"`）為鍵值：
@@ -589,6 +623,73 @@ classDiagram
   "resolved": ["..."]
 }
 ```
+
+#### `ReleaseGateSummary`
+版本品質退化閘門判定摘要（內嵌於 `ReleaseCatalogItem["release_gate"]`）：
+| 欄位名稱 | 型別 | 必填 | 說明 | 範例 |
+| :--- | :--- | :--- | :--- | :--- |
+| `status` | string | 是 | `"pass"`, `"warn"`, `"fail"`, `"insufficient_data"`, `"baseline"` | `"warn"` |
+| `should_alert` | boolean | 是 | 是否觸發品質警報通知（由 policy 與 gate_status 決定） | `true` |
+| `alert_severity` | string | 是 | `"none"`, `"warning"`, `"critical"` | `"warning"` |
+| `alert_summary` | string | 是 | 人類可讀之評估摘要字串 | `"Crash rate increased by 15.2%"` |
+| `rules_triggered` | array[string] | 是 | 觸發違規之規則名稱清單 | `["crash_rate_change_pct"]` |
+| `sample_sufficient`| boolean | 否 | 評估時樣本數是否滿足最小閾值要求 | `true` |
+| `evaluated_at` | string (ISO 8601 UTC) | 否 | 評估執行時間戳 | `"2026-09-08T10:00:00Z"` |
+
+#### `GateHistoryPoint`
+該版本歷史評估快照資料點（內嵌於 `ReleaseCatalogItem["gate_history"]`）：
+| 欄位名稱 | 型別 | 必填 | 說明 | 範例 |
+| :--- | :--- | :--- | :--- | :--- |
+| `evaluated_at` | string (ISO 8601 UTC) | 是 | 該次快照評估時間戳 | `"2026-09-08T10:00:00Z"` |
+| `gate_status` | string | 是 | 評估結果（`"pass"`, `"warn"`, `"fail"`, 等） | `"fail"` |
+| `sample_sufficient`| boolean | 是 | 該次評估樣本充足度 | `true` |
+| `summary` | string | 是 | 評估簡述 | `"Crash free users dropped by 1.8%"` |
+| `rules_triggered` | array[string] | 是 | 觸發規則清單 | `["crash_free_users_drop"]` |
+| `transition` | object \| null | 否 | 狀態轉移描述（如 `warn -> fail`, `fail -> pass (recovery)`） | `{ "from_status": "fail", "to_status": "pass", "is_recovery": true }` |
+| `evaluation_key` | string | 否 | 確定性冪等鍵（SHA-256） | `"a1b2c3d4..."` |
+
+#### `AlertDeliveryAppData`
+App 層級 Google Chat 警報發送觀測度數據容器（內嵌於 `AppDashboardV2Data["alert_delivery"]`）：
+```json
+{
+  "provider": "google_chat",
+  "health": {
+    "status": "healthy",
+    "provider": "google_chat",
+    "sent_24h": 3,
+    "failed_24h": 0,
+    "suppressed_24h": 5,
+    "latest_success_at": "2026-09-08T11:00:00Z",
+    "latest_failure_at": null,
+    "unresolved_failures": 0
+  },
+  "recent": [
+    {
+      "id": 12,
+      "provider": "google_chat",
+      "platform": "android",
+      "version": "3.2.0",
+      "status": "sent",
+      "gate_status": "warn",
+      "attempted_at": "2026-09-08T11:00:00Z",
+      "delivered_at": "2026-09-08T11:00:01Z",
+      "attempt_count": 1,
+      "http_status": 200,
+      "error_code": null,
+      "error_message": null,
+      "suppression_reason": null,
+      "thread_key": "spaces/AAA/threads/BBB",
+      "message_name": "spaces/AAA/messages/CCC",
+      "reasons": ["crash_rate_change_pct"],
+      "dry_run": false,
+      "is_recovery": false
+    }
+  ]
+}
+```
+- `health.status`：`"healthy"`（最近一次非 dry-run 投遞成功）、`"degraded"`（最近一次投遞失敗）、`"no_data"`（尚無真實投遞紀錄）、`"unavailable"`（資料庫損毀或無法連線）。
+- `is_recovery`：權威復原標記（布林值），明確標記該通知為 PASS 復原通知。
+- 零機密保證：`thread_key`、`message_name`、`error_message` 中的 Webhook Token、金鑰與 Raw UUID 均由 `sanitize_audit_text()` 徹底脫敏。
 
 ---
 
@@ -751,7 +852,131 @@ $$\text{installation\_hash} = \text{SHA256}\Big(\text{utf8}\big(\text{app\_id} +
 
 ---
 
-## 6. 資料管線三大生命週期行為
+### 5.5 契約四：Release Gate History SQLite 規格（`out/<app>/release_gate_history.sqlite3`）
+
+- **檔案命名與路徑**：Canonical path 為 `out/<app>/release_gate_history.sqlite3`。
+- **儲存定位**：每次 Release Gate 評估結果之不可變歷史快照序列（Immutable Snapshots），作為品質演進趨勢分析之唯一事實來源。
+- **PRAGMA 規範**：
+  ```sql
+  PRAGMA journal_mode = WAL;
+  PRAGMA synchronous = NORMAL;
+  PRAGMA busy_timeout = 5000;
+  ```
+
+#### 資料表結構（DDL）
+```sql
+CREATE TABLE IF NOT EXISTS release_gate_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    app_id TEXT NOT NULL,
+    platform TEXT NOT NULL,
+    version TEXT NOT NULL,
+    evaluated_at TEXT NOT NULL,
+    gate_status TEXT NOT NULL,
+    should_alert INTEGER NOT NULL DEFAULT 0,
+    alert_severity TEXT NOT NULL DEFAULT 'none',
+    sample_sufficient INTEGER NOT NULL DEFAULT 1,
+    summary TEXT NOT NULL DEFAULT '',
+    rules_triggered_json TEXT NOT NULL DEFAULT '[]',
+    rule_results_json TEXT NOT NULL DEFAULT '[]',
+    evaluation_key TEXT NOT NULL,
+    policy_version TEXT NOT NULL DEFAULT '1.0',
+    policy_identity TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_gate_snapshots_app_ver
+ON release_gate_snapshots(app_id, platform, version, evaluated_at);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_gate_snapshots_eval_key
+ON release_gate_snapshots(evaluation_key);
+```
+- **冪等重試保證**：以 `evaluation_key`（由 `app_id:platform:version:policy_identity:metrics_digest` 產生之 SHA-256）建立 UNIQUE INDEX，搭配 `INSERT OR IGNORE` 保證重複執行或重播不會產生重複快照。
+- **狀態演進與轉移追蹤**：提供 `get_release_gate_history()` 依 `(evaluated_at DESC, id DESC)` 順序重建 `insufficient -> warn -> fail -> pass (recovery)` 之完整轉移軌跡。
+
+---
+
+### 5.6 契約五：Alert Delivery Audit SQLite 規格（`out/<app>/alert_delivery.sqlite3`）
+
+- **檔案命名與路徑**：Canonical path 為 `out/<app>/alert_delivery.sqlite3`。
+- **儲存定位**：記錄 Google Chat 品質通知之每次發送嘗試、HTTP 狀態、去重冷卻抑制原因與 24 小時健康度指標。
+- **PRAGMA 規範**：寫入連線啟用 WAL 模式；唯讀查詢嚴格使用 `mode=ro` URI 連線，完全略過目錄建立、WAL 與 DDL 遷移。
+
+#### 資料表結構（DDL）
+```sql
+CREATE TABLE IF NOT EXISTS alert_deliveries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    app_id TEXT NOT NULL,
+    platform TEXT NOT NULL,
+    version TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    alert_fingerprint TEXT NOT NULL,
+    gate_status TEXT NOT NULL,
+    attempted_at TEXT NOT NULL,
+    delivered_at TEXT,
+    status TEXT NOT NULL,
+    attempt_count INTEGER NOT NULL DEFAULT 1,
+    http_status INTEGER,
+    error_code TEXT,
+    error_message TEXT,
+    thread_key TEXT,
+    message_name TEXT,
+    reasons_json TEXT,
+    dry_run INTEGER NOT NULL DEFAULT 0,
+    is_recovery INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_alert_deliveries_app_status
+ON alert_deliveries(app_id, platform, version, attempted_at);
+
+CREATE INDEX IF NOT EXISTS idx_alert_deliveries_fingerprint
+ON alert_deliveries(alert_fingerprint);
+```
+- **權威復原欄位 (`is_recovery`)**：由 Dispatcher 權威決定，寫入路徑透過 `ALTER TABLE` 自動遷移，唯讀路徑相容舊版缺欄位情境安全回退 `is_recovery=False`。
+- **零機密保證**：寫入資料庫及投影導出時，一律經 `sanitize_audit_text()` 徹底清除 Webhook URL、Token、金鑰、各 scheme 之 Authorization header（Bearer/Basic/ApiKey/Digest）與 UUID。
+
+---
+
+## 6. 契約六：Release Gate Artifact JSON 規格（`out/<app>/release_gate.json`）
+
+每次執行 Release Gate 評估時，產出單次最新評估結果的機器可讀 JSON 產物：
+```json
+{
+  "schema_version": "1.0",
+  "app_id": "shop_app",
+  "generated_at": "2026-09-08T10:00:00Z",
+  "evaluations": {
+    "android": {
+      "platform": "android",
+      "version": "3.2.0",
+      "status": "warn",
+      "evaluated_at": "2026-09-08T10:00:00Z",
+      "sample_sufficient": true,
+      "comparison_window": "30d",
+      "summary": "Crash rate increased by 15.2% (warn threshold: 10.0%)",
+      "rules_triggered": ["crash_rate_change_pct"],
+      "rule_results": [
+        {
+          "rule_name": "crash_rate_change_pct",
+          "metric_value": 0.152,
+          "warn_threshold": 0.10,
+          "fail_threshold": 0.25,
+          "severity": "warn",
+          "reason": "crash_rate_change_pct (15.2%) exceeded warn threshold (10.0%)"
+        }
+      ],
+      "metrics_snapshot": {
+        "crash_rate_change_pct": 0.152,
+        "crash_free_users_drop": 0.003
+      }
+    }
+  }
+}
+```
+- **CI Quality Gate 整合**：`pipeline_run.py` 搭配 `--fail-on-regression` 時讀取本產物，若任何平台或 App 出現 `status == "fail"` 則以 exit code `2` 中斷 CI。
+
+---
+
+## 7. 資料管線生命週期行為
 
 ```mermaid
 stateDiagram-v2
@@ -793,7 +1018,7 @@ stateDiagram-v2
     Incremental --> [*]
 ```
 
-### 6.1 Migration（舊版相容升級）
+### 7.1 Migration（舊版相容升級）
 - **情境**：載入帶有 legacy `installation_ids` 的舊版 `historical_catalog.json`。
 - **行為**：
   1. `IssueHistoricalCatalog.load()` 解析出待遷移清單 `(platform, version, ids)`。
@@ -804,7 +1029,7 @@ stateDiagram-v2
   4. 從記憶體中 `pop("installation_ids")` 與 `pop("user_ids")`。
   5. `save()` 寫回乾淨無 raw IDs 的 JSON。
 
-### 6.2 Bootstrap（全量初始化）
+### 7.2 Bootstrap（全量初始化）
 - **情境**：全新專案部署，或 `authority.bootstrap_complete == False`，或特定活躍版本缺乏權威標記。
 - **行為**：
   1. 執行 BigQuery 全量版本查詢模板（`version_catalog_bootstrap`），無觀測視窗限制（或回溯全量歷史）。
@@ -812,7 +1037,7 @@ stateDiagram-v2
   3. **Zero-user Bootstrap 處理**：對歷史上存在但無任何崩潰事件（0 崩潰、0 用戶）之版本，顯式呼叫 `mark_version_bootstrapped(..., complete=True)` 標記完整，避免日後 incremental 誤判缺失權威而反覆觸發全量掃描。
   4. 全量寫入完成後，於 `authority_metadata` 寫入 `bootstrap_complete = 1`。
 
-### 6.3 Incremental（增量同步）
+### 7.3 Incremental（增量同步）
 - **情境**：管線日常排程執行（如每週定期執行）。
 - **行為**：
   1. 讀取 `historical_catalog.json` 之 `watermark`（例如 `"2026-09-01T12:00:00Z"`）。
@@ -823,7 +1048,7 @@ stateDiagram-v2
 
 ---
 
-## 7. 空值、缺漏與停用欄位語意指引（Semantics Guide）
+## 8. 空值、缺漏與停用欄位語意指引（Semantics Guide）
 
 | 狀態名稱 | 指標數值表現 | UI 呈現規範 | 適用情境 |
 | :--- | :--- | :--- | :--- |
@@ -836,7 +1061,7 @@ stateDiagram-v2
 
 ---
 
-## 8. 驗證規範與相容性（Validation & Compliance）
+## 9. 驗證規範與相容性（Validation & Compliance）
 
 `crash_trend/schema_v2.py` 提供全套執行階段驗證工具，可在 CI 與管線結尾執行強型別合規檢查：
 
@@ -845,6 +1070,8 @@ from crash_trend.schema_v2 import (
     validate_dashboard_v2,
     validate_historical_catalog,
     validate_release_catalog,
+    validate_release_gate_artifact,
+    validate_alert_delivery,
     validate_issue_summary,
     validate_issue_lifecycle,
 )
@@ -856,9 +1083,17 @@ assert len(errors) == 0, f"Dashboard schema errors: {errors}"
 # 2. 驗證歷史目錄契約（結構合規且強制拒絕 raw installation_ids / user_ids）
 cat_errors = validate_historical_catalog(historical_catalog_dict)
 assert len(cat_errors) == 0, f"Catalog schema errors: {cat_errors}"
+
+# 3. 驗證版本退化閘門機器產物契約
+gate_errors = validate_release_gate_artifact(gate_artifact_dict)
+assert len(gate_errors) == 0, f"Release gate schema errors: {gate_errors}"
+
+# 4. 驗證品質警報觀測資料契約
+alert_errors = validate_alert_delivery(alert_data_dict)
+assert len(alert_errors) == 0, f"Alert delivery schema errors: {alert_errors}"
 ```
 
 - **相容性保證與版本職責**：
-  - Historical Catalog Producer 固定產出 `schema_version: "2.3.0"`；`validate_historical_catalog()` 在執行階段嚴格檢核必填欄位並以遞迴掃描強制拒絕任何階層之 `installation_ids` 或 `user_ids` 違規欄位，落實零 raw IDs 保證，同時支援 `{"1.0", "2.0", "2.3", "2.3.0", "2.6", "2.6.0"}` 相容讀取。
-  - 前端 Dashboard Bundle 之頂層 `schema_version` 為 `"2.6.0"`；`schema_v2.py` 之 `SUPPORTED_SCHEMA_VERSIONS` 相容 `{"2.0", "2.3", "2.3.0", "2.6", "2.6.0"}`。
-  - 舊版消費端若僅需要單期快照，直接讀取 `AppDashboardV2Data` 之 `kpi`、`top_issues` 依然完全相容；若需要長週期版本演進分析，可消費新增之 `release_catalog` 欄位。
+  - Historical Catalog Producer 固定產出 `schema_version: "2.3.0"`；`validate_historical_catalog()` 在執行階段嚴格檢核必填欄位並以遞迴掃描強制拒絕任何階層之 `installation_ids` 或 `user_ids` 違規欄位，落實零 raw IDs 保證，同時支援 `{"1.0", "2.0", "2.3", "2.3.0", "2.6", "2.6.0", "2.7", "2.7.0"}` 相容讀取。
+  - 前端 Dashboard Bundle 之頂層 `schema_version` 為 `"2.7.0"`；`schema_v2.py` 之 `SUPPORTED_SCHEMA_VERSIONS` 相容 `{"2.0", "2.3", "2.3.0", "2.6", "2.6.0", "2.7", "2.7.0"}`。
+  - 舊版消費端若僅需要單期快照，直接讀取 `AppDashboardV2Data` 之 `kpi`、`top_issues` 依然完全相容；若需要長週期版本演進分析，可消費新增之 `release_catalog`、`alert_delivery` 欄位。
