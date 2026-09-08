@@ -15,6 +15,7 @@ from crash_trend.catalog.comparison import compute_previous_release_comparison
 from crash_trend.catalog.issue_lifecycle import is_version_sample_sufficient
 from crash_trend.gate.policy import load_gate_policy
 from crash_trend.schema_v2 import (
+    AlertDeliveryRecordItem,
     PreviousReleaseComparison,
     ReleaseCatalogItem,
     ReleaseGateSummary,
@@ -471,6 +472,18 @@ def build_release_catalog(
                 except Exception:
                     pass
 
+            # Attach alert deliveries if available (Issue #63)
+            if cat_app_id:
+                try:
+                    from crash_trend.alerts.observability import get_release_alert_history
+                    cat_path = getattr(catalog, "catalog_path", None)
+                    hist_path = cat_path.parent if cat_path else None
+                    db_file = hist_path / "alert_delivery.sqlite3" if hist_path else None
+                    deliveries = get_release_alert_history(cat_app_id, pf, ver, limit=20, custom_path=db_file)
+                    if deliveries:
+                        rel_item["alert_deliveries"] = cast(list[AlertDeliveryRecordItem], [d.to_dict() for d in deliveries])
+                except Exception:
+                    pass
 
             catalog_items.append(rel_item)
 

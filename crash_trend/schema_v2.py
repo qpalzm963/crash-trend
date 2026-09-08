@@ -386,6 +386,45 @@ class GateHistoryPoint(TypedDict):
     rule_results: NotRequired[list[RuleEvaluationResult]]
 
 
+class AlertDeliveryRecordItem(TypedDict):
+    id: int
+    provider: str
+    platform: str
+    version: str
+    status: str
+    gate_status: str
+    attempted_at: str
+    delivered_at: str | None
+    attempt_count: int
+    http_status: int | None
+    error_code: str | None
+    error_message: str | None
+    suppression_reason: str | None
+    thread_key: str | None
+    message_name: str | None
+    reasons: list[str]
+    dry_run: bool
+    is_recovery: bool
+
+
+class AlertDeliveryHealthData(TypedDict):
+    status: Literal["healthy", "degraded", "no_data", "unavailable"]
+    provider: str
+    sent_24h: int
+    failed_24h: int
+    suppressed_24h: int
+    latest_success_at: str | None
+    latest_failure_at: str | None
+    unresolved_failures: NotRequired[int]
+    error_diagnostic: NotRequired[str | None]
+
+
+class AlertDeliveryAppData(TypedDict):
+    provider: str
+    health: AlertDeliveryHealthData
+    recent: list[AlertDeliveryRecordItem]
+
+
 class ReleaseCatalogItem(TypedDict):
     version: str
     platform: Literal["ios", "android"]
@@ -404,6 +443,7 @@ class ReleaseCatalogItem(TypedDict):
     vs_previous: NotRequired[PreviousReleaseComparison | None]
     release_gate: NotRequired[ReleaseGateSummary | None]
     gate_history: NotRequired[list[GateHistoryPoint] | None]
+    alert_deliveries: NotRequired[list[AlertDeliveryRecordItem] | None]
 
 
 
@@ -499,6 +539,7 @@ class AppPeriodSnapshot(TypedDict):
     status: NotRequired[SnapshotStatus]
     error_message: NotRequired[str | None]
     release_catalog: NotRequired[list[ReleaseCatalogItem] | None]
+    alert_delivery: NotRequired[AlertDeliveryAppData | None]
 
 
 class AppDashboardV2Data(TypedDict):
@@ -515,6 +556,7 @@ class AppDashboardV2Data(TypedDict):
     periods: NotRequired[dict[str, AppPeriodSnapshot]]
     ai_policy: NotRequired[dict[str, Any] | None]
     release_catalog: NotRequired[list[ReleaseCatalogItem] | None]
+    alert_delivery: NotRequired[AlertDeliveryAppData | None]
 
 
 class DashboardV2Bundle(TypedDict):
@@ -774,6 +816,77 @@ def validate_release_catalog(catalog: Any, errors: list[str], p: str = "") -> No
                         errors.append(f"{ghp}policy_identity must be a string")
                     if "comparison_window" in pt and pt["comparison_window"] is not None and not isinstance(pt["comparison_window"], str):
                         errors.append(f"{ghp}comparison_window must be a string or null")
+
+        if "alert_deliveries" in item and item["alert_deliveries"] is not None:
+            ads = item["alert_deliveries"]
+            if not isinstance(ads, list):
+                errors.append(f"{cp}alert_deliveries must be a list or null")
+            else:
+                for ad_idx, ad_item in enumerate(ads):
+                    adp = f"{cp}alert_deliveries[{ad_idx}]."
+                    if not isinstance(ad_item, dict):
+                        errors.append(f"{adp}must be an object")
+                        continue
+                    if "status" in ad_item and not isinstance(ad_item["status"], str):
+                        errors.append(f"{adp}status must be a string")
+                    if "gate_status" in ad_item and not isinstance(ad_item["gate_status"], str):
+                        errors.append(f"{adp}gate_status must be a string")
+                    if "attempted_at" in ad_item and not isinstance(ad_item["attempted_at"], str):
+                        errors.append(f"{adp}attempted_at must be a string")
+                    if "is_recovery" in ad_item and not isinstance(ad_item["is_recovery"], bool):
+                        errors.append(f"{adp}is_recovery must be a boolean")
+
+
+
+def validate_alert_delivery(ad: Any, errors: list[str], p: str = "") -> None:
+    """Validates AlertDeliveryAppData against Schema V2 rules."""
+    if ad is None:
+        return
+    if not isinstance(ad, dict):
+        errors.append(f"{p}alert_delivery must be an object or null")
+        return
+    if "provider" in ad and not isinstance(ad["provider"], str):
+        errors.append(f"{p}alert_delivery.provider must be a string")
+    if "health" in ad:
+        h = ad["health"]
+        if not isinstance(h, dict):
+            errors.append(f"{p}alert_delivery.health must be an object")
+        else:
+            if "status" in h and h["status"] not in {"healthy", "degraded", "no_data", "unavailable"}:
+                errors.append(f"{p}alert_delivery.health.status must be one of: healthy, degraded, no_data, unavailable")
+            for cnt_f in ("sent_24h", "failed_24h", "suppressed_24h"):
+                if cnt_f in h and (not isinstance(h[cnt_f], int) or h[cnt_f] < 0):
+                    errors.append(f"{p}alert_delivery.health.{cnt_f} must be a non-negative integer")
+            if "latest_success_at" in h and h["latest_success_at"] is not None and not isinstance(h["latest_success_at"], str):
+                errors.append(f"{p}alert_delivery.health.latest_success_at must be a string or null")
+            if "latest_failure_at" in h and h["latest_failure_at"] is not None and not isinstance(h["latest_failure_at"], str):
+                errors.append(f"{p}alert_delivery.health.latest_failure_at must be a string or null")
+            if "error_diagnostic" in h and h["error_diagnostic"] is not None and not isinstance(h["error_diagnostic"], str):
+                errors.append(f"{p}alert_delivery.health.error_diagnostic must be a string or null")
+    if "recent" in ad:
+        rec = ad["recent"]
+        if not isinstance(rec, list):
+            errors.append(f"{p}alert_delivery.recent must be a list")
+        else:
+            for idx, item in enumerate(rec):
+                ip = f"{p}alert_delivery.recent[{idx}]."
+                if not isinstance(item, dict):
+                    errors.append(f"{ip}must be an object")
+                    continue
+                if "id" in item and not isinstance(item["id"], int):
+                    errors.append(f"{ip}id must be an integer")
+                if "provider" in item and not isinstance(item["provider"], str):
+                    errors.append(f"{ip}provider must be a string")
+                if "status" in item and not isinstance(item["status"], str):
+                    errors.append(f"{ip}status must be a string")
+                if "gate_status" in item and not isinstance(item["gate_status"], str):
+                    errors.append(f"{ip}gate_status must be a string")
+                if "attempted_at" in item and not isinstance(item["attempted_at"], str):
+                    errors.append(f"{ip}attempted_at must be a string")
+                if "dry_run" in item and not isinstance(item["dry_run"], bool):
+                    errors.append(f"{ip}dry_run must be a boolean")
+                if "is_recovery" in item and not isinstance(item["is_recovery"], bool):
+                    errors.append(f"{ip}is_recovery must be a boolean")
 
 
 
@@ -1360,10 +1473,16 @@ def validate_app_dashboard_v2(data: dict, prefix: str = "", require_lifecycle: b
                         errors.append(f"{p}periods['{p_key}'].status '{p_val['status']}' is invalid")
                 if "release_catalog" in p_val:
                     validate_release_catalog(p_val.get("release_catalog"), errors, f"{p}periods['{p_key}'].")
+                if "alert_delivery" in p_val:
+                    validate_alert_delivery(p_val.get("alert_delivery"), errors, f"{p}periods['{p_key}'].")
 
     # 12. Release Catalog (Persistent version catalog in V2.6)
     if "release_catalog" in data:
         validate_release_catalog(data.get("release_catalog"), errors, p)
+
+    # 13. Alert Delivery Observability (Issue #63)
+    if "alert_delivery" in data:
+        validate_alert_delivery(data.get("alert_delivery"), errors, p)
 
     return errors
 

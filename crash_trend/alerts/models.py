@@ -69,6 +69,7 @@ class DeliveryRecord:
     message_name: str | None
     reasons: list[str] = field(default_factory=list)
     dry_run: bool = False
+    is_recovery: bool = False
 
 
 @dataclass(frozen=True)

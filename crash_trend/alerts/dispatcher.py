@@ -397,6 +397,7 @@ class AlertDispatcher:
                         reasons=triggered_reasons,
                         thread_key=f"crash-trend:{app_id}:{pf_name}:{target_version}" if policy.use_threads else None,
                         dry_run=False,
+                        is_recovery=decision.is_recovery,
                     )
                 results[pf_name] = DeliveryResult(
                     status="suppressed",
@@ -445,6 +446,7 @@ class AlertDispatcher:
                 reasons=triggered_reasons,
                 thread_key=msg.thread_key,
                 dry_run=False,
+                is_recovery=decision.is_recovery,
             )
 
             if not self.provider:
