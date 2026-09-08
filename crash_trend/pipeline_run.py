@@ -508,8 +508,46 @@ def run_pipeline(
                     },
                 )
 
+        # -------------------------------------------------------------------
+        # 9. Release Quality Alerts Delivery (Notification Stage)
+        # -------------------------------------------------------------------
+        t0 = now_utc_iso()
+        try:
+            from crash_trend.alerts.policy import load_alert_policy
+            alert_policy = load_alert_policy(app_cfg, global_cfg=cfg)
+        except Exception:
+            alert_policy = None
+
+        if alert_policy is None or not alert_policy.enabled:
+            t1 = now_utc_iso()
+            tracker.record_stage(
+                app,
+                "alert_delivery",
+                "disabled",
+                t0,
+                t1,
+                details={"reason": "Alert delivery disabled in app configuration (enabled: false)"},
+            )
+            if verbose:
+                print(f"--- 9. alert_delivery: {app} (disabled)")
+        else:
+            if verbose:
+                print(f"--- 9. alert_delivery: {app}")
+            rc, out, err = run_stage_process([py_exec, "-m", "crash_trend.alerts", "--app", app])
+            if verbose and out:
+                print(out, end="")
+            t1 = now_utc_iso()
+
+            if rc != 0:
+                err_msg = err.strip() or out.strip() or "Alert delivery failed"
+                tracker.record_stage(app, "alert_delivery", "failed", t0, t1, error_message=err_msg)
+                if verbose:
+                    print(f"  [Warning] Alert Delivery 失敗（非業務退化，為傳送異常）：{sanitize_error_message(err_msg)}", file=sys.stderr)
+            else:
+                tracker.record_stage(app, "alert_delivery", "success", t0, t1)
+
     # -----------------------------------------------------------------------
-    # 9. Build Dashboard (Core Stage)
+    # 10. Build Dashboard (Core Stage)
     # -----------------------------------------------------------------------
     effective_summary_path = summary_path or DEFAULT_RUN_SUMMARY_PATH
     dashboard_rc = 0
@@ -520,7 +558,7 @@ def run_pipeline(
 
         t0 = now_utc_iso()
         if verbose:
-            print("\n--- 9. build_dashboard (Dashboard V2 Bundle)")
+            print("\n--- 10. build_dashboard (Dashboard V2 Bundle)")
         dashboard_rc, out, err = run_stage_process(
             [py_exec, str(ROOT / "crash_trend" / "build_dashboard.py")],
             env={"PIPELINE_RUN_SUMMARY": str(effective_summary_path)},
@@ -587,6 +625,7 @@ def main() -> None:
     parser.add_argument("--summary-out", type=Path, default=DEFAULT_RUN_SUMMARY_PATH, help="輸出之 pipeline_run.json 路徑")
     parser.add_argument("--skip-dashboard", action="store_true", help="略過 build_dashboard 階段")
     parser.add_argument("--fail-on-regression", action="store_true", help="若任何 App 版本品質閘門判定為 FAIL，則以 exit code 2 結束")
+    parser.add_argument("--fail-on-alert-failure", action="store_true", help="若任何 App 品質告警傳送失敗，則以 exit code 1 結束")
     parser.add_argument("--quiet", action="store_true", help="減少詳細輸出")
     args = parser.parse_args()
 
@@ -600,15 +639,23 @@ def main() -> None:
     )
 
     has_regression_failure = False
+    has_alert_failure = False
     for app_sum in summary.get("apps", {}).values():
         rg_stage = app_sum.get("stages", {}).get("release_gate", {})
         details = rg_stage.get("details") or {}
         if details.get("gate_status") == "fail":
             has_regression_failure = True
-            break
+
+        ad_stage = app_sum.get("stages", {}).get("alert_delivery", {})
+        if ad_stage.get("status") == "failed":
+            has_alert_failure = True
 
     # Return non-zero if overall pipeline status is failed
     if summary["status"] == "failed":
+        sys.exit(1)
+
+    if args.fail_on_alert_failure and has_alert_failure:
+        print("\n[ALERT DELIVERY FAILED] 品質告警傳送失敗，因為啟用 --fail-on-alert-failure，以 exit code 1 結束", file=sys.stderr)
         sys.exit(1)
 
     if args.fail_on_regression and has_regression_failure:
