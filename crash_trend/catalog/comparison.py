@@ -41,7 +41,15 @@ def compute_previous_release_comparison(
     matched_c_w: dict[str, Any] | None = None
     matched_p_w: dict[str, Any] | None = None
 
-    # 1. Caller specified target_window (e.g. from sample-sufficiency check)
+    def _is_suff(cand: dict[str, Any] | None) -> bool:
+        return is_version_sample_sufficient(
+            cand,
+            min_adoption_rate=min_adoption_rate,
+            min_sessions=min_sessions,
+            min_version_events=min_version_events,
+        )
+
+    # 1. Caller specified target_window - strictly honor explicit window request
     if target_window:
         tw_clean = target_window.rstrip("d")
         for key in (tw_clean, f"{tw_clean}d"):
@@ -53,19 +61,14 @@ def compute_previous_release_comparison(
                 matched_p_w = p_cand
                 break
 
-    # 2. Auto-select: Pass 1 - prefer window satisfying sample sufficiency
+    # 2. Auto-select: Pass 1 - prefer window where BOTH current AND previous satisfy sample sufficiency
     if not comp_w:
         for candidate_w in ("30", "90", "7"):
             for key in (candidate_w, f"{candidate_w}d"):
                 c_cand = recent_health.get(key)
                 p_cand = prev_recent.get(key) if isinstance(prev_recent, dict) else None
                 if c_cand and p_cand and c_cand.get("sessions_total") and p_cand.get("sessions_total"):
-                    if is_version_sample_sufficient(
-                        c_cand,
-                        min_adoption_rate=min_adoption_rate,
-                        min_sessions=min_sessions,
-                        min_version_events=min_version_events,
-                    ):
+                    if _is_suff(c_cand) and _is_suff(p_cand):
                         comp_w = f"{candidate_w}d"
                         matched_c_w = c_cand
                         matched_p_w = p_cand
@@ -73,7 +76,22 @@ def compute_previous_release_comparison(
             if comp_w:
                 break
 
-    # 3. Auto-select: Pass 2 - fall back to any matching window with sessions
+    # 3. Auto-select: Pass 2 - prefer window where current satisfies sample sufficiency
+    if not comp_w:
+        for candidate_w in ("30", "90", "7"):
+            for key in (candidate_w, f"{candidate_w}d"):
+                c_cand = recent_health.get(key)
+                p_cand = prev_recent.get(key) if isinstance(prev_recent, dict) else None
+                if c_cand and p_cand and c_cand.get("sessions_total") and p_cand.get("sessions_total"):
+                    if _is_suff(c_cand):
+                        comp_w = f"{candidate_w}d"
+                        matched_c_w = c_cand
+                        matched_p_w = p_cand
+                        break
+            if comp_w:
+                break
+
+    # 4. Auto-select: Pass 3 - fall back to any matching window with sessions
     if not comp_w:
         for candidate_w in ("30", "90", "7"):
             for key in (candidate_w, f"{candidate_w}d"):
@@ -87,6 +105,7 @@ def compute_previous_release_comparison(
             if comp_w:
                 break
 
+    prev_sess_val: int = 0
     if matched_c_w and matched_p_w:
         c_w = matched_c_w
         p_w = matched_p_w
@@ -94,6 +113,7 @@ def compute_previous_release_comparison(
         c_se = int(c_w.get("sessions_total") or 0)
         p_ev = int(p_w.get("crash_events") or 0)
         p_se = int(p_w.get("sessions_total") or 0)
+        prev_sess_val = p_se
         if c_se > 0 and p_se > 0:
             rate_curr = c_ev / c_se
             rate_prev = p_ev / p_se
@@ -126,6 +146,7 @@ def compute_previous_release_comparison(
         if c_sess and p_sess and int(c_sess) > 0 and int(p_sess) > 0:
             c_se = int(c_sess)
             p_se = int(p_sess)
+            prev_sess_val = p_se
             if raw_c_ev is not None and raw_p_ev is not None:
                 rate_curr = int(raw_c_ev) / c_se
                 rate_prev = int(raw_p_ev) / p_se
@@ -157,22 +178,21 @@ def compute_previous_release_comparison(
             else:
                 anr_rate_diff = None
 
-    cfu_curr = v_curr_info.get("crash_free_users_rate")
-    if cfu_curr is None:
-        for rh in recent_health.values():
-            if isinstance(rh, dict) and rh.get("crash_free_users_rate") is not None:
-                cfu_curr = rh["crash_free_users_rate"]
-                break
-    cfu_prev = v_prev_info.get("crash_free_users_rate")
-    if cfu_prev is None and isinstance(prev_recent, dict):
-        for rh in prev_recent.values():
-            if isinstance(rh, dict) and rh.get("crash_free_users_rate") is not None:
-                cfu_prev = rh["crash_free_users_rate"]
-                break
-
+    # Strictly window-aligned CFU comparison (Item 1)
     cfu_diff: float | None = None
-    if cfu_curr is not None and cfu_prev is not None:
-        cfu_diff = round(cfu_curr - cfu_prev, 4)
+    if matched_c_w and matched_p_w:
+        cfu_curr = matched_c_w.get("crash_free_users_rate")
+        cfu_prev = matched_p_w.get("crash_free_users_rate")
+        if cfu_curr is not None and cfu_prev is not None:
+            cfu_diff = round(float(cfu_curr) - float(cfu_prev), 4)
+    else:
+        cfu_curr = v_curr_info.get("crash_free_users_rate")
+        cfu_prev = v_prev_info.get("crash_free_users_rate")
+        if cfu_curr is not None and cfu_prev is not None:
+            cfu_diff = round(float(cfu_curr) - float(cfu_prev), 4)
+
+    # Previous release sample sufficiency check (Item 2)
+    prev_sample_ok = _is_suff(matched_p_w) if matched_p_w else _is_suff(v_prev_info)
 
     new_issues_diff = introduced_count - prev_introduced_count
 
@@ -207,4 +227,6 @@ def compute_previous_release_comparison(
         "stability": stability,
         "stability_status": stability_status,
         "comparison_window": comp_w,
+        "previous_sample_sufficient": prev_sample_ok,
+        "previous_sessions_total": prev_sess_val,
     }

@@ -198,9 +198,42 @@ def evaluate_release(
             "comparison_window": None,
         }
 
+    vs_p = vs_previous if isinstance(vs_previous, dict) else {}
+    comp_win = vs_p.get("comparison_window") or suff_w
+
+    # 2b. Previous Baseline Sample Sufficiency Guard
+    if vs_p.get("previous_sample_sufficient") is False:
+        prev_sess = int(vs_p.get("previous_sessions_total") or 0)
+        insuf_prev_alert: AlertHookPayload = {
+            "should_alert": False,
+            "alert_severity": "none",
+            "alert_summary": f"版本 {ver} ({pf}) 之前版基準 {prev_ver} 數據樣本不足 ({prev_sess} sessions)，暫停退化判定",
+            "trigger_rules": [],
+        }
+        insuf_prev_rule: RuleEvaluationResult = {
+            "rule_name": "previous_sample_sufficiency",
+            "metric_name": "previous_sessions_total",
+            "current_value": total_sess,
+            "previous_value": prev_sess,
+            "warn_threshold": policy.min_sessions,
+            "fail_threshold": policy.min_sessions,
+            "status": "insufficient_data",
+            "reason": f"前版基準 {prev_ver} 樣本數未達充足門檻 ({prev_sess} sessions < {policy.min_sessions} sessions)，暫停退化判定",
+        }
+        return {
+            "platform": pf,
+            "target_version": ver,
+            "previous_version": prev_ver,
+            "gate_status": "insufficient_data",
+            "sample_sufficient": False,
+            "rule_results": [insuf_prev_rule],
+            "alert": insuf_prev_alert,
+            "evaluated_at": now_iso,
+            "comparison_window": comp_win,
+        }
+
     # 3. Normalized Metric Rules Evaluation
     rules: list[RuleEvaluationResult] = []
-    vs_p = vs_previous if isinstance(vs_previous, dict) else {}
     lc = item.get("issue_lifecycle") or {}
 
     # Rule 1: Crash rate change percentage

@@ -1235,7 +1235,175 @@ class TestReleaseGateRound2ReviewFixes(unittest.TestCase):
         self.assertEqual(artifact_errors, [])
 
 
+class TestReleaseGateRound3ReviewFixes(unittest.TestCase):
+    """Regression test suite for Round 3 review feedback (Review ID 5138111621).
+
+    Addresses:
+    1. [P1] CFU strictly aligned to comparison window.
+    2. [P1] Previous release sample sufficiency check & auto-alignment.
+    3. [P2] Disabled standalone CLI with missing catalog exits 0.
+    """
+
+    def test_cfu_strictly_aligned_to_comparison_window(self) -> None:
+        """Asserts crash_free_users_diff is computed strictly from the selected comparison window."""
+        curr_recent = {
+            "30d": {
+                "sessions_total": 50,
+                "crash_events": 5,
+                "crash_free_users_rate": 0.90,  # If selected, -0.09 drop -> would fail CFU drop!
+                "sample_sufficient": False,
+            },
+            "90d": {
+                "sessions_total": 2000,
+                "crash_events": 20,
+                "crash_free_users_rate": 0.99,  # Aligned 90d rate
+                "sample_sufficient": True,
+            },
+        }
+        prev_recent = {
+            "30d": {
+                "sessions_total": 1000,
+                "crash_events": 10,
+                "crash_free_users_rate": 0.99,
+                "sample_sufficient": True,
+            },
+            "90d": {
+                "sessions_total": 2000,
+                "crash_events": 20,
+                "crash_free_users_rate": 0.99,
+                "sample_sufficient": True,
+            },
+        }
+
+        # Top level has a conflicting crash_free_users_rate
+        v_curr = {"crash_free_users_rate": 0.80, "recent_health": curr_recent}
+        v_prev = {"crash_free_users_rate": 0.99, "recent_health": prev_recent}
+
+        cmp_res = compute_previous_release_comparison(
+            v_curr_info=v_curr,
+            v_prev_info=v_prev,
+            v_prev="1.9.0",
+            recent_health=curr_recent,
+            introduced_count=0,
+            prev_introduced_count=0,
+            min_sessions=1000,
+        )
+
+        # Must select 90d
+        self.assertEqual(cmp_res["comparison_window"], "90d")
+        # CFU diff must be 0.99 - 0.99 = 0.0, NOT -0.09 (from 30d) and NOT -0.19 (from top-level)
+        self.assertAlmostEqual(cmp_res["crash_free_users_diff"], 0.0, places=4)
+
+        # If 90d window lacks CFU, cfu_diff must be None rather than falling back to other windows
+        curr_recent_no_cfu = {
+            "30d": {"sessions_total": 50, "crash_events": 5, "crash_free_users_rate": 0.90, "sample_sufficient": False},
+            "90d": {"sessions_total": 2000, "crash_events": 20, "sample_sufficient": True},
+        }
+        cmp_no_cfu = compute_previous_release_comparison(
+            v_curr_info=v_curr,
+            v_prev_info=v_prev,
+            v_prev="1.9.0",
+            recent_health=curr_recent_no_cfu,
+            introduced_count=0,
+            prev_introduced_count=0,
+            min_sessions=1000,
+        )
+        self.assertEqual(cmp_no_cfu["comparison_window"], "90d")
+        self.assertIsNone(cmp_no_cfu["crash_free_users_diff"])
+
+    def test_previous_release_sample_sufficiency_and_alignment(self) -> None:
+        """Asserts window selection checks previous release sufficiency, and evaluates insufficient_data if baseline is insufficient."""
+        policy = GatePolicy(min_sessions=1000)
+
+        # Case 1: Current 2.0.0 is sufficient in both 30d & 90d.
+        # Previous 1.9.0 is INSUFFICIENT in 30d (10 sessions), but SUFFICIENT in 90d (3000 sessions).
+        curr_recent = {
+            "30d": {"sessions_total": 5000, "crash_events": 50, "sample_sufficient": True},
+            "90d": {"sessions_total": 5000, "crash_events": 50, "sample_sufficient": True},
+        }
+        prev_recent = {
+            "30d": {"sessions_total": 10, "crash_events": 0, "sample_sufficient": False},
+            "90d": {"sessions_total": 3000, "crash_events": 30, "sample_sufficient": True},
+        }
+
+        # compute_previous_release_comparison must auto-select 90d where BOTH are sample sufficient
+        cmp_res = compute_previous_release_comparison(
+            v_curr_info={"recent_health": curr_recent},
+            v_prev_info={"recent_health": prev_recent},
+            v_prev="1.9.0",
+            recent_health=curr_recent,
+            introduced_count=0,
+            prev_introduced_count=0,
+            min_sessions=1000,
+        )
+        self.assertEqual(cmp_res["comparison_window"], "90d")
+        self.assertTrue(cmp_res["previous_sample_sufficient"])
+        self.assertEqual(cmp_res["previous_sessions_total"], 3000)
+
+        # Case 2: Previous release is insufficient in ALL windows (only 10 sessions total)
+        prev_recent_insuf = {
+            "30d": {"sessions_total": 10, "crash_events": 0, "sample_sufficient": False},
+            "90d": {"sessions_total": 15, "crash_events": 0, "sample_sufficient": False},
+        }
+        cmp_insuf = compute_previous_release_comparison(
+            v_curr_info={"recent_health": curr_recent},
+            v_prev_info={"recent_health": prev_recent_insuf, "sessions_total": 15},
+            v_prev="1.9.0",
+            recent_health=curr_recent,
+            introduced_count=0,
+            prev_introduced_count=0,
+            min_sessions=1000,
+        )
+        self.assertFalse(cmp_insuf["previous_sample_sufficient"])
+
+        # When evaluated by gate, must return insufficient_data (not evaluate noisy 0% crash rate regression)
+        item = {
+            "version": "2.0.0",
+            "platform": "android",
+            "recent_health": curr_recent,
+            "vs_previous": cmp_insuf,
+        }
+        eval_res = evaluate_release(item, policy)
+        self.assertEqual(eval_res["gate_status"], "insufficient_data")
+        self.assertFalse(eval_res["sample_sufficient"])
+        self.assertFalse(eval_res["alert"]["should_alert"])
+        self.assertTrue(any(r["rule_name"] == "previous_sample_sufficiency" for r in eval_res["rule_results"]))
+
+    def test_disabled_standalone_cli_with_missing_catalog_exits_0(self) -> None:
+        """Asserts that running release_gate CLI with enabled: false succeeds and exits 0 when catalog is missing."""
+        from crash_trend.release_gate import main as release_gate_main
+
+        # App with release_gate disabled in config
+        disabled_app_cfg = {
+            "platforms": ["android"],
+            "release_gate": {"enabled": False},
+        }
+        mock_cfg = {"apps": {"unbuilt_disabled_app": disabled_app_cfg}}
+
+        with patch("crash_trend.release_gate.load_config", return_value=mock_cfg), \
+             patch("crash_trend.release_gate.get_app", return_value=disabled_app_cfg), \
+             tempfile.TemporaryDirectory() as tmpdir:
+
+            out_artifact = Path(tmpdir) / "release_gate.json"
+            # Run CLI with no catalog files present
+            with patch.object(
+                sys,
+                "argv",
+                ["release_gate.py", "--app", "unbuilt_disabled_app", "--out", str(out_artifact), "--quiet"],
+            ):
+                with self.assertRaises(SystemExit) as ctx:
+                    release_gate_main()
+                # Must exit 0, NOT exit 1!
+                self.assertEqual(ctx.exception.code, 0)
+
+            self.assertTrue(out_artifact.is_file())
+            data = json.loads(out_artifact.read_text(encoding="utf-8"))
+            self.assertEqual(data["overall_status"], "pass")
+            self.assertFalse(data["should_alert"])
+
+
 if __name__ == "__main__":
     unittest.main()
+
 
 

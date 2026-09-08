@@ -98,11 +98,18 @@ def run_release_gate_for_app(
     else:
         policy = load_gate_policy(app_cfg)
 
-    catalog_items = load_app_release_catalog(app_name)
-    if not catalog_items:
-        raise FileNotFoundError(
-            f"找不到 App「{app_name}」之 release_catalog 產物或歷史目錄檔案（請先執行 pipeline 產出資料）"
-        )
+    catalog_items: list[dict[str, Any]] = []
+    if policy.enabled:
+        catalog_items = load_app_release_catalog(app_name)
+        if not catalog_items:
+            raise FileNotFoundError(
+                f"找不到 App「{app_name}」之 release_catalog 產物或歷史目錄檔案（請先執行 pipeline 產出資料）"
+            )
+    else:
+        try:
+            catalog_items = load_app_release_catalog(app_name)
+        except Exception:
+            catalog_items = []
     target_platforms = app_cfg.get("platforms")
 
     artifact = evaluate_app_release_gate(
