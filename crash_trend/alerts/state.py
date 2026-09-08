@@ -92,7 +92,8 @@ class AlertDeliveryStore:
             yield self._conn
         else:
             if self.read_only:
-                uri = f"file:{self.db_path.resolve().as_posix()}?mode=ro"
+                db_p = Path(self.db_path).resolve().as_posix()
+                uri = f"file:{db_p}?mode=ro"
                 conn = sqlite3.connect(uri, uri=True, timeout=10.0)
                 conn.row_factory = sqlite3.Row
                 try:
