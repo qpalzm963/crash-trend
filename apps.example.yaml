@@ -1,5 +1,11 @@
 # crash-trend 設定範例 —— 複製為 apps.yaml 後填入實值
-# 支援 Dashboard V2 多 App 管理、Data Source Profile (Crashlytics-only / Full Sessions) 與 AI 優先級分析
+# 支援 Dashboard V2.7 多 App 管理、Data Source Profile、AI 優先級分析、Release Regression Gate 與 Google Chat 通知
+#
+# 安全守則：
+# 1. 嚴禁在 apps.yaml 寫入任何明文 API Key、Service Account 私鑰或 Webhook URL
+# 2. Google Chat Webhook URL 一律透過環境變數注入（預設讀取 GOOGLE_CHAT_WEBHOOK_URL）
+# 3. AI API Key 一律透過環境變數（GEMINI_API_KEY, OPENROUTER_API_KEY）注入
+# 4. BigQuery 服務帳號請使用最小權限（唯讀）角色，嚴禁使用 Owner/Editor 權限
 
 credentials:
   # BigQuery 服務帳號 json 路徑（用 scripts/create_sa.sh 產生；筆電與伺服器共用同一把）
@@ -92,3 +98,6 @@ apps:
       - order_accept
     custom_keys:
       - vehicle_type
+    release_gate:                         # Crashlytics-only 模式可自由選擇是否啟用 Gate
+      enabled: false                      # 若停用，管線將產生 enabled: false 之非阻擋產物，不評估指標
+

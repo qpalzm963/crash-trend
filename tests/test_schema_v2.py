@@ -352,6 +352,30 @@ class TestDashboardV2Schema(unittest.TestCase):
         errs2 = validate_dashboard_v2(data)
         self.assertEqual(errs2, [])
 
+    def test_v2_7_bundle_requires_lifecycle_on_top_issues(self) -> None:
+        fixture_path = self.fixtures_dir / "dashboard_v2.json"
+        data = json.loads(fixture_path.read_text(encoding="utf-8"))
+        data["schema_version"] = "2.7.0"
+        errs = validate_dashboard_v2(data)
+        self.assertTrue(any("lifecycle is required in Schema V2.3" in e for e in errs))
+
+        for app in data["apps"].values():
+            for iss in app.get("top_issues", []):
+                iss["lifecycle"] = {
+                    "status": "persistent",
+                    "latest_version": "1.0.10",
+                    "first_seen_version": "1.0.8",
+                    "last_seen_version": "1.0.10",
+                    "versions_seen": 2,
+                    "confidence": "high",
+                    "previously_absent_since": None,
+                    "reappeared_version": None,
+                    "reason": "Persistent",
+                }
+        errs2 = validate_dashboard_v2(data)
+        self.assertEqual(errs2, [])
+
 
 if __name__ == "__main__":
     unittest.main()
+
