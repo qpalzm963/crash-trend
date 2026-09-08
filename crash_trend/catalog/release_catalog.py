@@ -13,7 +13,7 @@ from typing import Any, Literal, cast
 
 from crash_trend.catalog.comparison import compute_previous_release_comparison
 from crash_trend.catalog.issue_lifecycle import is_version_sample_sufficient
-from crash_trend.gate import evaluate_release, load_gate_policy
+from crash_trend.gate.policy import load_gate_policy
 from crash_trend.schema_v2 import (
     PreviousReleaseComparison,
     ReleaseCatalogItem,
@@ -142,7 +142,23 @@ def build_release_catalog(
     gate_policy: Any | None = None,
 ) -> list[ReleaseCatalogItem]:
     """Constructs the decoupled persistent release catalog conforming to ReleaseCatalogItem."""
-    eff_policy = gate_policy if gate_policy is not None else load_gate_policy(app_data if isinstance(app_data, dict) else None)
+    if gate_policy is not None:
+        eff_policy = gate_policy
+    else:
+        effective_app_id = (
+            getattr(catalog, "app_id", None)
+            or (app_data.get("metadata", {}).get("app_id") if isinstance(app_data, dict) else None)
+        )
+        app_cfg = None
+        if effective_app_id:
+            try:
+                from crash_trend.config import load_config
+                cfg = load_config()
+                app_cfg = (cfg.get("apps") or {}).get(effective_app_id)
+            except Exception:
+                app_cfg = None
+        eff_policy = load_gate_policy(app_cfg)
+
     ref_dt = dt.datetime.now(dt.UTC)
     if reference_date is not None:
         if isinstance(reference_date, dt.datetime):
@@ -400,17 +416,22 @@ def build_release_catalog(
                 "issue_lifecycle": issue_lifecycle,
                 "vs_previous": vs_previous,
             }
-            gate_eval = evaluate_release(cast(dict[str, Any], rel_item), eff_policy)
-            rel_item["release_gate"] = cast(
-                ReleaseGateSummary,
-                {
-                    "status": gate_eval["gate_status"],
-                    "should_alert": gate_eval["alert"]["should_alert"],
-                    "alert_severity": gate_eval["alert"]["alert_severity"],
-                    "alert_summary": gate_eval["alert"]["alert_summary"],
-                    "rules_triggered": gate_eval["alert"]["trigger_rules"],
-                },
-            )
+            if eff_policy.enabled:
+                from crash_trend.gate.evaluator import evaluate_release
+
+                gate_eval = evaluate_release(cast(dict[str, Any], rel_item), eff_policy)
+                rel_item["release_gate"] = cast(
+                    ReleaseGateSummary,
+                    {
+                        "status": gate_eval["gate_status"],
+                        "should_alert": gate_eval["alert"]["should_alert"],
+                        "alert_severity": gate_eval["alert"]["alert_severity"],
+                        "alert_summary": gate_eval["alert"]["alert_summary"],
+                        "rules_triggered": gate_eval["alert"]["trigger_rules"],
+                    },
+                )
+            else:
+                rel_item["release_gate"] = None
             catalog_items.append(rel_item)
 
     final_items: list[ReleaseCatalogItem] = []

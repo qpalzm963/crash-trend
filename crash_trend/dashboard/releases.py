@@ -245,7 +245,7 @@ function renderReleasesTable() {
         stabBadge = '<span class="badge badge-stability-baseline">基準 —</span>';
       }
 
-      let gateBadge = '<span class="badge badge-stability-baseline">BASELINE</span>';
+      let gateBadge = '<span class="badge" style="background:var(--bg-subtle);color:var(--text-muted)">—</span>';
       const rg = v.release_gate;
       if (rg && rg.status) {
         if (rg.status === "pass") {
@@ -256,7 +256,7 @@ function renderReleasesTable() {
           gateBadge = '<span class="badge badge-fatal" style="font-weight:600">FAIL</span>';
         } else if (rg.status === "insufficient_data") {
           gateBadge = '<span class="badge" style="background:var(--bg-subtle);color:var(--text-muted)">INSUFFICIENT</span>';
-        } else {
+        } else if (rg.status === "baseline") {
           gateBadge = '<span class="badge badge-stability-baseline">BASELINE</span>';
         }
       }

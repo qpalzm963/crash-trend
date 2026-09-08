@@ -670,6 +670,7 @@ class IssueHistoricalCatalog:
         app_data: dict | None = None,
         platform: str | None = None,
         reference_date: Any | None = None,
+        gate_policy: Any | None = None,
     ) -> list[ReleaseCatalogItem]:
         """Constructs the decoupled persistent release catalog conforming to ReleaseCatalogItem."""
         return build_release_catalog(
@@ -677,6 +678,7 @@ class IssueHistoricalCatalog:
             app_data=app_data,
             platform=platform,
             reference_date=reference_date,
+            gate_policy=gate_policy,
         )
 
     def get_known_app_versions(self, platform: str | None = None) -> list[str]:
@@ -719,6 +721,7 @@ def enrich_app_data_with_lifecycle(
     version_catalog_rows: Iterable[dict] | None = None,
     is_bootstrap: bool = False,
     is_incremental: bool | None = None,
+    gate_policy: Any | None = None,
 ) -> dict:
     """Enriches app_data top_issues, all periods snapshots, and builds persistent release_catalog,
     strictly isolating Android and iOS version sequences and latest versions.
@@ -956,7 +959,24 @@ def enrich_app_data_with_lifecycle(
                 iss["lifecycle"] = lc
 
     # 6. Build persistent Release Catalog and attach to app_data and period snapshots
-    release_catalog = cat.build_release_catalog(app_data)
+    effective_policy = gate_policy
+    if effective_policy is None:
+        effective_app_id = app_name or (app_data.get("metadata", {}).get("app_id") if isinstance(app_data, dict) else None)
+        app_cfg = None
+        if effective_app_id:
+            try:
+                from crash_trend.config import load_config
+                cfg = load_config()
+                app_cfg = (cfg.get("apps") or {}).get(effective_app_id)
+            except Exception:
+                app_cfg = None
+        try:
+            from crash_trend.gate.policy import load_gate_policy
+            effective_policy = load_gate_policy(app_cfg)
+        except Exception:
+            effective_policy = None
+
+    release_catalog = cat.build_release_catalog(app_data, gate_policy=effective_policy)
     app_data["release_catalog"] = release_catalog
     if isinstance(periods, dict):
         for snap in periods.values():

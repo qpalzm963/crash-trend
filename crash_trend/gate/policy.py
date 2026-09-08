@@ -8,8 +8,12 @@ Defines:
 
 from __future__ import annotations
 
+import json
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any
+
+import yaml
 
 
 @dataclass(frozen=True)
@@ -36,6 +40,8 @@ class GatePolicy:
     policy_version: str = "1.0"
     enabled: bool = True
     min_sessions: int = 1000
+    min_adoption_rate: float = 0.05
+    min_version_events: int = 20
 
     # Normalized metric threshold rules
     crash_rate_change_pct: ThresholdRule = ThresholdRule(warn=0.10, fail=0.25)
@@ -105,6 +111,18 @@ def load_gate_policy(app_cfg: dict[str, Any] | None = None) -> GatePolicy:
     except (TypeError, ValueError):
         min_sessions = 1000
 
+    min_adopt_raw = gate_cfg.get("min_adoption_rate", 0.05)
+    try:
+        min_adoption_rate = max(0.0, float(min_adopt_raw))
+    except (TypeError, ValueError):
+        min_adoption_rate = 0.05
+
+    min_ev_raw = gate_cfg.get("min_version_events", 20)
+    try:
+        min_version_events = max(0, int(min_ev_raw))
+    except (TypeError, ValueError):
+        min_version_events = 20
+
     raw_thresh = gate_cfg.get("thresholds")
     thresholds: dict[str, Any] = raw_thresh if isinstance(raw_thresh, dict) else gate_cfg
 
@@ -141,6 +159,8 @@ def load_gate_policy(app_cfg: dict[str, Any] | None = None) -> GatePolicy:
         policy_version=policy_version,
         enabled=enabled,
         min_sessions=min_sessions,
+        min_adoption_rate=min_adoption_rate,
+        min_version_events=min_version_events,
         crash_rate_change_pct=cr_rule,
         crash_free_users_drop=cfu_rule,
         fatal_rate_change_pct=fatal_rule,
@@ -148,3 +168,26 @@ def load_gate_policy(app_cfg: dict[str, Any] | None = None) -> GatePolicy:
         regressed_issues_count=regressed_rule,
         introduced_issues_count=introduced_rule,
     )
+
+
+def load_gate_policy_from_file(path: Path | str) -> GatePolicy:
+    """Loads GatePolicy from a JSON or YAML file."""
+    p = Path(path)
+    if not p.is_file():
+        raise FileNotFoundError(f"Policy file not found: {path}")
+
+    content = p.read_text(encoding="utf-8")
+    if p.suffix.lower() in (".yaml", ".yml"):
+        raw = yaml.safe_load(content) or {}
+    else:
+        try:
+            raw = json.loads(content)
+        except json.JSONDecodeError:
+            raw = yaml.safe_load(content) or {}
+
+    if not isinstance(raw, dict):
+        raise ValueError(f"Policy file must contain a dictionary/mapping: {path}")
+
+    # Support raw being the whole app config or release_gate sub-dict directly
+    cfg = raw if "release_gate" in raw else {"release_gate": raw}
+    return load_gate_policy(cfg)

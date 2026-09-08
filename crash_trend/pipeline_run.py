@@ -440,45 +440,73 @@ def run_pipeline(
         # 8. Release Regression Gate (Quality Gate Stage)
         # -------------------------------------------------------------------
         t0 = now_utc_iso()
-        if verbose:
-            print(f"--- 8. release_gate: {app}")
-        rc, out, err = run_stage_process([py_exec, "-m", "crash_trend.release_gate", "--app", app])
-        if verbose and out:
-            print(out, end="")
-        t1 = now_utc_iso()
+        try:
+            from crash_trend.gate import load_gate_policy
+            gate_policy = load_gate_policy(app_cfg)
+        except Exception:
+            gate_policy = None
 
-        gate_artifact_path = app_out_dir / "release_gate.json"
-        gate_status = "unknown"
-        should_alert = False
-        alert_summary = ""
-        if gate_artifact_path.is_file():
+        if gate_policy is not None and not gate_policy.enabled:
+            # Produce non-blocking artifact and record disabled stage
             try:
-                g_data = json.loads(gate_artifact_path.read_text(encoding="utf-8"))
-                gate_status = g_data.get("overall_status", "unknown")
-                should_alert = bool(g_data.get("should_alert", False))
-                alert_summary = g_data.get("alert_summary", "")
+                from crash_trend.release_gate import run_release_gate_for_app
+                run_release_gate_for_app(app, verbose=False)
             except Exception:
                 pass
-
-        if rc != 0:
-            err_msg = err.strip() or out.strip() or "Release gate execution failed"
-            tracker.record_stage(app, "release_gate", "failed", t0, t1, error_message=err_msg)
-            if verbose:
-                print(f"  [Warning] Release Gate 執行失敗（非業務退化，為執行異常）：{sanitize_error_message(err_msg)}", file=sys.stderr)
-        else:
-            # Stage execution succeeded (business quality is tracked cleanly in details)
+            t1 = now_utc_iso()
             tracker.record_stage(
                 app,
                 "release_gate",
-                "success",
+                "disabled",
                 t0,
                 t1,
                 details={
-                    "gate_status": gate_status,
-                    "should_alert": should_alert,
-                    "alert_summary": alert_summary,
+                    "gate_status": "pass",
+                    "reason": "Release gate disabled in app configuration (enabled: false)",
                 },
             )
+            if verbose:
+                print(f"--- 8. release_gate: {app} (disabled)")
+        else:
+            if verbose:
+                print(f"--- 8. release_gate: {app}")
+            rc, out, err = run_stage_process([py_exec, "-m", "crash_trend.release_gate", "--app", app])
+            if verbose and out:
+                print(out, end="")
+            t1 = now_utc_iso()
+
+            gate_artifact_path = app_out_dir / "release_gate.json"
+            gate_status = "unknown"
+            should_alert = False
+            alert_summary = ""
+            if gate_artifact_path.is_file():
+                try:
+                    g_data = json.loads(gate_artifact_path.read_text(encoding="utf-8"))
+                    gate_status = g_data.get("overall_status", "unknown")
+                    should_alert = bool(g_data.get("should_alert", False))
+                    alert_summary = g_data.get("alert_summary", "")
+                except Exception:
+                    pass
+
+            if rc != 0:
+                err_msg = err.strip() or out.strip() or "Release gate execution failed"
+                tracker.record_stage(app, "release_gate", "failed", t0, t1, error_message=err_msg)
+                if verbose:
+                    print(f"  [Warning] Release Gate 執行失敗（非業務退化，為執行異常）：{sanitize_error_message(err_msg)}", file=sys.stderr)
+            else:
+                # Stage execution succeeded (business quality is tracked cleanly in details)
+                tracker.record_stage(
+                    app,
+                    "release_gate",
+                    "success",
+                    t0,
+                    t1,
+                    details={
+                        "gate_status": gate_status,
+                        "should_alert": should_alert,
+                        "alert_summary": alert_summary,
+                    },
+                )
 
     # -----------------------------------------------------------------------
     # 9. Build Dashboard (Core Stage)

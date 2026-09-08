@@ -22,6 +22,7 @@ from crash_trend.gate.policy import (
     GatePolicy,
     ThresholdRule,
     load_gate_policy,
+    load_gate_policy_from_file,
 )
 
 __all__ = [
@@ -37,6 +38,7 @@ __all__ = [
     "evaluate_app_release_gate",
     "evaluate_release",
     "load_gate_policy",
+    "load_gate_policy_from_file",
     "load_release_gate_artifact",
     "save_release_gate_artifact",
     "validate_release_gate_artifact",

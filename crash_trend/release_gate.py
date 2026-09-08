@@ -28,6 +28,7 @@ from crash_trend.gate import (
     ReleaseGateArtifact,
     evaluate_app_release_gate,
     load_gate_policy,
+    load_gate_policy_from_file,
     save_release_gate_artifact,
 )
 
@@ -80,13 +81,18 @@ def load_app_release_catalog(app_name: str) -> list[dict[str, Any]]:
 def run_release_gate_for_app(
     app_name: str,
     out_path: Path | None = None,
+    policy_path: Path | None = None,
     verbose: bool = True,
 ) -> ReleaseGateArtifact:
     """Runs release gate evaluation for a given app and persists artifact."""
     cfg = load_config()
     app_cfg = get_app(app_name, cfg)
 
-    policy = load_gate_policy(app_cfg)
+    if policy_path is not None:
+        policy = load_gate_policy_from_file(policy_path)
+    else:
+        policy = load_gate_policy(app_cfg)
+
     catalog_items = load_app_release_catalog(app_name)
     target_platforms = app_cfg.get("platforms")
 
@@ -101,28 +107,35 @@ def run_release_gate_for_app(
     save_release_gate_artifact(dest, artifact)
 
     if verbose:
-        status_disp = artifact["overall_status"].upper()
-        status_color = (
-            "\033[32m" if status_disp == "PASS" else
-            ("\033[33m" if status_disp == "WARN" else
-             ("\033[31m" if status_disp == "FAIL" else "\033[36m"))
-        )
-        reset_color = "\033[0m"
+        if not policy.enabled:
+            print(f"\n================ [Release Regression Gate: {app_name}] ================")
+            print("  Release gate is DISABLED (enabled: false). Generated non-blocking artifact.")
+            print(f"  Artifact Path:   {dest}")
+            print(f"  Summary:         {artifact['alert_summary']}")
+            print("=======================================================================\n")
+        else:
+            status_disp = artifact["overall_status"].upper()
+            status_color = (
+                "\033[32m" if status_disp == "PASS" else
+                ("\033[33m" if status_disp == "WARN" else
+                 ("\033[31m" if status_disp == "FAIL" else "\033[36m"))
+            )
+            reset_color = "\033[0m"
 
-        print(f"\n================ [Release Regression Gate: {app_name}] ================")
-        print(f"  Overall Status:  {status_color}{status_disp}{reset_color}")
-        print(f"  Alert Severity:  {artifact['alert_severity'].upper()} (should_alert: {artifact['should_alert']})")
-        print(f"  Artifact Path:   {dest}")
-        print(f"  Summary:         {artifact['alert_summary']}")
+            print(f"\n================ [Release Regression Gate: {app_name}] ================")
+            print(f"  Overall Status:  {status_color}{status_disp}{reset_color}")
+            print(f"  Alert Severity:  {artifact['alert_severity'].upper()} (should_alert: {artifact['should_alert']})")
+            print(f"  Artifact Path:   {dest}")
+            print(f"  Summary:         {artifact['alert_summary']}")
 
-        for pf, pf_res in artifact["platforms"].items():
-            pf_st = pf_res["gate_status"].upper()
-            print(f"  - Platform [{pf.upper()}]: target={pf_res['target_version']} (prev={pf_res['previous_version'] or 'None'}) -> [{pf_st}]")
-            for rule in pf_res["rule_results"]:
-                r_st = rule["status"].upper()
-                r_icon = "✓" if r_st == "PASS" else ("⚠" if r_st == "WARN" else ("✗" if r_st == "FAIL" else "—"))
-                print(f"      {r_icon} {rule['rule_name']:<24} [{r_st:<4}] {rule['reason']}")
-        print("=======================================================================\n")
+            for pf, pf_res in artifact["platforms"].items():
+                pf_st = pf_res["gate_status"].upper()
+                print(f"  - Platform [{pf.upper()}]: target={pf_res['target_version']} (prev={pf_res['previous_version'] or 'None'}) -> [{pf_st}]")
+                for rule in pf_res["rule_results"]:
+                    r_st = rule["status"].upper()
+                    r_icon = "✓" if r_st == "PASS" else ("⚠" if r_st == "WARN" else ("✗" if r_st == "FAIL" else "—"))
+                    print(f"      {r_icon} {rule['rule_name']:<24} [{r_st:<4}] {rule['reason']}")
+            print("=======================================================================\n")
 
     return artifact
 
@@ -131,6 +144,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="評估版本退化閘門 (Release Regression Gate) 並產出 release_gate.json")
     parser.add_argument("--app", required=True, help="apps.yaml 中的 app 名稱")
     parser.add_argument("--fail-on-regression", action="store_true", help="若品質閘門判定為 FAIL，則以 exit code 2 結束")
+    parser.add_argument("--policy", type=Path, default=None, help="自訂 GatePolicy 檔案路徑 (JSON 或 YAML)")
     parser.add_argument("--out", type=Path, default=None, help="自訂 release_gate.json 輸出路徑")
     parser.add_argument("--quiet", action="store_true", help="減少詳細輸出")
     args = parser.parse_args()
@@ -139,6 +153,7 @@ def main() -> None:
         artifact = run_release_gate_for_app(
             app_name=args.app,
             out_path=args.out,
+            policy_path=args.policy,
             verbose=not args.quiet,
         )
     except Exception as e:

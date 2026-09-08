@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime as dt
 from typing import Any, Literal
 
+from crash_trend.catalog.issue_lifecycle import is_version_sample_sufficient
 from crash_trend.gate.artifact import (
     AlertHookPayload,
     AlertSeverity,
@@ -23,37 +24,80 @@ from crash_trend.gate.policy import GatePolicy
 
 
 def _is_sample_sufficient(
+    item: dict[str, Any] | None,
     recent_health: dict[str, Any] | None,
-    min_sessions: int,
+    policy: GatePolicy,
 ) -> tuple[bool, int, str]:
-    """Inspects recent health windows to verify sample sufficiency and total sessions."""
-    if not isinstance(recent_health, dict) or not recent_health:
-        return False, 0, "無近期健康度資料"
+    """Inspects recent health windows and release item using unified is_version_sample_sufficient."""
+    min_adopt = policy.min_adoption_rate
+    min_sess = policy.min_sessions
+    min_ev = policy.min_version_events
 
-    # Priority window check: 30d -> 90d -> 7d
-    for candidate_w in ("30d", "30", "90d", "90", "7d", "7"):
-        win_data = recent_health.get(candidate_w)
-        if isinstance(win_data, dict):
-            suff = win_data.get("sample_sufficient")
-            sessions = win_data.get("sessions_total")
-            sess_int = int(sessions) if sessions is not None else 0
+    # 1. Inspect recent_health windows in order of relevance: 30d -> 90d -> 7d
+    if isinstance(recent_health, dict) and recent_health:
+        for candidate_w in ("30d", "30", "90d", "90", "7d", "7"):
+            win_data = recent_health.get(candidate_w)
+            if isinstance(win_data, dict):
+                sess_int = int(win_data.get("sessions_total") or 0)
+                if is_version_sample_sufficient(
+                    win_data,
+                    min_adoption_rate=min_adopt,
+                    min_sessions=min_sess,
+                    min_version_events=min_ev,
+                ):
+                    if win_data.get("sample_sufficient") is True:
+                        reason = f"{candidate_w} 視窗顯式標記為樣本充足"
+                    elif (win_data.get("adoption_rate") or 0) >= min_adopt:
+                        reason = f"{candidate_w} 視窗採用率充足 ({win_data.get('adoption_rate', 0):.1%} >= {min_adopt:.1%})"
+                    elif sess_int >= min_sess:
+                        reason = f"{candidate_w} 視窗工作階段充足 ({sess_int} sessions >= {min_sess})"
+                    else:
+                        ev = int(win_data.get("crash_events") or 0)
+                        reason = f"{candidate_w} 視窗事件數充足 ({ev} events >= {min_ev})"
+                    return True, sess_int, reason
 
-            # If explicitly marked insufficient or sessions below minimum threshold
-            if suff is False:
-                return False, sess_int, f"{candidate_w} 視窗被標記為樣本不足"
-            if suff is True and sess_int >= min_sessions:
-                return True, sess_int, f"{candidate_w} 視窗樣本充足 ({sess_int} sessions >= {min_sessions})"
-            if sess_int >= min_sessions:
-                return True, sess_int, f"{candidate_w} 視窗工作階段充足 ({sess_int} sessions >= {min_sessions})"
+        # Check all other windows in recent_health
+        for w_name, win_data in recent_health.items():
+            if isinstance(win_data, dict):
+                sess_int = int(win_data.get("sessions_total") or 0)
+                if is_version_sample_sufficient(
+                    win_data,
+                    min_adoption_rate=min_adopt,
+                    min_sessions=min_sess,
+                    min_version_events=min_ev,
+                ):
+                    return True, sess_int, f"{w_name} 視窗樣本充足"
 
-    # Fallback to check if any window has sufficient sessions
-    for w_name, win_data in recent_health.items():
-        if isinstance(win_data, dict):
-            sess = win_data.get("sessions_total")
-            if sess is not None and int(sess) >= min_sessions:
-                return True, int(sess), f"{w_name} 視窗工作階段充足 ({sess} sessions >= {min_sessions})"
+    # 2. Inspect top-level item if applicable
+    if isinstance(item, dict):
+        sess_int = int(item.get("sessions_total") or 0)
+        if is_version_sample_sufficient(
+            item,
+            min_adoption_rate=min_adopt,
+            min_sessions=min_sess,
+            min_version_events=min_ev,
+        ):
+            if item.get("sample_sufficient") is True:
+                reason = "版本顯式標記為樣本充足"
+            elif (item.get("adoption_rate") or 0) >= min_adopt:
+                reason = f"版本採用率充足 ({item.get('adoption_rate', 0):.1%} >= {min_adopt:.1%})"
+            elif sess_int >= min_sess:
+                reason = f"版本工作階段充足 ({sess_int} sessions >= {min_sess})"
+            else:
+                ev = int(item.get("lifetime_crashes") or item.get("crash_events") or 0)
+                reason = f"版本事件數充足 ({ev} events >= {min_ev})"
+            return True, sess_int, reason
 
-    return False, 0, f"累積工作階段不足最小門檻 ({min_sessions} sessions)"
+    # Determine maximum observed sessions for informative diagnostics
+    max_sess = 0
+    if isinstance(recent_health, dict):
+        for w in recent_health.values():
+            if isinstance(w, dict):
+                max_sess = max(max_sess, int(w.get("sessions_total") or 0))
+    if isinstance(item, dict):
+        max_sess = max(max_sess, int(item.get("sessions_total") or 0))
+
+    return False, max_sess, f"數據未達充足門檻（未滿足採用率 {min_adopt:.1%}、工作階段 {min_sess} 或事件數 {min_ev} 標準）"
 
 
 def evaluate_release(
@@ -66,8 +110,27 @@ def evaluate_release(
     raw_pf = item.get("platform", "android")
     pf: Literal["ios", "android"] = "ios" if raw_pf == "ios" else "android"
 
+    # Handle disabled policy semantics
+    if not policy.enabled:
+        dis_alert: AlertHookPayload = {
+            "should_alert": False,
+            "alert_severity": "none",
+            "alert_summary": f"版本 {ver} ({pf}) 品質閘門未啟用 (enabled: false)",
+            "trigger_rules": [],
+        }
+        return {
+            "platform": pf,
+            "target_version": ver,
+            "previous_version": None,
+            "gate_status": "pass",
+            "sample_sufficient": True,
+            "rule_results": [],
+            "alert": dis_alert,
+            "evaluated_at": now_iso,
+        }
+
     recent_health = item.get("recent_health") or {}
-    sample_ok, total_sess, sess_reason = _is_sample_sufficient(recent_health, policy.min_sessions)
+    sample_ok, total_sess, sess_reason = _is_sample_sufficient(item, recent_health, policy)
 
     # 1. Sample Sufficiency Guard
     if not sample_ok:
@@ -377,6 +440,21 @@ def evaluate_app_release_gate(
     """Evaluates release gate across target platforms for an application."""
     now_iso = dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
+    # Handle disabled policy semantics
+    if not policy.enabled:
+        return {
+            "schema_version": "1.0",
+            "app_id": app_id,
+            "generated_at": now_iso,
+            "overall_status": "pass",
+            "should_alert": False,
+            "alert_severity": "none",
+            "alert_summary": f"App [{app_id}] 品質閘門未啟用 (enabled: false)",
+            "platforms": {},
+            "policy_version": policy.policy_version,
+            "policy": policy.to_dict(),
+        }
+
     if target_platforms:
         pfs = [p.lower() for p in target_platforms if p.lower() in ("ios", "android")]
     else:
@@ -402,7 +480,7 @@ def evaluate_app_release_gate(
             platform_results[pf] = res
 
     # Aggregate overall application gate status
-    # Priority: fail > warn > pass > insufficient_data > baseline
+    # Priority: fail > warn > insufficient_data > pass > baseline
     statuses = [res["gate_status"] for res in platform_results.values()]
     if "fail" in statuses:
         overall_status: GateStatus = "fail"
@@ -412,12 +490,12 @@ def evaluate_app_release_gate(
         overall_status = "warn"
         overall_severity = "warning"
         overall_should_alert = True
-    elif "pass" in statuses:
-        overall_status = "pass"
-        overall_severity = "none"
-        overall_should_alert = False
     elif "insufficient_data" in statuses:
         overall_status = "insufficient_data"
+        overall_severity = "none"
+        overall_should_alert = False
+    elif "pass" in statuses:
+        overall_status = "pass"
         overall_severity = "none"
         overall_should_alert = False
     elif "baseline" in statuses:

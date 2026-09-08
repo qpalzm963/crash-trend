@@ -41,6 +41,7 @@ from crash_trend.gate import (
     evaluate_app_release_gate,
     evaluate_release,
     load_gate_policy,
+    load_gate_policy_from_file,
     load_release_gate_artifact,
     save_release_gate_artifact,
     validate_release_gate_artifact,
@@ -154,7 +155,6 @@ class TestGateEvaluator(unittest.TestCase):
                 "30d": {
                     "sessions_total": 500,  # Below min_sessions 1000
                     "crash_events": 2,
-                    "sample_sufficient": True,
                 }
             },
             "vs_previous": {
@@ -693,5 +693,328 @@ class TestReleaseGateCLIAndPipeline(unittest.TestCase):
             self.assertEqual(ctx.exception.code, 1)
 
 
+class TestReleaseGateFeedbackFixes(unittest.TestCase):
+    """Tests addressing PR review feedback: disabled semantics, sample sufficiency,
+
+    mixed-platform precedence, CLI --policy argument, and Dashboard/artifact policy convergence.
+    """
+
+    # 1. [P1] release_gate.enabled=False semantics
+    def test_gate_disabled_in_policy_and_evaluators(self) -> None:
+        disabled_policy = GatePolicy(enabled=False)
+
+        # evaluate_release
+        item: dict[str, Any] = {
+            "version": "2.0.0",
+            "platform": "android",
+            "status": "latest",
+            "recent_health": {"30d": {"sessions_total": 5000, "sample_sufficient": True}},
+            "vs_previous": {"previous_version": "1.9.0", "crash_rate_change_pct": 0.80},
+        }
+        rel_res = evaluate_release(item, disabled_policy)
+        self.assertEqual(rel_res["gate_status"], "pass")
+        self.assertFalse(rel_res["alert"]["should_alert"])
+        self.assertEqual(rel_res["alert"]["alert_severity"], "none")
+
+        # evaluate_app_release_gate
+        app_res = evaluate_app_release_gate("demo_app", [item], disabled_policy)
+        self.assertEqual(app_res["overall_status"], "pass")
+        self.assertFalse(app_res["should_alert"])
+        self.assertEqual(app_res["alert_severity"], "none")
+        self.assertEqual(app_res["platforms"], {})
+
+    @patch("crash_trend.release_gate.load_config")
+    @patch("crash_trend.release_gate.get_app")
+    @patch("crash_trend.release_gate.load_app_release_catalog")
+    def test_cli_disabled_app_exits_zero(
+        self,
+        mock_load_catalog: Any,
+        mock_get_app: Any,
+        mock_load_cfg: Any,
+    ) -> None:
+        from crash_trend.release_gate import main as release_gate_main
+
+        mock_load_cfg.return_value = {"apps": {"test_app": {"release_gate": {"enabled": False}}}}
+        mock_get_app.return_value = {"platforms": ["android"], "release_gate": {"enabled": False}}
+        mock_load_catalog.return_value = [
+            {
+                "version": "2.0.0",
+                "platform": "android",
+                "status": "latest",
+                "recent_health": {"30d": {"sessions_total": 5000, "sample_sufficient": True}},
+                "vs_previous": {"previous_version": "1.9.0", "crash_rate_change_pct": 0.80},
+            }
+        ]
+
+        # Even with --fail-on-regression and large crash rate increase, disabled gate exits 0
+        with patch.object(sys, "argv", ["release_gate.py", "--app", "test_app", "--fail-on-regression"]):
+            with self.assertRaises(SystemExit) as ctx:
+                release_gate_main()
+            self.assertEqual(ctx.exception.code, 0)
+
+    # 2. [P2] Unified sample sufficiency
+    def test_sample_sufficiency_adoption_rate_only(self) -> None:
+        policy = GatePolicy(min_sessions=5000, min_adoption_rate=0.05)
+        item: dict[str, Any] = {
+            "version": "2.0.0",
+            "platform": "android",
+            "status": "latest",
+            "recent_health": {
+                "30d": {
+                    "sessions_total": 200,  # Below 5000 min_sessions!
+                    "adoption_rate": 0.08,   # Above 5% min_adoption_rate!
+                }
+            },
+            "vs_previous": {"previous_version": "1.9.0", "crash_rate_change_pct": 0.01},
+        }
+        res = evaluate_release(item, policy)
+        self.assertEqual(res["gate_status"], "pass")
+        self.assertTrue(res["sample_sufficient"])
+
+    def test_sample_sufficiency_crash_events_only(self) -> None:
+        policy = GatePolicy(min_sessions=5000, min_version_events=20)
+        item: dict[str, Any] = {
+            "version": "2.0.0",
+            "platform": "android",
+            "status": "latest",
+            "recent_health": {
+                "30d": {
+                    "sessions_total": 200,  # Below 5000 min_sessions!
+                    "crash_events": 25,     # Above 20 min_version_events!
+                }
+            },
+            "vs_previous": {"previous_version": "1.9.0", "crash_rate_change_pct": 0.01},
+        }
+        res = evaluate_release(item, policy)
+        self.assertEqual(res["gate_status"], "pass")
+        self.assertTrue(res["sample_sufficient"])
+
+    def test_sample_sufficiency_explicit_true(self) -> None:
+        policy = GatePolicy(min_sessions=5000)
+        item: dict[str, Any] = {
+            "version": "2.0.0",
+            "platform": "android",
+            "status": "latest",
+            "recent_health": {
+                "30d": {
+                    "sessions_total": 50,
+                    "sample_sufficient": True,  # Explicitly sufficient from upstream
+                }
+            },
+            "vs_previous": {"previous_version": "1.9.0", "crash_rate_change_pct": 0.01},
+        }
+        res = evaluate_release(item, policy)
+        self.assertEqual(res["gate_status"], "pass")
+        self.assertTrue(res["sample_sufficient"])
+
+    def test_sample_insufficient_explicit_false(self) -> None:
+        policy = GatePolicy(min_sessions=1000)
+        item: dict[str, Any] = {
+            "version": "2.0.0",
+            "platform": "android",
+            "status": "latest",
+            "recent_health": {
+                "30d": {
+                    "sessions_total": 5000,
+                    "sample_sufficient": False,  # Explicitly insufficient
+                }
+            },
+            "vs_previous": {"previous_version": "1.9.0", "crash_rate_change_pct": 0.01},
+        }
+        res = evaluate_release(item, policy)
+        self.assertEqual(res["gate_status"], "insufficient_data")
+        self.assertFalse(res["sample_sufficient"])
+
+    # 3. [P2] Mixed-platform precedence: fail > warn > insufficient_data > pass > baseline
+    def test_mixed_platform_pass_and_insufficient_data(self) -> None:
+        policy = GatePolicy()
+        android_item: dict[str, Any] = {
+            "version": "2.0.0",
+            "platform": "android",
+            "status": "latest",
+            "recent_health": {"30d": {"sessions_total": 5000, "sample_sufficient": True}},
+            "vs_previous": {"previous_version": "1.9.0", "crash_rate_change_pct": 0.01},
+        }
+        ios_item: dict[str, Any] = {
+            "version": "2.0.0",
+            "platform": "ios",
+            "status": "latest",
+            "recent_health": {"30d": {"sessions_total": 100, "sample_sufficient": False}},
+            "vs_previous": {"previous_version": "1.9.0", "crash_rate_change_pct": 0.01},
+        }
+
+        art = evaluate_app_release_gate("demo_app", [android_item, ios_item], policy)
+        self.assertEqual(art["platforms"]["android"]["gate_status"], "pass")
+        self.assertEqual(art["platforms"]["ios"]["gate_status"], "insufficient_data")
+        # Insufficient data must NOT be masked by PASS!
+        self.assertEqual(art["overall_status"], "insufficient_data")
+
+    def test_mixed_platform_fail_and_insufficient_data(self) -> None:
+        policy = GatePolicy()
+        android_item: dict[str, Any] = {
+            "version": "2.0.0",
+            "platform": "android",
+            "status": "latest",
+            "recent_health": {"30d": {"sessions_total": 5000, "sample_sufficient": True}},
+            "vs_previous": {"previous_version": "1.9.0", "crash_rate_change_pct": 0.50},  # FAIL
+        }
+        ios_item: dict[str, Any] = {
+            "version": "2.0.0",
+            "platform": "ios",
+            "status": "latest",
+            "recent_health": {"30d": {"sessions_total": 100, "sample_sufficient": False}},
+            "vs_previous": {"previous_version": "1.9.0", "crash_rate_change_pct": 0.01},
+        }
+
+        art = evaluate_app_release_gate("demo_app", [android_item, ios_item], policy)
+        self.assertEqual(art["platforms"]["android"]["gate_status"], "fail")
+        self.assertEqual(art["platforms"]["ios"]["gate_status"], "insufficient_data")
+        # FAIL has highest priority
+        self.assertEqual(art["overall_status"], "fail")
+
+    def test_mixed_platform_warn_and_insufficient_data(self) -> None:
+        policy = GatePolicy()
+        android_item: dict[str, Any] = {
+            "version": "2.0.0",
+            "platform": "android",
+            "status": "latest",
+            "recent_health": {"30d": {"sessions_total": 5000, "sample_sufficient": True}},
+            "vs_previous": {"previous_version": "1.9.0", "crash_rate_change_pct": 0.15},  # WARN
+        }
+        ios_item: dict[str, Any] = {
+            "version": "2.0.0",
+            "platform": "ios",
+            "status": "latest",
+            "recent_health": {"30d": {"sessions_total": 100, "sample_sufficient": False}},
+            "vs_previous": {"previous_version": "1.9.0", "crash_rate_change_pct": 0.01},
+        }
+
+        art = evaluate_app_release_gate("demo_app", [android_item, ios_item], policy)
+        self.assertEqual(art["platforms"]["android"]["gate_status"], "warn")
+        self.assertEqual(art["platforms"]["ios"]["gate_status"], "insufficient_data")
+        # WARN has higher priority than INSUFFICIENT
+        self.assertEqual(art["overall_status"], "warn")
+
+    # 4. [P2] CLI --policy argument
+    def test_cli_custom_policy_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            policy_yaml = Path(tmpdir) / "strict_policy.yaml"
+            policy_yaml.write_text(
+                "release_gate:\n"
+                "  thresholds:\n"
+                "    crash_rate_change_pct:\n"
+                "      warn: 0.01\n"
+                "      fail: 0.03\n",
+                encoding="utf-8",
+            )
+            loaded = load_gate_policy_from_file(policy_yaml)
+            self.assertEqual(loaded.crash_rate_change_pct.warn, 0.01)
+            self.assertEqual(loaded.crash_rate_change_pct.fail, 0.03)
+
+            # Test runner with policy_path
+            with patch("crash_trend.release_gate.load_config") as mock_cfg, \
+                 patch("crash_trend.release_gate.get_app") as mock_app, \
+                 patch("crash_trend.release_gate.load_app_release_catalog") as mock_cat:
+                mock_cfg.return_value = {"apps": {"my_app": {}}}
+                mock_app.return_value = {"platforms": ["android"]}
+                mock_cat.return_value = [
+                    {
+                        "version": "2.0.0",
+                        "platform": "android",
+                        "status": "latest",
+                        "recent_health": {"30d": {"sessions_total": 5000, "sample_sufficient": True}},
+                        "vs_previous": {"previous_version": "1.9.0", "crash_rate_change_pct": 0.04},  # Fails 0.03!
+                    }
+                ]
+                art = run_release_gate_for_app("my_app", policy_path=policy_yaml, verbose=False)
+                self.assertEqual(art["overall_status"], "fail")
+
+    # 5. [P1] Dashboard summary and standalone artifact policy convergence
+    def test_dashboard_and_artifact_policy_convergence(self) -> None:
+        """Verifies that an app with custom threshold overrides in apps.yaml
+
+        produces identical evaluation status in both Dashboard release catalog summary
+        and standalone release_gate.json artifact.
+        """
+        app_custom_cfg = {
+            "platforms": ["android"],
+            "release_gate": {
+                "thresholds": {
+                    "crash_rate_change_pct": {
+                        "warn": 0.02,
+                        "fail": 0.04,
+                    }
+                }
+            }
+        }
+        mock_cfg = {"apps": {"shop_app": app_custom_cfg}}
+
+        class DummyCatalog:
+            app_id = "shop_app"
+            app_versions = {"android": {"2.0.0": {}, "1.9.0": {}}}
+            issues: dict[str, Any] = {}
+
+            def get_known_app_versions(self, platform: str | None = None) -> list[str]:
+                return ["1.9.0", "2.0.0"]
+
+        dummy_cat = DummyCatalog()
+        app_data: dict[str, Any] = {
+            "metadata": {"app_id": "shop_app"},
+            "version_health": [
+                {
+                    "version": "2.0.0",
+                    "platform": "android",
+                    "sessions_total": 5000,
+                    "sample_sufficient": True,
+                    "status": "latest",
+                }
+            ],
+            "periods": {
+                "30": {
+                    "version_health": [
+                        {
+                            "version": "2.0.0",
+                            "platform": "android",
+                            "sessions_total": 5000,
+                            "sample_sufficient": True,
+                            "status": "latest",
+                        }
+                    ],
+                    "top_issues": [],
+                }
+            },
+        }
+
+        with patch("crash_trend.config.load_config", return_value=mock_cfg), \
+             patch("crash_trend.catalog.release_catalog.compute_previous_release_comparison") as mock_cmp, \
+             patch("crash_trend.release_gate.load_config", return_value=mock_cfg), \
+             patch("crash_trend.release_gate.get_app", return_value=app_custom_cfg), \
+             patch("crash_trend.release_gate.load_app_release_catalog") as mock_load_cat:
+
+            # Return a comparison showing 0.03 delta (exceeds custom warn 0.02, but within default 0.10)
+            mock_cmp.return_value = {
+                "previous_version": "1.9.0",
+                "crash_rate_change_pct": 0.03,
+                "stability": "degrading",
+            }
+
+            # 1. Build release catalog (what Dashboard embeds)
+            catalog_items = build_release_catalog(dummy_cat, app_data=app_data, platform="android")
+            self.assertEqual(len(catalog_items), 2)
+            v2_item = next(i for i in catalog_items if i["version"] == "2.0.0")
+            self.assertIsNotNone(v2_item.get("release_gate"))
+            # Under default policy (0.10/0.25), 0.03 would be PASS. Under custom policy (0.02/0.04), it MUST be WARN!
+            self.assertEqual(v2_item["release_gate"]["status"], "warn")
+
+            # 2. Run standalone artifact evaluation
+            mock_load_cat.return_value = catalog_items
+            artifact = run_release_gate_for_app("shop_app", verbose=False)
+
+            # Assert complete consistency between Dashboard embedded summary and standalone artifact
+            self.assertEqual(artifact["overall_status"], "warn")
+            self.assertEqual(artifact["platforms"]["android"]["gate_status"], v2_item["release_gate"]["status"])
+
+
 if __name__ == "__main__":
     unittest.main()
+
