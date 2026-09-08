@@ -24,14 +24,26 @@ class AlertStoreError(Exception):
 
 
 def sanitize_audit_text(text: str | None) -> str | None:
-    """Removes sensitive webhook credentials and full URLs from audit messages."""
+    """Removes sensitive webhook credentials, tokens, authorization headers,
+    and raw user/installation UUID identifiers from audit text.
+    """
     if text is None:
         return None
-    # Scrub chat.googleapis.com URL patterns
-    sanitized = re.sub(r"https://chat\.googleapis\.com/[^\s'\"<>]+", "https://chat.googleapis.com/...<redacted>", text)
-    # Scrub standard token / key query params in case other URLs appear
-    sanitized = re.sub(r"([?&](?:key|token|access_token|secret)=)[^&\s'\"]+", r"\1<redacted>", sanitized)
-    return sanitized
+    s = str(text)
+    # 1. Scrub Google Chat and generic webhook URLs
+    s = re.sub(r"https?://chat\.googleapis\.com/[^\s'\"<>]+", "https://chat.googleapis.com/...<redacted>", s)
+    s = re.sub(r"https?://(?:hooks\.slack\.com|discord\.com/api/webhooks)[^\s'\"<>]+", "<redacted-webhook-url>", s)
+    # 2. Scrub Authorization / Bearer tokens
+    s = re.sub(r"(?i)\bBearer\s+[A-Za-z0-9_\-\.~+/=]+", "Bearer <redacted>", s)
+    s = re.sub(r"(?i)\bAuthorization:\s*[^,\r\n\s]+", "Authorization: <redacted>", s)
+    # 3. Scrub standard token/key query params or assignments (key=..., token=..., secret=...)
+    s = re.sub(r"([?&](?:key|token|access_token|secret|api_key|auth)=)[^&\s'\"]+", r"\1<redacted>", s)
+    s = re.sub(r"(?i)\b(key|token|secret|access_token|api_key|auth)=([^\s'\",;&]+)", r"\1=<redacted>", s)
+    # 4. Scrub raw UUIDs (e.g. user_id, installation_id)
+    s = re.sub(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b", "<redacted-id>", s)
+    # 5. Scrub explicit user_id/installation_id assignments
+    s = re.sub(r"(?i)\b(user_id|installation_id|client_id|device_id)=([^\s'\",;&]+)", r"\1=<redacted-id>", s)
+    return s
 
 
 class AlertDeliveryStore:
@@ -99,9 +111,16 @@ class AlertDeliveryStore:
                     thread_key TEXT,
                     message_name TEXT,
                     reasons_json TEXT,
-                    dry_run INTEGER NOT NULL DEFAULT 0
+                    dry_run INTEGER NOT NULL DEFAULT 0,
+                    is_recovery INTEGER NOT NULL DEFAULT 0
                 );
             """)
+            # Migration check: ensure is_recovery column exists on older databases
+            cur = conn.execute("PRAGMA table_info(alert_deliveries);")
+            col_names = [col[1] for col in cur.fetchall()]
+            if "is_recovery" not in col_names:
+                conn.execute("ALTER TABLE alert_deliveries ADD COLUMN is_recovery INTEGER NOT NULL DEFAULT 0;")
+
             conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_alert_deliveries_lookup
                     ON alert_deliveries (app_id, platform, version, id DESC);
@@ -109,6 +128,10 @@ class AlertDeliveryStore:
             conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_alert_deliveries_fingerprint
                     ON alert_deliveries (alert_fingerprint, status);
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_alert_deliveries_health
+                    ON alert_deliveries (app_id, dry_run, status, id DESC);
             """)
 
     def record_attempt(
@@ -123,6 +146,7 @@ class AlertDeliveryStore:
         reasons: list[str] | None = None,
         thread_key: str | None = None,
         dry_run: bool = False,
+        is_recovery: bool = False,
     ) -> int:
         """Records an initial pending delivery attempt."""
         att_time = attempted_at or dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -135,8 +159,8 @@ class AlertDeliveryStore:
                 INSERT INTO alert_deliveries (
                     app_id, platform, version, provider, alert_fingerprint,
                     gate_status, attempted_at, status, attempt_count,
-                    thread_key, reasons_json, dry_run
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 1, ?, ?, ?)
+                    thread_key, reasons_json, dry_run, is_recovery
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 1, ?, ?, ?, ?)
                 """,
                 (
                     app_id.strip(),
@@ -149,6 +173,7 @@ class AlertDeliveryStore:
                     clean_thread_key,
                     reasons_payload,
                     1 if dry_run else 0,
+                    1 if is_recovery else 0,
                 ),
             )
             return int(cur.lastrowid or 0)
@@ -206,6 +231,7 @@ class AlertDeliveryStore:
         reasons: list[str] | None = None,
         thread_key: str | None = None,
         dry_run: bool = False,
+        is_recovery: bool = False,
     ) -> int:
         """Records an alert evaluation that was suppressed by dedupe, cooldown, or policy."""
         att_time = attempted_at or dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -219,8 +245,8 @@ class AlertDeliveryStore:
                 INSERT INTO alert_deliveries (
                     app_id, platform, version, provider, alert_fingerprint,
                     gate_status, attempted_at, status, attempt_count,
-                    error_code, error_message, thread_key, reasons_json, dry_run
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'suppressed', 0, 'SUPPRESSED', ?, ?, ?, ?)
+                    error_code, error_message, thread_key, reasons_json, dry_run, is_recovery
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'suppressed', 0, 'SUPPRESSED', ?, ?, ?, ?, ?)
                 """,
                 (
                     app_id.strip(),
@@ -234,6 +260,7 @@ class AlertDeliveryStore:
                     clean_thread_key,
                     reasons_payload,
                     1 if dry_run else 0,
+                    1 if is_recovery else 0,
                 ),
             )
             return int(cur.lastrowid or 0)
@@ -308,6 +335,99 @@ class AlertDeliveryStore:
             cur = conn.execute(query, (app_id.strip(), start_iso.strip(), end_iso.strip()))
             return [self._row_to_record(row) for row in cur.fetchall()]
 
+    def get_health_counts_24h(self, app_id: str, cutoff_iso: str) -> dict[str, int]:
+        """Returns 24h status counts ('sent', 'failed', 'suppressed') excluding dry runs."""
+        query = """
+            SELECT status, COUNT(*) as cnt
+            FROM alert_deliveries
+            WHERE app_id = ?
+              AND dry_run = 0
+              AND attempted_at >= ?
+            GROUP BY status
+        """
+        counts = {"sent": 0, "failed": 0, "suppressed": 0}
+        with self._connection() as conn:
+            cur = conn.execute(query, (app_id.strip(), cutoff_iso.strip()))
+            for row in cur.fetchall():
+                st = str(row["status"]).strip().lower()
+                if st in counts:
+                    counts[st] = int(row["cnt"])
+        return counts
+
+    def get_latest_delivery_timestamps(self, app_id: str) -> tuple[str | None, str | None]:
+        """Returns (latest_success_at, latest_failure_at) for real non-dry-run attempts."""
+        with self._connection() as conn:
+            cur_sent = conn.execute(
+                """
+                SELECT COALESCE(delivered_at, attempted_at) as ts
+                FROM alert_deliveries
+                WHERE app_id = ?
+                  AND dry_run = 0
+                  AND status = 'sent'
+                ORDER BY attempted_at DESC, id DESC
+                LIMIT 1
+                """,
+                (app_id.strip(),),
+            )
+            row_sent = cur_sent.fetchone()
+            latest_success = str(row_sent["ts"]) if row_sent and row_sent["ts"] else None
+
+            cur_failed = conn.execute(
+                """
+                SELECT attempted_at as ts
+                FROM alert_deliveries
+                WHERE app_id = ?
+                  AND dry_run = 0
+                  AND status = 'failed'
+                ORDER BY attempted_at DESC, id DESC
+                LIMIT 1
+                """,
+                (app_id.strip(),),
+            )
+            row_failed = cur_failed.fetchone()
+            latest_failure = str(row_failed["ts"]) if row_failed and row_failed["ts"] else None
+
+            return latest_success, latest_failure
+
+    def get_latest_real_attempt_status(self, app_id: str) -> str | None:
+        """Returns the status ('sent' or 'failed') of the most recent real attempt, or None."""
+        with self._connection() as conn:
+            cur = conn.execute(
+                """
+                SELECT status
+                FROM alert_deliveries
+                WHERE app_id = ?
+                  AND dry_run = 0
+                  AND status IN ('sent', 'failed')
+                ORDER BY attempted_at DESC, id DESC
+                LIMIT 1
+                """,
+                (app_id.strip(),),
+            )
+            row = cur.fetchone()
+            return str(row["status"]).strip().lower() if row else None
+
+    def get_unresolved_failure_count(self, app_id: str) -> int:
+        """Computes consecutive failures since the most recent successful sent attempt."""
+        with self._connection() as conn:
+            cur = conn.execute(
+                """
+                SELECT COUNT(*) as cnt
+                FROM alert_deliveries
+                WHERE app_id = ?
+                  AND dry_run = 0
+                  AND status = 'failed'
+                  AND id > (
+                      SELECT COALESCE(MAX(id), 0)
+                      FROM alert_deliveries
+                      WHERE app_id = ? AND dry_run = 0 AND status = 'sent'
+                  )
+                """,
+                (app_id.strip(), app_id.strip()),
+            )
+            row = cur.fetchone()
+            return int(row["cnt"]) if row else 0
+
     @staticmethod
     def _row_to_record(row: sqlite3.Row) -> DeliveryRecord:
         reasons_raw = row["reasons_json"]
@@ -319,6 +439,9 @@ class AlertDeliveryStore:
                     reasons = [str(x) for x in parsed]
             except Exception:
                 pass
+
+        keys = row.keys()
+        is_recovery = bool(row["is_recovery"]) if "is_recovery" in keys else False
 
         return DeliveryRecord(
             id=int(row["id"]),
@@ -339,6 +462,7 @@ class AlertDeliveryStore:
             message_name=row["message_name"],
             reasons=reasons,
             dry_run=bool(row["dry_run"]),
+            is_recovery=is_recovery,
         )
 
     def close(self) -> None:

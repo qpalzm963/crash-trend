@@ -408,7 +408,7 @@ class AlertDeliveryRecordItem(TypedDict):
 
 
 class AlertDeliveryHealthData(TypedDict):
-    status: Literal["healthy", "degraded", "no_data"]
+    status: Literal["healthy", "degraded", "no_data", "unavailable"]
     provider: str
     sent_24h: int
     failed_24h: int
@@ -416,6 +416,7 @@ class AlertDeliveryHealthData(TypedDict):
     latest_success_at: str | None
     latest_failure_at: str | None
     unresolved_failures: NotRequired[int]
+    error_diagnostic: NotRequired[str | None]
 
 
 class AlertDeliveryAppData(TypedDict):
@@ -851,8 +852,8 @@ def validate_alert_delivery(ad: Any, errors: list[str], p: str = "") -> None:
         if not isinstance(h, dict):
             errors.append(f"{p}alert_delivery.health must be an object")
         else:
-            if "status" in h and h["status"] not in {"healthy", "degraded", "no_data"}:
-                errors.append(f"{p}alert_delivery.health.status must be one of: healthy, degraded, no_data")
+            if "status" in h and h["status"] not in {"healthy", "degraded", "no_data", "unavailable"}:
+                errors.append(f"{p}alert_delivery.health.status must be one of: healthy, degraded, no_data, unavailable")
             for cnt_f in ("sent_24h", "failed_24h", "suppressed_24h"):
                 if cnt_f in h and (not isinstance(h[cnt_f], int) or h[cnt_f] < 0):
                     errors.append(f"{p}alert_delivery.health.{cnt_f} must be a non-negative integer")
@@ -860,6 +861,8 @@ def validate_alert_delivery(ad: Any, errors: list[str], p: str = "") -> None:
                 errors.append(f"{p}alert_delivery.health.latest_success_at must be a string or null")
             if "latest_failure_at" in h and h["latest_failure_at"] is not None and not isinstance(h["latest_failure_at"], str):
                 errors.append(f"{p}alert_delivery.health.latest_failure_at must be a string or null")
+            if "error_diagnostic" in h and h["error_diagnostic"] is not None and not isinstance(h["error_diagnostic"], str):
+                errors.append(f"{p}alert_delivery.health.error_diagnostic must be a string or null")
     if "recent" in ad:
         rec = ad["recent"]
         if not isinstance(rec, list):

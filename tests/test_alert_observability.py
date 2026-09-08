@@ -60,6 +60,7 @@ def _insert_record(
     error_message: str | None = None,
     dry_run: bool = False,
     reasons: list[str] | None = None,
+    is_recovery: bool = False,
 ) -> int:
     if status == "suppressed":
         return store.record_suppressed(
@@ -73,6 +74,7 @@ def _insert_record(
             dry_run=dry_run,
             attempted_at=attempted_at,
             reasons=reasons,
+            is_recovery=is_recovery,
         )
     rid = store.record_attempt(
         app_id=app_id,
@@ -84,6 +86,7 @@ def _insert_record(
         attempted_at=attempted_at,
         dry_run=dry_run,
         reasons=reasons,
+        is_recovery=is_recovery,
     )
     store.update_result(
         record_id=rid,
@@ -161,32 +164,33 @@ class TestAlertDeliveryProjection(unittest.TestCase):
         self.assertEqual(item.suppression_reason, "Suppressed: in cooldown (32m remaining)")
         self.assertFalse(item.is_recovery)
 
-    def test_record_to_delivery_item_recovery_detection(self) -> None:
-        # Gate status pass -> inherently recovery
-        rec_pass = DeliveryRecord(
+    def test_record_to_delivery_item_authoritative_recovery(self) -> None:
+        # 1. Normal PASS suppression (PASS with no prior failure) -> is_recovery MUST be False
+        rec_pass_no_prior = DeliveryRecord(
             id=3,
             app_id="app1",
             platform="ios",
             version="2.0.0",
             provider="google_chat",
             alert_fingerprint="fp3",
-            status="sent",
-            attempt_count=1,
+            status="suppressed",
+            attempt_count=0,
             attempted_at="2026-09-08T12:00:00Z",
-            delivered_at="2026-09-08T12:00:01Z",
-            http_status=200,
-            error_code=None,
-            error_message=None,
+            delivered_at=None,
+            http_status=None,
+            error_code="SUPPRESSED",
+            error_message="Status 'pass' is not in configured notify_on list ['warn', 'fail']",
             thread_key=None,
             message_name=None,
             gate_status="pass",
             reasons=[],
             dry_run=False,
+            is_recovery=False,
         )
-        item_pass = record_to_delivery_item(rec_pass)
-        self.assertTrue(item_pass.is_recovery)
+        item_pass = record_to_delivery_item(rec_pass_no_prior)
+        self.assertFalse(item_pass.is_recovery)
 
-        # Gate status fail with recover in text
+        # 2. Genuine recovery -> is_recovery MUST be True
         rec_rec = DeliveryRecord(
             id=4,
             app_id="app1",
@@ -200,15 +204,66 @@ class TestAlertDeliveryProjection(unittest.TestCase):
             delivered_at="2026-09-08T13:00:01Z",
             http_status=200,
             error_code=None,
-            error_message="Quality recovered to acceptable limits",
+            error_message="Quality recovered to pass after previous FAIL alert",
             thread_key=None,
             message_name=None,
-            gate_status="warn",
+            gate_status="pass",
             reasons=[],
             dry_run=False,
+            is_recovery=True,
         )
         item_rec = record_to_delivery_item(rec_rec)
         self.assertTrue(item_rec.is_recovery)
+
+    def test_legacy_dirty_record_projection_defensive_sanitization(self) -> None:
+        rec = DeliveryRecord(
+            id=99,
+            app_id="app-audit",
+            platform="ios",
+            version="1.2.3",
+            provider="google_chat",
+            alert_fingerprint="fp99",
+            status="failed",
+            attempt_count=3,
+            attempted_at="2026-09-08T10:00:00Z",
+            delivered_at=None,
+            http_status=401,
+            error_code="Bearer ya29.SecretBearerToken12345",
+            error_message="Authorization: Bearer secret-auth-token and key=secret_key_123 and token=secret_tok_456 and https://hooks.slack.com/services/T00/B00/X00 and user_id=12345678-1234-1234-1234-123456789abc",
+            thread_key="spaces/AAA?token=secret_thread_token&installation_id=87654321-4321-4321-4321-cba987654321",
+            message_name="spaces/AAA/messages/CCC?key=mysecret_msg_key",
+            gate_status="fail",
+            reasons=[
+                "crash drop for device 11112222-3333-4444-5555-666677778888",
+                "api_key=exposed_api_key_val",
+            ],
+            dry_run=False,
+            is_recovery=False,
+        )
+        item = record_to_delivery_item(rec)
+        item_dict = item.to_dict()
+
+        # Verify no raw secrets, auth headers, URLs, or UUIDs exist anywhere in exported dict
+        dict_json = json.dumps(item_dict)
+        self.assertNotIn("ya29.SecretBearerToken12345", dict_json)
+        self.assertNotIn("secret-auth-token", dict_json)
+        self.assertNotIn("secret_key_123", dict_json)
+        self.assertNotIn("secret_tok_456", dict_json)
+        self.assertNotIn("hooks.slack.com", dict_json)
+        self.assertNotIn("12345678-1234-1234-1234-123456789abc", dict_json)
+        self.assertNotIn("secret_thread_token", dict_json)
+        self.assertNotIn("87654321-4321-4321-4321-cba987654321", dict_json)
+        self.assertNotIn("mysecret_msg_key", dict_json)
+        self.assertNotIn("11112222-3333-4444-5555-666677778888", dict_json)
+        self.assertNotIn("exposed_api_key_val", dict_json)
+
+        # Verify safe replacements
+        self.assertIn("<redacted>", str(item.error_code))
+        self.assertIn("<redacted>", str(item.error_message))
+        self.assertIn("<redacted-webhook-url>", str(item.error_message))
+        self.assertIn("<redacted-id>", str(item.error_message))
+        self.assertIn("<redacted-id>", item.reasons[0])
+        self.assertIn("api_key=<redacted>", item.reasons[1])
 
 
 class TestAlertDeliveryQueries(unittest.TestCase):
@@ -448,6 +503,7 @@ class TestAlertDeliveryHealth(unittest.TestCase):
             http_status=200,
             error_message="Quality recovered to PASS",
             dry_run=False,
+            is_recovery=True,
         )
         h = summarize_alert_delivery_health("test-app", store=self.store, now=self.ref_now)
         self.assertEqual(h.status, "healthy")
@@ -457,6 +513,55 @@ class TestAlertDeliveryHealth(unittest.TestCase):
         self.assertEqual(h.latest_success_at, "2026-09-08T11:00:01Z")
         self.assertEqual(h.latest_failure_at, "2026-09-08T09:00:00Z")
 
+    def test_health_large_volume_no_limit_500_truncation(self) -> None:
+        # Seed 600 records within 24h: 550 suppressed, 30 failed, 20 sent
+        # With limit=500, old code would truncate at 500 records and give wrong counts
+        for i in range(550):
+            _insert_record(
+                self.store,
+                app_id="test-app",
+                platform="android",
+                version=f"1.0.{i}",
+                status="suppressed",
+                gate_status="warn",
+                attempted_at="2026-09-08T10:00:00Z",
+                error_message="in cooldown",
+            )
+        for i in range(30):
+            _insert_record(
+                self.store,
+                app_id="test-app",
+                platform="android",
+                version=f"2.0.{i}",
+                status="failed",
+                gate_status="fail",
+                attempted_at="2026-09-08T10:30:00Z",
+                error_code="HTTP_500",
+                error_message="Internal Error",
+            )
+        for i in range(20):
+            _insert_record(
+                self.store,
+                app_id="test-app",
+                platform="android",
+                version=f"3.0.{i}",
+                status="sent",
+                gate_status="pass",
+                attempted_at="2026-09-08T11:00:00Z",
+                delivered_at="2026-09-08T11:00:01Z",
+                http_status=200,
+            )
+
+        h = summarize_alert_delivery_health("test-app", store=self.store, now=self.ref_now)
+        # Total records = 600. All 600 must be accurately counted without 500 truncation!
+        self.assertEqual(h.suppressed_24h, 550)
+        self.assertEqual(h.failed_24h, 30)
+        self.assertEqual(h.sent_24h, 20)
+        self.assertEqual(h.status, "healthy")
+        self.assertEqual(h.unresolved_failures, 0)
+        self.assertEqual(h.latest_success_at, "2026-09-08T11:00:01Z")
+        self.assertEqual(h.latest_failure_at, "2026-09-08T10:30:00Z")
+
 
 class TestStoreResilience(unittest.TestCase):
     """Tests non-blocking resilience against missing or corrupted stores."""
@@ -465,6 +570,7 @@ class TestStoreResilience(unittest.TestCase):
         non_existent = Path("/path/to/definitely/non_existent_alert_delivery.sqlite3")
         bundle = get_alert_observability_bundle("dummy-app", custom_path=non_existent)
         self.assertEqual(bundle["health"]["status"], "no_data")
+        self.assertIsNone(bundle["health"].get("error_diagnostic"))
         self.assertEqual(bundle["recent"], [])
 
         items = get_recent_alert_deliveries("dummy-app", custom_path=non_existent)
@@ -477,7 +583,8 @@ class TestStoreResilience(unittest.TestCase):
 
         try:
             bundle = get_alert_observability_bundle("dummy-app", custom_path=corrupt_path)
-            self.assertEqual(bundle["health"]["status"], "no_data")
+            self.assertEqual(bundle["health"]["status"], "unavailable")
+            self.assertIsNotNone(bundle["health"].get("error_diagnostic"))
             self.assertEqual(bundle["recent"], [])
 
             items = get_recent_alert_deliveries("dummy-app", custom_path=corrupt_path)
@@ -504,6 +611,7 @@ class TestAlertObservabilityCLI(unittest.TestCase):
             delivered_at="2026-09-08T10:00:01Z",
             http_status=200,
             dry_run=False,
+            is_recovery=True,
         )
         _insert_record(
             self.store,
@@ -739,6 +847,118 @@ class TestDashboardUIIntegration(unittest.TestCase):
         self.assertIn("alert_deliveries", js)
         self.assertIn("通知發送紀錄時間軸 (Alert Delivery Timeline)", js)
         self.assertIn("復原通知 ↗", js)
+
+
+class TestDispatcherRecoveryAuthority(unittest.TestCase):
+    """Tests end-to-end authoritative is_recovery handling by AlertDispatcher and storage."""
+
+    def test_pass_with_no_prior_failure_persists_is_recovery_false(self) -> None:
+        from unittest.mock import MagicMock
+
+        from crash_trend.alerts.dispatcher import AlertDispatcher
+        from crash_trend.alerts.policy import AlertPolicy
+        from tests.test_alerts import make_sample_artifact
+
+        store = AlertDeliveryStore(db_path=":memory:")
+        artifact = make_sample_artifact(
+            app_id="demo-auth",
+            platform="android",
+            version="1.0.0",
+            gate_status="pass",
+            rule_results=[],
+        )
+        policy = AlertPolicy(enabled=True, notify_on=("fail", "warn"), notify_recovery=True)
+        mock_provider = MagicMock()
+
+        dispatcher = AlertDispatcher(store=store, provider=mock_provider)
+        summary = dispatcher.dispatch(
+            app_id="demo-auth",
+            artifact=artifact,
+            policy=policy,
+            dry_run=False,
+        )
+
+        self.assertEqual(summary.total_suppressed, 1)
+        self.assertFalse(summary.decisions["android"].is_recovery)
+
+        # Inspect SQLite row directly
+        records = store.get_history("demo-auth")
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].status, "suppressed")
+        self.assertEqual(records[0].gate_status, "pass")
+        self.assertFalse(records[0].is_recovery)
+
+        # Inspect projected AlertDeliveryItem
+        items = get_recent_alert_deliveries("demo-auth", store=store)
+        self.assertEqual(len(items), 1)
+        self.assertFalse(items[0].is_recovery)
+        self.assertFalse(items[0].to_dict()["is_recovery"])
+
+    def test_pass_with_prior_failure_persists_is_recovery_true(self) -> None:
+        from unittest.mock import MagicMock
+
+        from crash_trend.alerts.dispatcher import AlertDispatcher
+        from crash_trend.alerts.models import DeliveryResult
+        from crash_trend.alerts.policy import AlertPolicy
+        from tests.test_alerts import make_sample_artifact
+
+        store = AlertDeliveryStore(db_path=":memory:")
+        policy = AlertPolicy(enabled=True, notify_on=("fail", "warn"), notify_recovery=True)
+        mock_provider = MagicMock()
+        mock_provider.send.return_value = DeliveryResult(
+            status="sent",
+            attempt_count=1,
+            delivered_at="2026-09-08T10:00:01Z",
+            http_status=200,
+        )
+
+        # 1. First evaluation: FAIL -> sent
+        art_fail = make_sample_artifact(
+            app_id="demo-auth",
+            platform="android",
+            version="1.0.0",
+            gate_status="fail",
+        )
+        dispatcher = AlertDispatcher(store=store, provider=mock_provider)
+        summary1 = dispatcher.dispatch(
+            app_id="demo-auth",
+            artifact=art_fail,
+            policy=policy,
+            dry_run=False,
+        )
+        self.assertEqual(summary1.total_sent, 1)
+        self.assertFalse(summary1.decisions["android"].is_recovery)
+
+        # 2. Second evaluation: PASS -> Recovery sent
+        art_pass = make_sample_artifact(
+            app_id="demo-auth",
+            platform="android",
+            version="1.0.0",
+            gate_status="pass",
+            rule_results=[],
+        )
+        summary2 = dispatcher.dispatch(
+            app_id="demo-auth",
+            artifact=art_pass,
+            policy=policy,
+            dry_run=False,
+        )
+        self.assertEqual(summary2.total_sent, 1)
+        self.assertTrue(summary2.decisions["android"].is_recovery)
+
+        # Inspect SQLite row
+        records = store.get_history("demo-auth")
+        self.assertEqual(len(records), 2)
+        # records are ordered latest first
+        latest = records[0]
+        self.assertEqual(latest.status, "sent")
+        self.assertEqual(latest.gate_status, "pass")
+        self.assertTrue(latest.is_recovery)
+
+        # Inspect projected AlertDeliveryItem
+        items = get_recent_alert_deliveries("demo-auth", store=store)
+        self.assertTrue(items[0].is_recovery)
+        self.assertTrue(items[0].to_dict()["is_recovery"])
 
 
 if __name__ == "__main__":

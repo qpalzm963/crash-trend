@@ -137,6 +137,10 @@ function renderAlertDeliveryObservability() {
     hBadgeClass = "badge-fatal";
     hBadgeText = "異常降級 (DEGRADED)";
     hIcon = "✕";
+  } else if (h.status === "unavailable") {
+    hBadgeClass = "badge-fatal";
+    hBadgeText = "無法讀取 (UNAVAILABLE)";
+    hIcon = "⚠";
   }
 
   const lastSuccess = h.latest_success_at ? esc(formatFreshness(h.latest_success_at, DATA.generated_at)) : "無成功紀錄";
@@ -152,6 +156,7 @@ function renderAlertDeliveryObservability() {
         <div>最後成功發送: <b>${lastSuccess}</b></div>
         <div>最後發送失敗: <b>${lastFailure}</b></div>
         ${h.unresolved_failures > 0 ? `<div style="color:var(--fatal-color);font-weight:600">※ 連續失敗次數: ${h.unresolved_failures} 次</div>` : ""}
+        ${h.error_diagnostic ? `<div style="color:var(--fatal-color);font-size:11.5px;padding:4px 8px;background:var(--bg-subtle);border-radius:var(--radius-sm)">診斷訊息: ${esc(h.error_diagnostic)}</div>` : ""}
       </div>
     </div>
     <div class="chart-card col-6">

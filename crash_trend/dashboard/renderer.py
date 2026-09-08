@@ -270,8 +270,28 @@ def assemble_bundle_from_apps(cfg: dict | None = None, root_dir: str | Path | No
                                     deliveries = get_release_alert_history(app_id, c_item["platform"], c_item["version"], limit=20, custom_path=alert_db)
                                     if deliveries:
                                         c_item["alert_deliveries"] = [d.to_dict() for d in deliveries]
-            except Exception:
-                pass
+            except Exception as e:
+                from crash_trend.alerts.state import sanitize_audit_text
+                safe_err = sanitize_audit_text(f"Dashboard alert enrichment failed: {e}")
+                fallback_bundle = {
+                    "provider": "google_chat",
+                    "health": {
+                        "status": "unavailable",
+                        "provider": "google_chat",
+                        "sent_24h": 0,
+                        "failed_24h": 0,
+                        "suppressed_24h": 0,
+                        "latest_success_at": None,
+                        "latest_failure_at": None,
+                        "unresolved_failures": 0,
+                        "error_diagnostic": safe_err,
+                    },
+                    "recent": [],
+                }
+                a_data["alert_delivery"] = fallback_bundle
+                for p_val in (a_data.get("periods") or {}).values():
+                    if isinstance(p_val, dict):
+                        p_val["alert_delivery"] = fallback_bundle
 
 
 
