@@ -318,6 +318,85 @@ class TestReleaseGateHistoryStore(unittest.TestCase):
         h3 = self.store.get_release_gate_history(app, pf, "3.0.0")
         self.assertEqual(len(h3), 1)
 
+    def test_prune_preserves_latest_even_when_inserted_out_of_order(self) -> None:
+        """Verifies regression fix: out-of-order pipeline inserts preserve true authoritative latest evaluation.
+
+        If a newer evaluation (10:05) is inserted first (smaller id), and a delayed older evaluation (10:00)
+        is inserted later (larger id), pruning older records MUST preserve the true latest evaluation (10:05),
+        NOT the row with MAX(id).
+        """
+        app = "out_of_order_app"
+        pf = "android"
+        ver = "4.0.0"
+
+        # 1. Insert newer evaluation first (10:05 UTC) -> gets smaller id
+        snap_newer = GateSnapshot(
+            app_id=app,
+            platform=pf,
+            version=ver,
+            previous_version=None,
+            gate_status="pass",
+            sample_sufficient=True,
+            policy_version="1.0",
+            policy_identity="",
+            comparison_window="30d",
+            evaluated_at="2020-01-01T10:05:00Z",
+            evaluation_key="",
+            triggered_reasons=[],
+            rule_results=[],
+            normalized_metrics={},
+            summary="Newer evaluation (10:05)",
+        )
+        saved_newer, _ = self.store.record_snapshot(snap_newer)
+
+        # 2. Insert delayed older evaluation later (10:00 UTC) -> gets larger id
+        snap_older = GateSnapshot(
+            app_id=app,
+            platform=pf,
+            version=ver,
+            previous_version=None,
+            gate_status="fail",
+            sample_sufficient=True,
+            policy_version="1.0",
+            policy_identity="",
+            comparison_window="30d",
+            evaluated_at="2020-01-01T10:00:00Z",
+            evaluation_key="",
+            triggered_reasons=["crash_rate"],
+            rule_results=[],
+            normalized_metrics={},
+            summary="Delayed older evaluation (10:00)",
+        )
+        saved_older, _ = self.store.record_snapshot(snap_older)
+
+        # Verify that older evaluation has larger id than newer evaluation
+        self.assertIsNotNone(saved_newer.id)
+        self.assertIsNotNone(saved_older.id)
+        self.assertGreater(saved_older.id, saved_newer.id)
+
+        # Confirm authoritative latest before pruning is the newer one (10:05, pass)
+        latest_before = self.store.get_latest_release_gate_state(app, pf, ver)
+        self.assertIsNotNone(latest_before)
+        self.assertEqual(latest_before.evaluated_at, "2020-01-01T10:05:00Z")
+        self.assertEqual(latest_before.gate_status, "pass")
+
+        # 3. Execute pruning before 2025-01-01
+        deleted = self.store.prune_snapshots(app, before="2025-01-01T00:00:00Z")
+        self.assertEqual(deleted, 1)
+
+        # 4. Invariant check: The remaining record MUST be the authoritative latest (10:05, pass),
+        # NOT the one with MAX(id) (10:00, fail)
+        history = self.store.get_release_gate_history(app, pf, ver)
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0].id, saved_newer.id)
+        self.assertEqual(history[0].evaluated_at, "2020-01-01T10:05:00Z")
+        self.assertEqual(history[0].gate_status, "pass")
+
+        latest_after = self.store.get_latest_release_gate_state(app, pf, ver)
+        self.assertIsNotNone(latest_after)
+        self.assertEqual(latest_after.evaluated_at, "2020-01-01T10:05:00Z")
+        self.assertEqual(latest_after.gate_status, "pass")
+
     def test_timeline_state_evolution(self) -> None:
         """Verifies sequential timeline tracking: insufficient -> warn -> fail -> pass."""
         app = "test_app"

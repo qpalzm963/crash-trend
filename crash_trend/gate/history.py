@@ -625,7 +625,8 @@ class ReleaseGateHistoryStore:
 
         Retention Policy (Scope I):
         - Default: Full retention, append-only.
-        - Invariant: The latest snapshot (MAX(id) group by platform, version) is NEVER pruned.
+        - Invariant: The authoritative latest snapshot (ROW_NUMBER() OVER (PARTITION BY platform, version
+          ORDER BY evaluated_at DESC, id DESC) = 1) is NEVER pruned.
 
         Args:
             app_id: Application identifier.
@@ -651,10 +652,14 @@ class ReleaseGateHistoryStore:
                     WHERE app_id = ?
                       AND evaluated_at < ?
                       AND id NOT IN (
-                          SELECT MAX(id)
-                          FROM release_gate_snapshots
-                          WHERE app_id = ?
-                          GROUP BY platform, version
+                          SELECT id FROM (
+                              SELECT id, ROW_NUMBER() OVER (
+                                  PARTITION BY platform, version
+                                  ORDER BY evaluated_at DESC, id DESC
+                              ) AS rn
+                              FROM release_gate_snapshots
+                              WHERE app_id = ?
+                          ) WHERE rn = 1
                       )
                     """,
                     (app_id.strip(), cutoff, app_id.strip()),
