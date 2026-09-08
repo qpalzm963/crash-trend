@@ -147,8 +147,9 @@ def _resolve_store(
     app_id: str,
     store: AlertDeliveryStore | None = None,
     custom_path: Path | None = None,
+    read_only: bool = True,
 ) -> tuple[AlertDeliveryStore | None, bool, str | None]:
-    """Resolves or opens an AlertDeliveryStore safely.
+    """Resolves or opens an AlertDeliveryStore safely in read-only mode.
 
     Returns:
         (store_instance, should_close_when_done, error_diagnostic)
@@ -162,7 +163,7 @@ def _resolve_store(
         return None, False, None
 
     try:
-        s = AlertDeliveryStore(db_path, app_id=app_id)
+        s = AlertDeliveryStore(db_path, app_id=app_id, read_only=read_only)
         return s, True, None
     except Exception as e:
         diag = sanitize_audit_text(f"Corrupted or unreadable alert store at '{db_path.name}': {e}")

@@ -265,6 +265,41 @@ class TestAlertDeliveryProjection(unittest.TestCase):
         self.assertIn("<redacted-id>", item.reasons[0])
         self.assertIn("api_key=<redacted>", item.reasons[1])
 
+    def test_authorization_header_sanitization_schemes(self) -> None:
+        """Tests that Basic, ApiKey, Digest, and custom auth header credentials do not leak."""
+        test_cases = [
+            ("Authorization: Basic dXNlcjpwYXNz", "dXNlcjpwYXNz"),
+            ("Authorization: ApiKey SECRET_API_KEY_12345", "SECRET_API_KEY_12345"),
+            ('Authorization: Digest username="Mufasa", realm="myrealm", nonce="dcd98b7102dd2f0e8b11d0f600bfb0c093"', "Mufasa"),
+            ('{"Authorization": "Basic c2VjcmV0dXNlcjpwYXNz", "Content-Type": "application/json"}', "c2VjcmV0dXNlcjpwYXNz"),
+        ]
+        for header_text, sensitive_token in test_cases:
+            rec = DeliveryRecord(
+                id=101,
+                app_id="app-auth-test",
+                platform="ios",
+                version="1.0.0",
+                provider="google_chat",
+                alert_fingerprint="fp101",
+                status="failed",
+                attempt_count=1,
+                attempted_at="2026-09-08T10:00:00Z",
+                delivered_at=None,
+                http_status=401,
+                error_code="UNAUTHORIZED",
+                error_message=f"Request failed. {header_text}",
+                thread_key=None,
+                message_name=None,
+                gate_status="fail",
+                reasons=[],
+                dry_run=False,
+                is_recovery=False,
+            )
+            item = record_to_delivery_item(rec)
+            d = item.to_dict()
+            self.assertNotIn(sensitive_token, json.dumps(d))
+            self.assertIn("<redacted>", str(item.error_message))
+
 
 class TestAlertDeliveryQueries(unittest.TestCase):
     """Tests query layer and store integration."""
@@ -562,6 +597,43 @@ class TestAlertDeliveryHealth(unittest.TestCase):
         self.assertEqual(h.latest_success_at, "2026-09-08T11:00:01Z")
         self.assertEqual(h.latest_failure_at, "2026-09-08T10:30:00Z")
 
+    def test_health_unresolved_failures_out_of_order_insert_uses_attempted_at_authority(self) -> None:
+        """Tests that unresolved failure count follows (attempted_at DESC, id DESC) authority,
+        even when a later attempt has a smaller autoincrement ID due to worker delay.
+        """
+        # 1. 11:00 FAILED is inserted first (gets id=1)
+        _insert_record(
+            self.store,
+            app_id="test-app",
+            platform="android",
+            version="1.0.0",
+            status="failed",
+            gate_status="fail",
+            attempted_at="2026-09-08T11:00:00Z",
+            error_code="HTTP_500",
+            error_message="Gateway Timeout",
+        )
+        # 2. 10:00 SENT was delayed and committed second (gets id=2)
+        _insert_record(
+            self.store,
+            app_id="test-app",
+            platform="android",
+            version="1.0.0",
+            status="sent",
+            gate_status="fail",
+            attempted_at="2026-09-08T10:00:00Z",
+            delivered_at="2026-09-08T10:00:01Z",
+            http_status=200,
+        )
+
+        # Under (attempted_at DESC, id DESC), 11:00 FAILED (id=1) is strictly newer than 10:00 SENT (id=2).
+        h = summarize_alert_delivery_health("test-app", store=self.store, now=self.ref_now)
+        self.assertEqual(h.status, "degraded")
+        # Unresolved failures must be 1, NOT 0 (which occurred when comparing id > MAX(id of sent))
+        self.assertEqual(h.unresolved_failures, 1)
+        self.assertEqual(h.latest_failure_at, "2026-09-08T11:00:00Z")
+        self.assertEqual(h.latest_success_at, "2026-09-08T10:00:01Z")
+
 
 class TestStoreResilience(unittest.TestCase):
     """Tests non-blocking resilience against missing or corrupted stores."""
@@ -591,6 +663,72 @@ class TestStoreResilience(unittest.TestCase):
             self.assertEqual(items, [])
         finally:
             corrupt_path.unlink(missing_ok=True)
+
+    def test_readonly_store_and_legacy_db_without_is_recovery(self) -> None:
+        """Verifies that observability layer reads legacy databases in read-only mode (chmod 444)
+        without attempting WAL pragma, table creation, or ALTER TABLE migrations.
+        """
+        import os
+        import sqlite3
+
+        with tempfile.NamedTemporaryFile(suffix=".sqlite3", delete=False) as f:
+            legacy_db_path = Path(f.name)
+
+        conn = sqlite3.connect(str(legacy_db_path))
+        conn.execute("""
+            CREATE TABLE alert_deliveries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                app_id TEXT NOT NULL,
+                platform TEXT NOT NULL,
+                version TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                alert_fingerprint TEXT NOT NULL,
+                gate_status TEXT NOT NULL,
+                attempted_at TEXT NOT NULL,
+                delivered_at TEXT,
+                status TEXT NOT NULL,
+                attempt_count INTEGER NOT NULL DEFAULT 1,
+                http_status INTEGER,
+                error_code TEXT,
+                error_message TEXT,
+                thread_key TEXT,
+                message_name TEXT,
+                reasons_json TEXT,
+                dry_run INTEGER NOT NULL DEFAULT 0
+            );
+        """)
+        conn.execute("""
+            INSERT INTO alert_deliveries (
+                app_id, platform, version, provider, alert_fingerprint,
+                gate_status, attempted_at, delivered_at, status, attempt_count, dry_run
+            ) VALUES (
+                'legacy-app', 'android', '1.0.0', 'google_chat', 'fp_legacy',
+                'pass', '2026-09-08T10:00:00Z', '2026-09-08T10:00:01Z', 'sent', 1, 0
+            );
+        """)
+        conn.commit()
+        conn.close()
+
+        # Set read-only filesystem permission (chmod 444)
+        os.chmod(legacy_db_path, 0o444)
+
+        try:
+            # Observability layer should succeed in read-only mode without error
+            bundle = get_alert_observability_bundle("legacy-app", custom_path=legacy_db_path)
+            self.assertEqual(bundle["health"]["status"], "healthy")
+            self.assertEqual(bundle["health"]["sent_24h"], 1)
+            self.assertEqual(len(bundle["recent"]), 1)
+            # Legacy table has no is_recovery column -> must safely fallback to False
+            self.assertFalse(bundle["recent"][0]["is_recovery"])
+
+            # Verify no ALTER TABLE was attempted and schema is still legacy without is_recovery
+            read_conn = sqlite3.connect(f"file:{legacy_db_path.resolve().as_posix()}?mode=ro", uri=True)
+            cols = [col[1] for col in read_conn.execute("PRAGMA table_info(alert_deliveries)").fetchall()]
+            read_conn.close()
+            self.assertNotIn("is_recovery", cols)
+        finally:
+            os.chmod(legacy_db_path, 0o666)
+            legacy_db_path.unlink(missing_ok=True)
 
 
 class TestAlertObservabilityCLI(unittest.TestCase):
