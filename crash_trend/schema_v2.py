@@ -343,6 +343,14 @@ class ReleaseIssueLifecycle(TypedDict):
     resolved_issues: NotRequired[list[str]]
 
 
+class ReleaseGateSummary(TypedDict):
+    status: Literal["pass", "warn", "fail", "insufficient_data", "baseline"]
+    should_alert: bool
+    alert_severity: Literal["none", "warning", "critical"]
+    alert_summary: str
+    rules_triggered: list[str]
+
+
 class ReleaseCatalogItem(TypedDict):
     version: str
     platform: Literal["ios", "android"]
@@ -359,6 +367,7 @@ class ReleaseCatalogItem(TypedDict):
     stability_status: NotRequired[str | None]
     issue_lifecycle: NotRequired[ReleaseIssueLifecycle]
     vs_previous: NotRequired[PreviousReleaseComparison | None]
+    release_gate: NotRequired[ReleaseGateSummary | None]
 
 
 class CatalogVersionHistory(TypedDict):
@@ -674,6 +683,19 @@ def validate_release_catalog(catalog: Any, errors: list[str], p: str = "") -> No
                 for cnt_f in ("introduced_count", "persistent_count", "regressed_count", "resolved_count"):
                     if cnt_f in il and (not isinstance(il[cnt_f], int) or il[cnt_f] < 0):
                         errors.append(f"{cp}issue_lifecycle.{cnt_f} must be a non-negative integer")
+
+        if "release_gate" in item and item["release_gate"] is not None:
+            rg = item["release_gate"]
+            if not isinstance(rg, dict):
+                errors.append(f"{cp}release_gate must be an object or null")
+            else:
+                valid_gate_statuses = {"pass", "warn", "fail", "insufficient_data", "baseline"}
+                if "status" in rg and rg["status"] not in valid_gate_statuses:
+                    errors.append(f"{cp}release_gate.status must be one of: {', '.join(sorted(valid_gate_statuses))}")
+                if "should_alert" in rg and not isinstance(rg["should_alert"], bool):
+                    errors.append(f"{cp}release_gate.should_alert must be a boolean")
+                if "alert_severity" in rg and rg["alert_severity"] not in {"none", "warning", "critical"}:
+                    errors.append(f"{cp}release_gate.alert_severity must be one of: none, warning, critical")
 
 
 def validate_historical_catalog(data: dict) -> list[str]:

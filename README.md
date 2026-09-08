@@ -405,6 +405,33 @@ python3 -m crash_trend.ai_config_service --serve 8080
 
 ---
 
+## 版本品質退化閘門 (Release Regression Gate - Issue #57)
+
+系統內建確定性（Deterministic）版本退化判定閘門，嚴格依據正規化指標（Normalized Metrics）評估發佈版本健康度，AI 僅於下游解釋，絕不介入判定 PASS / FAIL：
+
+- **判定狀態**：`pass`、`warn`、`fail`、`insufficient_data`（樣本數不足，絕不誤判 pass/fail）、`baseline`（平台首發版本）。
+- **評估指標**：
+  - 工作階段崩潰率上升幅度 (`crash_rate_change_pct`：預設 +10% 預警, +25% 失敗阻擋)
+  - 無崩潰用戶率下降幅度 (`crash_free_users_drop`：預設 0.5% 預警, 1.5% 失敗阻擋)
+  - Fatal / ANR 率上升幅度 (`fatal_rate_change_pct`, `anr_rate_change_pct`)
+  - 復發問題數與新引入問題數 (`regressed_issues_count`, `introduced_issues_count`)
+- **機器可讀產物**：產出 `out/<app>/release_gate.json`，遵循嚴格 Schema 並落實零 raw user / installation UUID 隱私政策。
+- **CI Quality Gate 整合**：
+  - 單獨執行品質判定：
+    ```bash
+    python3 -m crash_trend.release_gate --app shop_app
+    ```
+  - 搭配 `--fail-on-regression` 進行 CI 自動阻擋：
+    ```bash
+    python3 crash_trend/pipeline_run.py --fail-on-regression
+    ```
+  - **Exit Codes 契約**：
+    - `0`：管線執行成功，且品質閘門為 pass / warn / baseline / insufficient_data（或未加 `--fail-on-regression`）。
+    - `1`：管線執行異常（BigQuery 異常、程式崩潰等運行期錯誤）。
+    - `2`：品質退化阻擋（啟用 `--fail-on-regression` 且任何 App 之 release gate 判定為 `fail`）。
+
+---
+
 ## 週同步與通知
 
 `scripts/weekly_sync.sh` 會：
@@ -438,12 +465,14 @@ crash_trend/
   fetch_issue_details.py # Issue detail / stack trace enrichment
   fetch_sessions.py      # Firebase Sessions / Crash-free metrics
   fetch_stacktraces.py   # Firebase MCP stacktrace cache
+  gate/                  # Release Regression Gate 核心 (policy, evaluator, artifact)
   lifecycle.py           # Issue & Release Catalog lifecycle / 狀態與比較處理
   normalize.py           # Canonical normalization / 歷史資料整理
   pipeline_health.py     # Run Summary、Stage status、錯誤資訊消毒
   pipeline_run.py        # 端到端 Pipeline Orchestrator
   pm_brief.py            # PM-friendly issue 摘要
   post_report.py         # 每月聊天摘要卡
+  release_gate.py        # Release Regression Gate CLI / Standalone runner
   schema_v2.py           # Dashboard V2 TypedDict / schema validation
   versions.py            # App version 比較工具
 

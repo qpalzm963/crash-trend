@@ -73,6 +73,7 @@ def run_pipeline(
     summary_path: Path | None = None,
     skip_dashboard: bool = False,
     verbose: bool = True,
+    fail_on_regression: bool = False,
 ) -> dict[str, Any]:
     """Orchestrates pipeline execution across apps and returns the run summary."""
     cfg = load_config()
@@ -435,8 +436,52 @@ def run_pipeline(
         else:
             tracker.record_stage(app, "surge", "success", t0, t1)
 
+        # -------------------------------------------------------------------
+        # 8. Release Regression Gate (Quality Gate Stage)
+        # -------------------------------------------------------------------
+        t0 = now_utc_iso()
+        if verbose:
+            print(f"--- 8. release_gate: {app}")
+        rc, out, err = run_stage_process([py_exec, "-m", "crash_trend.release_gate", "--app", app])
+        if verbose and out:
+            print(out, end="")
+        t1 = now_utc_iso()
+
+        gate_artifact_path = app_out_dir / "release_gate.json"
+        gate_status = "unknown"
+        should_alert = False
+        alert_summary = ""
+        if gate_artifact_path.is_file():
+            try:
+                g_data = json.loads(gate_artifact_path.read_text(encoding="utf-8"))
+                gate_status = g_data.get("overall_status", "unknown")
+                should_alert = bool(g_data.get("should_alert", False))
+                alert_summary = g_data.get("alert_summary", "")
+            except Exception:
+                pass
+
+        if rc != 0:
+            err_msg = err.strip() or out.strip() or "Release gate execution failed"
+            tracker.record_stage(app, "release_gate", "failed", t0, t1, error_message=err_msg)
+            if verbose:
+                print(f"  [Warning] Release Gate 執行失敗（非業務退化，為執行異常）：{sanitize_error_message(err_msg)}", file=sys.stderr)
+        else:
+            # Stage execution succeeded (business quality is tracked cleanly in details)
+            tracker.record_stage(
+                app,
+                "release_gate",
+                "success",
+                t0,
+                t1,
+                details={
+                    "gate_status": gate_status,
+                    "should_alert": should_alert,
+                    "alert_summary": alert_summary,
+                },
+            )
+
     # -----------------------------------------------------------------------
-    # 8. Build Dashboard (Core Stage)
+    # 9. Build Dashboard (Core Stage)
     # -----------------------------------------------------------------------
     effective_summary_path = summary_path or DEFAULT_RUN_SUMMARY_PATH
     dashboard_rc = 0
@@ -447,7 +492,7 @@ def run_pipeline(
 
         t0 = now_utc_iso()
         if verbose:
-            print("\n--- 8. build_dashboard (Dashboard V2 Bundle)")
+            print("\n--- 9. build_dashboard (Dashboard V2 Bundle)")
         dashboard_rc, out, err = run_stage_process(
             [py_exec, str(ROOT / "crash_trend" / "build_dashboard.py")],
             env={"PIPELINE_RUN_SUMMARY": str(effective_summary_path)},
@@ -513,6 +558,7 @@ def main() -> None:
     parser.add_argument("--days", type=int, default=30, help="回溯天數（預設 30 天）")
     parser.add_argument("--summary-out", type=Path, default=DEFAULT_RUN_SUMMARY_PATH, help="輸出之 pipeline_run.json 路徑")
     parser.add_argument("--skip-dashboard", action="store_true", help="略過 build_dashboard 階段")
+    parser.add_argument("--fail-on-regression", action="store_true", help="若任何 App 版本品質閘門判定為 FAIL，則以 exit code 2 結束")
     parser.add_argument("--quiet", action="store_true", help="減少詳細輸出")
     args = parser.parse_args()
 
@@ -522,11 +568,24 @@ def main() -> None:
         summary_path=args.summary_out,
         skip_dashboard=args.skip_dashboard,
         verbose=not args.quiet,
+        fail_on_regression=args.fail_on_regression,
     )
+
+    has_regression_failure = False
+    for app_sum in summary.get("apps", {}).values():
+        rg_stage = app_sum.get("stages", {}).get("release_gate", {})
+        details = rg_stage.get("details") or {}
+        if details.get("gate_status") == "fail":
+            has_regression_failure = True
+            break
 
     # Return non-zero if overall pipeline status is failed
     if summary["status"] == "failed":
         sys.exit(1)
+
+    if args.fail_on_regression and has_regression_failure:
+        print("\n[GATE REJECTED] 管線偵測到版本品質退化 (FAIL)，因為啟用 --fail-on-regression，以 exit code 2 結束", file=sys.stderr)
+        sys.exit(2)
 
 
 if __name__ == "__main__":

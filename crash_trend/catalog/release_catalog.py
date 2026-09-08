@@ -13,9 +13,11 @@ from typing import Any, Literal, cast
 
 from crash_trend.catalog.comparison import compute_previous_release_comparison
 from crash_trend.catalog.issue_lifecycle import is_version_sample_sufficient
+from crash_trend.gate import evaluate_release, load_gate_policy
 from crash_trend.schema_v2 import (
     PreviousReleaseComparison,
     ReleaseCatalogItem,
+    ReleaseGateSummary,
     ReleaseIssueLifecycle,
     ReleaseRecentHealth,
 )
@@ -137,8 +139,10 @@ def build_release_catalog(
     app_data: dict | None = None,
     platform: str | None = None,
     reference_date: Any | None = None,
+    gate_policy: Any | None = None,
 ) -> list[ReleaseCatalogItem]:
     """Constructs the decoupled persistent release catalog conforming to ReleaseCatalogItem."""
+    eff_policy = gate_policy if gate_policy is not None else load_gate_policy(app_data if isinstance(app_data, dict) else None)
     ref_dt = dt.datetime.now(dt.UTC)
     if reference_date is not None:
         if isinstance(reference_date, dt.datetime):
@@ -379,7 +383,7 @@ def build_release_catalog(
 
             stability_status = vs_previous.get("stability", "baseline") if vs_previous else "baseline"
 
-            catalog_items.append({
+            rel_item: ReleaseCatalogItem = {
                 "version": ver,
                 "platform": cast(Literal["ios", "android"], pf),
                 "first_seen": first_seen,
@@ -395,7 +399,19 @@ def build_release_catalog(
                 "recent_health": recent_health,
                 "issue_lifecycle": issue_lifecycle,
                 "vs_previous": vs_previous,
-            })
+            }
+            gate_eval = evaluate_release(cast(dict[str, Any], rel_item), eff_policy)
+            rel_item["release_gate"] = cast(
+                ReleaseGateSummary,
+                {
+                    "status": gate_eval["gate_status"],
+                    "should_alert": gate_eval["alert"]["should_alert"],
+                    "alert_severity": gate_eval["alert"]["alert_severity"],
+                    "alert_summary": gate_eval["alert"]["alert_summary"],
+                    "rules_triggered": gate_eval["alert"]["trigger_rules"],
+                },
+            )
+            catalog_items.append(rel_item)
 
     final_items: list[ReleaseCatalogItem] = []
     for pf in target_platforms:

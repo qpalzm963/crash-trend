@@ -61,6 +61,9 @@ ignore = [
 "crash_trend/lifecycle.py" = [
     "E402",  # sys.path.insert before relative module imports
 ]
+"crash_trend/release_gate.py" = [
+    "E402",  # sys.path.insert before relative module imports
+]
 
 [tool.mypy]
 python_version = "3.11"
@@ -68,6 +71,8 @@ files = [
     "crash_trend/schema_v2.py",
     "crash_trend/authority_store.py",
     "crash_trend/catalog",
+    "crash_trend/gate",
+    "crash_trend/release_gate.py",
 ]
 explicit_package_bases = true
 check_untyped_defs = true
