@@ -13,7 +13,7 @@ from __future__ import annotations
 import datetime as dt
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from crash_trend.alerts.models import (
     AlertDispatchSummary,
@@ -137,6 +137,7 @@ def evaluate_alert_decision(
     store: AlertDeliveryStore,
     now: dt.datetime | None = None,
     force: bool = False,
+    history_store: Any | None = None,
 ) -> DispatchDecision:
     """Evaluates whether to send an alert based on notify_on, recovery, dedupe, and cooldown."""
     st = gate_status.strip().lower()
@@ -153,16 +154,47 @@ def evaluate_alert_decision(
 
     last_sent = store.get_last_sent_delivery(app_id, pf, target_version)
 
+    # Gate History Authority recovery check (Issue #61)
+    # Tri-state history authority: "known_recovery" | "known_non_recovery" | "unavailable"
+    history_authority_state: Literal["known_recovery", "known_non_recovery", "unavailable"] = "unavailable"
+    if history_store is not None:
+        try:
+            history = history_store.get_release_gate_history(app_id, pf, target_version)
+            if history:
+                if history[-1].gate_status.lower() == st:
+                    if len(history) >= 2:
+                        prev_snap = history[-2]
+                        if prev_snap.gate_status.lower() in ("fail", "warn"):
+                            history_authority_state = "known_recovery"
+                        else:
+                            history_authority_state = "known_non_recovery"
+                    else:
+                        history_authority_state = "unavailable"
+                else:
+                    if history[-1].gate_status.lower() in ("fail", "warn"):
+                        history_authority_state = "known_recovery"
+                    else:
+                        history_authority_state = "known_non_recovery"
+        except Exception:
+            history_authority_state = "unavailable"
+
     # Force bypasses cooldown and deduplication
     if force:
-        if st == "pass" and policy.notify_recovery and last_sent and last_sent.gate_status in ("fail", "warn"):
-            return DispatchDecision(
-                platform=pf,
-                decision="send",
-                reason="Forced recovery delivery via --force",
-                is_recovery=True,
-                fingerprint=fp,
-            )
+        if st == "pass" and policy.notify_recovery:
+            if history_authority_state == "known_recovery":
+                is_rec = True
+            elif history_authority_state == "known_non_recovery":
+                is_rec = False
+            else:
+                is_rec = last_sent is not None and last_sent.gate_status in ("fail", "warn")
+            if is_rec:
+                return DispatchDecision(
+                    platform=pf,
+                    decision="send",
+                    reason="Forced recovery delivery via --force",
+                    is_recovery=True,
+                    fingerprint=fp,
+                )
         if st in policy.notify_on:
             return DispatchDecision(
                 platform=pf,
@@ -178,15 +210,43 @@ def evaluate_alert_decision(
             fingerprint=fp,
         )
 
-    # Recovery transition check (warn/fail -> pass)
-    if st == "pass" and policy.notify_recovery and last_sent and last_sent.gate_status in ("fail", "warn"):
-        return DispatchDecision(
-            platform=pf,
-            decision="send",
-            reason=f"Quality recovered to pass after previous {last_sent.gate_status.upper()} alert",
-            is_recovery=True,
-            fingerprint=fp,
-        )
+    # Recovery transition check (warn/fail -> pass aligned with Gate history authority)
+    if st == "pass" and policy.notify_recovery:
+        if history_authority_state == "known_recovery":
+            is_rec_transition = True
+        elif history_authority_state == "known_non_recovery":
+            is_rec_transition = False
+        else:
+            # Fallback to delivery store legacy semantics when history store is unavailable, empty, or single-entry
+            is_rec_transition = last_sent is not None and last_sent.gate_status in ("fail", "warn")
+
+        if is_rec_transition:
+            if last_sent is not None and last_sent.gate_status == "pass":
+                return DispatchDecision(
+                    platform=pf,
+                    decision="suppressed",
+                    reason="Recovery alert already delivered for this release",
+                    is_recovery=True,
+                    fingerprint=fp,
+                )
+
+            if last_sent is not None and last_sent.gate_status in ("fail", "warn"):
+                align_note = " (aligned with Gate history authority)" if history_authority_state == "known_recovery" else ""
+                return DispatchDecision(
+                    platform=pf,
+                    decision="send",
+                    reason=f"Quality recovered to pass after previous {last_sent.gate_status.upper()} alert{align_note}",
+                    is_recovery=True,
+                    fingerprint=fp,
+                )
+            # If no alert was ever sent for this release, suppress recovery notice
+            return DispatchDecision(
+                platform=pf,
+                decision="suppressed",
+                reason="Recovery transition detected by Gate authority but no preceding failure alert was delivered",
+                is_recovery=True,
+                fingerprint=fp,
+            )
 
     # Standard Notification Status check
     if st not in policy.notify_on:
@@ -197,6 +257,7 @@ def evaluate_alert_decision(
             is_recovery=False,
             fingerprint=fp,
         )
+
 
     # First alert for this version
     if last_sent is None:
@@ -269,9 +330,11 @@ class AlertDispatcher:
         self,
         store: AlertDeliveryStore,
         provider: AlertProvider | None = None,
+        history_store: Any | None = None,
     ) -> None:
         self.store = store
         self.provider = provider
+        self.history_store = history_store
 
     def dispatch(
         self,
@@ -314,8 +377,10 @@ class AlertDispatcher:
                 store=self.store,
                 now=now,
                 force=force,
+                history_store=self.history_store,
             )
             decisions[pf_name] = decision
+
 
             if decision.decision == "suppressed":
                 total_suppressed += 1
@@ -424,6 +489,7 @@ def dispatch_alerts_for_app(
     artifact: ReleaseGateArtifact | None = None,
     policy: AlertPolicy | None = None,
     store: AlertDeliveryStore | None = None,
+    history_store: Any | None = None,
     provider: AlertProvider | None = None,
     dry_run: bool = False,
     force: bool = False,
@@ -473,6 +539,15 @@ def dispatch_alerts_for_app(
         app_id=app_name,
     )
 
+    own_hist_store = history_store is None
+    effective_hist_store = history_store
+    if effective_hist_store is None:
+        try:
+            from crash_trend.gate.history import get_gate_history_store
+            effective_hist_store = get_gate_history_store(app_name)
+        except Exception:
+            effective_hist_store = None
+
     effective_provider = provider
     if effective_provider is None and effective_policy.provider == "google_chat":
         effective_provider = GoogleChatWebhookProvider(
@@ -480,7 +555,11 @@ def dispatch_alerts_for_app(
             use_threads=effective_policy.use_threads,
         )
 
-    dispatcher = AlertDispatcher(store=effective_store, provider=effective_provider)
+    dispatcher = AlertDispatcher(
+        store=effective_store,
+        provider=effective_provider,
+        history_store=effective_hist_store,
+    )
 
     try:
         summary = dispatcher.dispatch(
@@ -493,6 +572,12 @@ def dispatch_alerts_for_app(
     finally:
         if own_store:
             effective_store.close()
+        if own_hist_store and effective_hist_store is not None:
+            try:
+                effective_hist_store.close()
+            except Exception:
+                pass
+
 
     if verbose:
         mode_str = " (DRY-RUN)" if dry_run else ""

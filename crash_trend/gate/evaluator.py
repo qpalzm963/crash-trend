@@ -20,6 +20,7 @@ from crash_trend.gate.artifact import (
     RuleEvaluationResult,
     RuleStatus,
 )
+from crash_trend.gate.history import compute_policy_identity
 from crash_trend.gate.policy import GatePolicy
 
 
@@ -493,6 +494,9 @@ def evaluate_app_release_gate(
     """Evaluates release gate across target platforms for an application."""
     now_iso = dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
+    policy_dict = policy.to_dict()
+    policy_ident = compute_policy_identity(policy_dict, policy.policy_version)
+
     # Handle disabled policy semantics
     if not policy.enabled:
         return {
@@ -505,7 +509,8 @@ def evaluate_app_release_gate(
             "alert_summary": f"App [{app_id}] 品質閘門未啟用 (enabled: false)",
             "platforms": {},
             "policy_version": policy.policy_version,
-            "policy": policy.to_dict(),
+            "policy": policy_dict,
+            "policy_identity": policy_ident,
         }
 
     if target_platforms:
@@ -576,5 +581,6 @@ def evaluate_app_release_gate(
         "alert_summary": overall_summary,
         "platforms": platform_results,
         "policy_version": policy.policy_version,
-        "policy": policy.to_dict(),
+        "policy": policy_dict,
+        "policy_identity": policy_ident,
     }

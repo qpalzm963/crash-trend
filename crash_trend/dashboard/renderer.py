@@ -204,6 +204,46 @@ def assemble_bundle_from_apps(cfg: dict | None = None, root_dir: str | Path | No
                     except Exception:
                         pass
 
+            # Enrich release_catalog with Gate history snapshots if available (Issue #61)
+            hist_db = eff_root / "out" / app_id / "release_gate_history.sqlite3"
+            if hist_db.is_file():
+                try:
+                    from crash_trend.gate.history import get_gate_history_store
+                    hist_store = get_gate_history_store(app_id, custom_path=hist_db)
+                    all_catalogs = []
+                    if isinstance(a_data.get("release_catalog"), list):
+                        all_catalogs.append(a_data["release_catalog"])
+                    for p_val in (a_data.get("periods") or {}).values():
+                        if isinstance(p_val, dict) and isinstance(p_val.get("release_catalog"), list):
+                            all_catalogs.append(p_val["release_catalog"])
+
+                    for cat_list in all_catalogs:
+                        for c_item in cat_list:
+                            if isinstance(c_item, dict) and c_item.get("version") and c_item.get("platform"):
+                                if not c_item.get("gate_history"):
+                                    snaps = hist_store.get_release_gate_history(app_id, c_item["platform"], c_item["version"])
+                                    if snaps:
+                                        c_item["gate_history"] = [
+                                            {
+                                                "evaluated_at": s.evaluated_at,
+                                                "gate_status": s.gate_status,
+                                                "sample_sufficient": s.sample_sufficient,
+                                                "summary": s.summary,
+                                                "rules_triggered": list(s.triggered_reasons),
+                                                "transition": s.transition.to_dict() if s.transition else None,
+                                                "evaluation_key": s.evaluation_key,
+                                                "policy_version": s.policy_version,
+                                                "policy_identity": s.policy_identity,
+                                                "comparison_window": s.comparison_window,
+                                                "rule_results": list(s.rule_results),
+                                            }
+                                            for s in snaps
+                                        ]
+                except Exception:
+                    pass
+
+
+
     # 驗證組裝之 bundle 是否符合 Schema V2，失敗時不寫入正式檔案
     val_errors = validate_dashboard_v2(bundle)
     if val_errors:
