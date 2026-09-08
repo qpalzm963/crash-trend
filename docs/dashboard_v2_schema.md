@@ -139,7 +139,7 @@ flowchart TD
 
 ---
 
-## 3. 詳細欄位規格定義
+## 3. 契約一：Dashboard JSON 規格（`out/dashboard_v2.json`, `out/<app>/dashboard_v2.json`）
 
 ### 3.1 容器與 Metadata
 
@@ -781,164 +781,7 @@ App 層級 Google Chat 警報發送觀測度數據容器（內嵌於 `AppDashboa
 
 ---
 
-## 5. 契約三：SQLite Authority Store 規格（`out/<app>/catalog_authority.sqlite3`）
-
-### 5.1 儲存配置與連線規範
-
-- **檔案命名與路徑**：Canonical path 為 `out/<app>/catalog_authority.sqlite3`（與同一 app 之 `out/<app>/historical_catalog.json` 位於同一目錄）。
-- **PRAGMA 規範**：
-  ```sql
-  PRAGMA journal_mode = WAL;
-  PRAGMA synchronous = NORMAL;
-  PRAGMA busy_timeout = 5000;
-  ```
-  WAL 模式確保多執行緒讀取不阻塞寫入，`busy_timeout = 5000` 保障鎖競爭時的優雅等待。
-
-### 5.2 資料表結構（DDL）
-
-```sql
--- 1. 裝置加鹽雜湊權威表：儲存每個版本觀察到的受影響裝置
-CREATE TABLE IF NOT EXISTS release_installations (
-    app_id TEXT NOT NULL,
-    platform TEXT NOT NULL,
-    app_version TEXT NOT NULL,
-    installation_hash TEXT NOT NULL,
-    first_seen TEXT,
-    last_seen TEXT,
-    PRIMARY KEY (app_id, platform, app_version, installation_hash)
-);
-
-CREATE INDEX IF NOT EXISTS idx_release_installations_version
-ON release_installations(app_id, platform, app_version);
-
--- 2. 版本權威狀態表：紀錄各版本的 Bootstrap 完成度與更新時間
-CREATE TABLE IF NOT EXISTS version_authority_status (
-    app_id TEXT NOT NULL,
-    platform TEXT NOT NULL,
-    app_version TEXT NOT NULL,
-    bootstrap_complete INTEGER NOT NULL DEFAULT 0,
-    updated_at TEXT,
-    PRIMARY KEY (app_id, platform, app_version)
-);
-
--- 3. 權威全域 Metadata 表：儲存 state_version 與全域 bootstrap 標記
-CREATE TABLE IF NOT EXISTS authority_metadata (
-    key TEXT PRIMARY KEY,
-    value TEXT
-);
-```
-
-### 5.3 確定性加鹽雜湊算法（Privacy Guard）
-
-為徹底隔絕使用者個資（PII），所有 `installation_uuid` 在進入 SQLite 前必須經過確定性加鹽雜湊運算：
-$$\text{installation\_hash} = \text{SHA256}\Big(\text{utf8}\big(\text{app\_id} + \text{":"} + \text{raw\_uuid}\big)\Big)$$
-- **確定性（Deterministic）**：同一 App 內的相同 raw UUID 在任何時刻運算結果完全相同，保障精確去重能力。
-- **跨 App 隔離（App Salted）**：以 `app_id` 為 Salt，防止跨專案 Rainbow Table 碰撞。
-- **不可逆（Non-reversible）**：無法由 hash 還原真實設備 UUID。
-
-### 5.4 查詢與計數語意
-
-1. **精確去重用戶計數**：
-   ```sql
-   SELECT COUNT(*) FROM release_installations
-   WHERE app_id = ? AND platform = ? AND app_version = ?;
-   ```
-2. **版本權威完整性檢查**：
-   ```sql
-   SELECT bootstrap_complete FROM version_authority_status
-   WHERE app_id = ? AND platform = ? AND app_version = ?;
-   ```
-   若 `bootstrap_complete == 1`，該版本的 `lifetime_affected_users` 以 SQLite 精確計數為準；若 `bootstrap_complete == 0`，則以 `max(existing_aggregate, exact_count)` 保底。
-
----
-
-### 5.5 契約四：Release Gate History SQLite 規格（`out/<app>/release_gate_history.sqlite3`）
-
-- **檔案命名與路徑**：Canonical path 為 `out/<app>/release_gate_history.sqlite3`。
-- **儲存定位**：每次 Release Gate 評估結果之不可變歷史快照序列（Immutable Snapshots），作為品質演進趨勢分析之唯一事實來源。
-- **PRAGMA 規範**：
-  ```sql
-  PRAGMA journal_mode = WAL;
-  PRAGMA synchronous = NORMAL;
-  PRAGMA busy_timeout = 5000;
-  ```
-
-#### 資料表結構（DDL）
-```sql
-CREATE TABLE IF NOT EXISTS release_gate_snapshots (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    app_id TEXT NOT NULL,
-    platform TEXT NOT NULL,
-    version TEXT NOT NULL,
-    previous_version TEXT,
-    gate_status TEXT NOT NULL,
-    sample_sufficient INTEGER NOT NULL,
-    policy_version TEXT NOT NULL,
-    policy_identity TEXT NOT NULL DEFAULT '',
-    comparison_window TEXT,
-    evaluated_at TEXT NOT NULL,
-    evaluation_key TEXT NOT NULL UNIQUE,
-    triggered_reasons_json TEXT NOT NULL,
-    rule_results_json TEXT NOT NULL,
-    normalized_metrics_json TEXT NOT NULL,
-    summary TEXT NOT NULL,
-    schema_version TEXT NOT NULL DEFAULT '1.0',
-    created_at TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_gate_history_app_platform_ver
-    ON release_gate_snapshots(app_id, platform, version, evaluated_at);
-
-CREATE INDEX IF NOT EXISTS idx_gate_history_eval_key
-    ON release_gate_snapshots(evaluation_key);
-```
-- **冪等重試保證**：以 `evaluation_key`（由 `app_id:platform:version:evaluated_at:policy_version:policy_identity` 產生之 SHA-256）建立 UNIQUE INDEX，搭配 `INSERT OR IGNORE` 保證重複執行或重播不會產生重複快照。
-- **狀態演進與轉移追蹤**：提供 `get_release_gate_history()` 依 `(evaluated_at DESC, id DESC)` 順序重建 `insufficient -> warn -> fail -> pass (recovery)` 之完整轉移軌跡。
-
----
-
-### 5.6 契約五：Alert Delivery Audit SQLite 規格（`out/<app>/alert_delivery.sqlite3`）
-
-- **檔案命名與路徑**：Canonical path 為 `out/<app>/alert_delivery.sqlite3`。
-- **儲存定位**：記錄 Google Chat 品質通知之每次發送嘗試、HTTP 狀態、去重冷卻抑制原因與 24 小時健康度指標。
-- **PRAGMA 規範**：寫入連線啟用 WAL 模式；唯讀查詢嚴格使用 `mode=ro` URI 連線，完全略過目錄建立、WAL 與 DDL 遷移。
-
-#### 資料表結構（DDL）
-```sql
-CREATE TABLE IF NOT EXISTS alert_deliveries (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    app_id TEXT NOT NULL,
-    platform TEXT NOT NULL,
-    version TEXT NOT NULL,
-    provider TEXT NOT NULL,
-    alert_fingerprint TEXT NOT NULL,
-    gate_status TEXT NOT NULL,
-    attempted_at TEXT NOT NULL,
-    delivered_at TEXT,
-    status TEXT NOT NULL,
-    attempt_count INTEGER NOT NULL DEFAULT 1,
-    http_status INTEGER,
-    error_code TEXT,
-    error_message TEXT,
-    thread_key TEXT,
-    message_name TEXT,
-    reasons_json TEXT,
-    dry_run INTEGER NOT NULL DEFAULT 0,
-    is_recovery INTEGER NOT NULL DEFAULT 0
-);
-
-CREATE INDEX IF NOT EXISTS idx_alert_deliveries_app_status
-ON alert_deliveries(app_id, platform, version, attempted_at);
-
-CREATE INDEX IF NOT EXISTS idx_alert_deliveries_fingerprint
-ON alert_deliveries(alert_fingerprint);
-```
-- **權威復原欄位 (`is_recovery`)**：由 Dispatcher 權威決定，寫入路徑透過 `ALTER TABLE` 自動遷移，唯讀路徑相容舊版缺欄位情境安全回退 `is_recovery=False`。
-- **零機密保證**：寫入資料庫及投影導出時，一律經 `sanitize_audit_text()` 徹底清除 Webhook URL、Token、金鑰、各 scheme 之 Authorization header（Bearer/Basic/ApiKey/Digest）與 UUID。
-
----
-
-## 6. 契約六：Release Gate Artifact JSON 規格（`out/<app>/release_gate.json`）
+## 5. 契約三：Release Gate Artifact JSON 規格（`out/<app>/release_gate.json`）
 
 每次執行 Release Gate 評估時，產出單次最新評估結果的機器可讀 JSON 產物：
 
@@ -1006,7 +849,167 @@ ON alert_deliveries(alert_fingerprint);
 
 ---
 
-## 7. 資料管線生命週期行為
+## 6. 契約四：SQLite Authority Store 規格（`out/<app>/catalog_authority.sqlite3`）
+
+### 6.1 儲存配置與連線規範
+
+- **檔案命名與路徑**：Canonical path 為 `out/<app>/catalog_authority.sqlite3`（與同一 app 之 `out/<app>/historical_catalog.json` 位於同一目錄）。
+- **PRAGMA 規範**：
+  ```sql
+  PRAGMA journal_mode = WAL;
+  PRAGMA synchronous = NORMAL;
+  PRAGMA busy_timeout = 5000;
+  ```
+  WAL 模式確保多執行緒讀取不阻塞寫入，`busy_timeout = 5000` 保障鎖競爭時的優雅等待。
+
+### 6.2 資料表結構（DDL）
+
+```sql
+-- 1. 裝置加鹽雜湊權威表：儲存每個版本觀察到的受影響裝置
+CREATE TABLE IF NOT EXISTS release_installations (
+    app_id TEXT NOT NULL,
+    platform TEXT NOT NULL,
+    app_version TEXT NOT NULL,
+    installation_hash TEXT NOT NULL,
+    first_seen TEXT,
+    last_seen TEXT,
+    PRIMARY KEY (app_id, platform, app_version, installation_hash)
+);
+
+CREATE INDEX IF NOT EXISTS idx_release_installations_version
+ON release_installations(app_id, platform, app_version);
+
+-- 2. 版本權威狀態表：紀錄各版本的 Bootstrap 完成度與更新時間
+CREATE TABLE IF NOT EXISTS version_authority_status (
+    app_id TEXT NOT NULL,
+    platform TEXT NOT NULL,
+    app_version TEXT NOT NULL,
+    bootstrap_complete INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT,
+    PRIMARY KEY (app_id, platform, app_version)
+);
+
+-- 3. 權威全域 Metadata 表：儲存 state_version 與全域 bootstrap 標記
+CREATE TABLE IF NOT EXISTS authority_metadata (
+    key TEXT PRIMARY KEY,
+    value TEXT
+);
+```
+
+### 6.3 確定性加鹽雜湊算法（Privacy Guard）
+
+為徹底隔絕使用者個資（PII），所有 `installation_uuid` 在進入 SQLite 前必須經過確定性加鹽雜湊運算：
+$$\text{installation\_hash} = \text{SHA256}\Big(\text{utf8}\big(\text{app\_id} + \text{":"} + \text{raw\_uuid}\big)\Big)$$
+- **確定性（Deterministic）**：同一 App 內的相同 raw UUID 在任何時刻運算結果完全相同，保障精確去重能力。
+- **跨 App 隔離（App Salted）**：以 `app_id` 為 Salt，防止跨專案 Rainbow Table 碰撞。
+- **不可逆（Non-reversible）**：無法由 hash 還原真實設備 UUID。
+
+### 6.4 查詢與計數語意
+
+1. **精確去重用戶計數**：
+   ```sql
+   SELECT COUNT(*) FROM release_installations
+   WHERE app_id = ? AND platform = ? AND app_version = ?;
+   ```
+2. **版本權威完整性檢查**：
+   ```sql
+   SELECT bootstrap_complete FROM version_authority_status
+   WHERE app_id = ? AND platform = ? AND app_version = ?;
+   ```
+   若 `bootstrap_complete == 1`，該版本的 `lifetime_affected_users` 以 SQLite 精確計數為準；若 `bootstrap_complete == 0`，則以 `max(existing_aggregate, exact_count)` 保底。
+
+---
+
+## 7. 契約五：Release Gate History SQLite 規格（`out/<app>/release_gate_history.sqlite3`）
+
+- **檔案命名與路徑**：Canonical path 為 `out/<app>/release_gate_history.sqlite3`。
+- **儲存定位**：每次 Release Gate 評估結果之不可變歷史快照序列（Immutable Snapshots），作為品質演進趨勢分析之唯一事實來源。
+- **PRAGMA 規範**：
+  ```sql
+  PRAGMA journal_mode = WAL;
+  ```
+  寫入與連線時啟用 WAL 模式，SQLite 連線逾時設定為 10.0 秒。
+
+### 7.1 資料表結構（DDL）
+```sql
+CREATE TABLE IF NOT EXISTS release_gate_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    app_id TEXT NOT NULL,
+    platform TEXT NOT NULL,
+    version TEXT NOT NULL,
+    previous_version TEXT,
+    gate_status TEXT NOT NULL,
+    sample_sufficient INTEGER NOT NULL,
+    policy_version TEXT NOT NULL,
+    policy_identity TEXT NOT NULL DEFAULT '',
+    comparison_window TEXT,
+    evaluated_at TEXT NOT NULL,
+    evaluation_key TEXT NOT NULL UNIQUE,
+    triggered_reasons_json TEXT NOT NULL,
+    rule_results_json TEXT NOT NULL,
+    normalized_metrics_json TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    schema_version TEXT NOT NULL DEFAULT '1.0',
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_gate_history_app_platform_ver
+    ON release_gate_snapshots(app_id, platform, version, evaluated_at);
+
+CREATE INDEX IF NOT EXISTS idx_gate_history_eval_key
+    ON release_gate_snapshots(evaluation_key);
+```
+- **不可變快照與冪等重試**：以 `evaluation_key`（由 `app_id:platform:version:evaluated_at:policy_version:policy_identity` 產生之 SHA-256）建立 UNIQUE INDEX，搭配 `INSERT OR IGNORE` 保證重複執行或歷史重播完全冪等，絕不產生重複快照。
+- **狀態演進與轉移追蹤**：提供 `get_release_gate_history()` 依 `(evaluated_at ASC, id ASC)` 順序重建 `insufficient -> warn -> fail -> pass (recovery)` 之完整時間軸軌跡，最新一次評估狀態由序列末端 `history[-1]` 取得。
+
+---
+
+## 8. 契約六：Alert Delivery Audit SQLite 規格（`out/<app>/alert_delivery.sqlite3`）
+
+- **檔案命名與路徑**：Canonical path 為 `out/<app>/alert_delivery.sqlite3`。
+- **儲存定位**：記錄 Google Chat 品質通知之每次發送嘗試、HTTP 狀態、去重冷卻抑制原因與 24 小時健康度指標。
+- **PRAGMA 規範**：寫入連線啟用 `PRAGMA journal_mode = WAL;`（連線逾時 10.0 秒）；唯讀查詢嚴格使用 `mode=ro` URI 連線，完全略過目錄建立、WAL 與 DDL 遷移。
+
+### 8.1 資料表結構（DDL）
+```sql
+CREATE TABLE IF NOT EXISTS alert_deliveries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    app_id TEXT NOT NULL,
+    platform TEXT NOT NULL,
+    version TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    alert_fingerprint TEXT NOT NULL,
+    gate_status TEXT NOT NULL,
+    attempted_at TEXT NOT NULL,
+    delivered_at TEXT,
+    status TEXT NOT NULL,
+    attempt_count INTEGER NOT NULL DEFAULT 1,
+    http_status INTEGER,
+    error_code TEXT,
+    error_message TEXT,
+    thread_key TEXT,
+    message_name TEXT,
+    reasons_json TEXT,
+    dry_run INTEGER NOT NULL DEFAULT 0,
+    is_recovery INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_alert_deliveries_lookup
+    ON alert_deliveries (app_id, platform, version, id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_alert_deliveries_fingerprint
+    ON alert_deliveries (alert_fingerprint, status);
+
+CREATE INDEX IF NOT EXISTS idx_alert_deliveries_health
+    ON alert_deliveries (app_id, dry_run, status, id DESC);
+```
+- **權威復原欄位 (`is_recovery`)**：由 Dispatcher 權威決定，寫入路徑透過 `ALTER TABLE` 自動遷移，唯讀路徑相容舊版缺欄位情境安全回退 `is_recovery=False`。
+- **零機密保證**：寫入資料庫及投影導出時，一律經 `sanitize_audit_text()` 徹底清除 Webhook URL、Token、金鑰、各 scheme 之 Authorization header（Bearer/Basic/ApiKey/Digest）與 UUID。
+
+
+---
+
+## 9. 資料管線生命週期行為
 
 ```mermaid
 stateDiagram-v2
@@ -1048,7 +1051,7 @@ stateDiagram-v2
     Incremental --> [*]
 ```
 
-### 7.1 Migration（舊版相容升級）
+### 9.1 Migration（舊版相容升級）
 - **情境**：載入帶有 legacy `installation_ids` 的舊版 `historical_catalog.json`。
 - **行為**：
   1. `IssueHistoricalCatalog.load()` 解析出待遷移清單 `(platform, version, ids)`。
@@ -1059,7 +1062,7 @@ stateDiagram-v2
   4. 從記憶體中 `pop("installation_ids")` 與 `pop("user_ids")`。
   5. `save()` 寫回乾淨無 raw IDs 的 JSON。
 
-### 7.2 Bootstrap（全量初始化）
+### 9.2 Bootstrap（全量初始化）
 - **情境**：全新專案部署，或 `authority.bootstrap_complete == False`，或特定活躍版本缺乏權威標記。
 - **行為**：
   1. 執行 BigQuery 全量版本查詢模板（`version_catalog_bootstrap`），無觀測視窗限制（或回溯全量歷史）。
@@ -1067,7 +1070,7 @@ stateDiagram-v2
   3. **Zero-user Bootstrap 處理**：對歷史上存在但無任何崩潰事件（0 崩潰、0 用戶）之版本，顯式呼叫 `mark_version_bootstrapped(..., complete=True)` 標記完整，避免日後 incremental 誤判缺失權威而反覆觸發全量掃描。
   4. 全量寫入完成後，於 `authority_metadata` 寫入 `bootstrap_complete = 1`。
 
-### 7.3 Incremental（增量同步）
+### 9.3 Incremental（增量同步）
 - **情境**：管線日常排程執行（如每週定期執行）。
 - **行為**：
   1. 讀取 `historical_catalog.json` 之 `watermark`（例如 `"2026-09-01T12:00:00Z"`）。
@@ -1078,7 +1081,7 @@ stateDiagram-v2
 
 ---
 
-## 8. 空值、缺漏與停用欄位語意指引（Semantics Guide）
+## 10. 空值、缺漏與停用欄位語意指引（Semantics Guide）
 
 | 狀態名稱 | 指標數值表現 | UI 呈現規範 | 適用情境 |
 | :--- | :--- | :--- | :--- |
@@ -1091,35 +1094,36 @@ stateDiagram-v2
 
 ---
 
-## 9. 驗證規範與相容性（Validation & Compliance）
+## 11. 驗證規範與相容性（Validation & Compliance）
 
-`crash_trend/schema_v2.py` 提供全套執行階段驗證工具，可在 CI 與管線結尾執行強型別合規檢查：
+`crash_trend/schema_v2.py` 與 `crash_trend/gate/artifact.py` 提供全套執行階段驗證工具，可在 CI 與管線結尾執行強型別合規檢查：
 
 ```python
+from crash_trend.gate.artifact import validate_release_gate_artifact
 from crash_trend.schema_v2 import (
+    validate_alert_delivery,
     validate_dashboard_v2,
     validate_historical_catalog,
-    validate_release_catalog,
-    validate_release_gate_artifact,
-    validate_alert_delivery,
-    validate_issue_summary,
     validate_issue_lifecycle,
+    validate_issue_summary,
+    validate_release_catalog,
 )
 
-# 1. 驗證完整前端 Dashboard Bundle
+# 1. 驗證完整前端 Dashboard Bundle（契約一）
 errors = validate_dashboard_v2(dashboard_bundle_dict)
 assert len(errors) == 0, f"Dashboard schema errors: {errors}"
 
-# 2. 驗證歷史目錄契約（結構合規且強制拒絕 raw installation_ids / user_ids）
+# 2. 驗證歷史目錄契約（契約二，結構合規且強制拒絕 raw installation_ids / user_ids）
 cat_errors = validate_historical_catalog(historical_catalog_dict)
 assert len(cat_errors) == 0, f"Catalog schema errors: {cat_errors}"
 
-# 3. 驗證版本退化閘門機器產物契約
+# 3. 驗證版本退化閘門機器產物契約（契約三）
 gate_errors = validate_release_gate_artifact(gate_artifact_dict)
 assert len(gate_errors) == 0, f"Release gate schema errors: {gate_errors}"
 
-# 4. 驗證品質警報觀測資料契約
-alert_errors = validate_alert_delivery(alert_data_dict)
+# 4. 驗證品質警報觀測資料契約（契約六）
+alert_errors: list[str] = []
+validate_alert_delivery(alert_data_dict, alert_errors)
 assert len(alert_errors) == 0, f"Alert delivery schema errors: {alert_errors}"
 ```
 
