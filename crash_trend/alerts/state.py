@@ -1,0 +1,331 @@
+"""SQLite-backed Delivery Audit and Deduplication Store (Issue #59).
+
+Persists alert delivery history, attempts, suppression reasons, and deduplication states.
+Enforces zero-secret storage (scrubs webhook URLs, tokens, keys) and zero raw UUIDs.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import datetime as dt
+import json
+import re
+import sqlite3
+from collections.abc import Iterator
+from pathlib import Path
+from typing import Any
+
+from crash_trend.alerts.models import DeliveryRecord
+
+
+class AlertStoreError(Exception):
+    """Raised when an operation on the alert delivery store fails."""
+    pass
+
+
+def sanitize_audit_text(text: str | None) -> str | None:
+    """Removes sensitive webhook credentials and full URLs from audit messages."""
+    if text is None:
+        return None
+    # Scrub chat.googleapis.com URL patterns
+    sanitized = re.sub(r"https://chat\.googleapis\.com/[^\s'\"<>]+", "https://chat.googleapis.com/...<redacted>", text)
+    # Scrub standard token / key query params in case other URLs appear
+    sanitized = re.sub(r"([?&](?:key|token|access_token|secret)=)[^&\s'\"]+", r"\1<redacted>", sanitized)
+    return sanitized
+
+
+class AlertDeliveryStore:
+    """Manages SQLite storage for delivery audit logs and deduplication state."""
+
+    def __init__(
+        self,
+        db_path: str | Path = ":memory:",
+        app_id: str | None = None,
+    ) -> None:
+        self.app_id = str(app_id).strip() if app_id else None
+        self.is_memory = str(db_path) == ":memory:"
+        self.db_path = Path(db_path) if not self.is_memory else ":memory:"
+        self._conn: sqlite3.Connection | None = None
+
+        if not self.is_memory and isinstance(self.db_path, Path):
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+
+        try:
+            if self.is_memory:
+                self._conn = sqlite3.connect(":memory:", check_same_thread=False)
+                self._conn.row_factory = sqlite3.Row
+            self._init_db()
+        except sqlite3.Error as e:
+            raise AlertStoreError(f"Failed to initialize SQLite Alert Store at '{db_path}': {e}") from e
+
+    @contextlib.contextmanager
+    def _connection(self) -> Iterator[sqlite3.Connection]:
+        if self.is_memory:
+            if self._conn is None:
+                self._conn = sqlite3.connect(":memory:", check_same_thread=False)
+                self._conn.row_factory = sqlite3.Row
+            yield self._conn
+        else:
+            conn = sqlite3.connect(str(self.db_path), timeout=10.0)
+            conn.row_factory = sqlite3.Row
+            try:
+                yield conn
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
+
+    def _init_db(self) -> None:
+        with self._connection() as conn:
+            conn.execute("PRAGMA journal_mode = WAL;")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS alert_deliveries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    app_id TEXT NOT NULL,
+                    platform TEXT NOT NULL,
+                    version TEXT NOT NULL,
+                    provider TEXT NOT NULL,
+                    alert_fingerprint TEXT NOT NULL,
+                    gate_status TEXT NOT NULL,
+                    attempted_at TEXT NOT NULL,
+                    delivered_at TEXT,
+                    status TEXT NOT NULL,
+                    attempt_count INTEGER NOT NULL DEFAULT 1,
+                    http_status INTEGER,
+                    error_code TEXT,
+                    error_message TEXT,
+                    thread_key TEXT,
+                    message_name TEXT,
+                    reasons_json TEXT,
+                    dry_run INTEGER NOT NULL DEFAULT 0
+                );
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_alert_deliveries_lookup
+                    ON alert_deliveries (app_id, platform, version, id DESC);
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_alert_deliveries_fingerprint
+                    ON alert_deliveries (alert_fingerprint, status);
+            """)
+
+    def record_attempt(
+        self,
+        app_id: str,
+        platform: str,
+        version: str,
+        provider: str,
+        alert_fingerprint: str,
+        gate_status: str,
+        attempted_at: str | None = None,
+        reasons: list[str] | None = None,
+        thread_key: str | None = None,
+        dry_run: bool = False,
+    ) -> int:
+        """Records an initial pending delivery attempt."""
+        att_time = attempted_at or dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        reasons_payload = json.dumps(reasons or [], ensure_ascii=False)
+        clean_thread_key = sanitize_audit_text(thread_key)
+
+        with self._connection() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO alert_deliveries (
+                    app_id, platform, version, provider, alert_fingerprint,
+                    gate_status, attempted_at, status, attempt_count,
+                    thread_key, reasons_json, dry_run
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 1, ?, ?, ?)
+                """,
+                (
+                    app_id.strip(),
+                    platform.strip().lower(),
+                    version.strip(),
+                    provider.strip(),
+                    alert_fingerprint.strip(),
+                    gate_status.strip().lower(),
+                    att_time,
+                    clean_thread_key,
+                    reasons_payload,
+                    1 if dry_run else 0,
+                ),
+            )
+            return int(cur.lastrowid or 0)
+
+    def update_result(
+        self,
+        record_id: int,
+        status: str,
+        delivered_at: str | None = None,
+        attempt_count: int = 1,
+        http_status: int | None = None,
+        error_code: str | None = None,
+        error_message: str | None = None,
+        message_name: str | None = None,
+    ) -> None:
+        """Updates the outcome of a delivery attempt."""
+        clean_msg = sanitize_audit_text(error_message)
+        clean_name = sanitize_audit_text(message_name)
+
+        with self._connection() as conn:
+            conn.execute(
+                """
+                UPDATE alert_deliveries
+                SET status = ?,
+                    delivered_at = ?,
+                    attempt_count = ?,
+                    http_status = ?,
+                    error_code = ?,
+                    error_message = ?,
+                    message_name = ?
+                WHERE id = ?
+                """,
+                (
+                    status.strip().lower(),
+                    delivered_at,
+                    attempt_count,
+                    http_status,
+                    error_code,
+                    clean_msg,
+                    clean_name,
+                    record_id,
+                ),
+            )
+
+    def record_suppressed(
+        self,
+        app_id: str,
+        platform: str,
+        version: str,
+        provider: str,
+        alert_fingerprint: str,
+        gate_status: str,
+        reason_text: str,
+        attempted_at: str | None = None,
+        reasons: list[str] | None = None,
+        thread_key: str | None = None,
+        dry_run: bool = False,
+    ) -> int:
+        """Records an alert evaluation that was suppressed by dedupe, cooldown, or policy."""
+        att_time = attempted_at or dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        reasons_payload = json.dumps(reasons or [], ensure_ascii=False)
+        clean_thread_key = sanitize_audit_text(thread_key)
+        clean_reason = sanitize_audit_text(reason_text)
+
+        with self._connection() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO alert_deliveries (
+                    app_id, platform, version, provider, alert_fingerprint,
+                    gate_status, attempted_at, status, attempt_count,
+                    error_code, error_message, thread_key, reasons_json, dry_run
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'suppressed', 0, 'SUPPRESSED', ?, ?, ?, ?)
+                """,
+                (
+                    app_id.strip(),
+                    platform.strip().lower(),
+                    version.strip(),
+                    provider.strip(),
+                    alert_fingerprint.strip(),
+                    gate_status.strip().lower(),
+                    att_time,
+                    clean_reason,
+                    clean_thread_key,
+                    reasons_payload,
+                    1 if dry_run else 0,
+                ),
+            )
+            return int(cur.lastrowid or 0)
+
+    def get_last_sent_delivery(
+        self,
+        app_id: str,
+        platform: str,
+        version: str,
+    ) -> DeliveryRecord | None:
+        """Retrieves the most recent successfully sent delivery for this app, platform, and version.
+
+        Crucial: Ignores dry_run records so dry runs never affect real deduplication state.
+        """
+        with self._connection() as conn:
+            cur = conn.execute(
+                """
+                SELECT * FROM alert_deliveries
+                WHERE app_id = ?
+                  AND platform = ?
+                  AND version = ?
+                  AND status = 'sent'
+                  AND dry_run = 0
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (app_id.strip(), platform.strip().lower(), version.strip()),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            return self._row_to_record(row)
+
+    def get_history(
+        self,
+        app_id: str,
+        platform: str | None = None,
+        limit: int = 50,
+    ) -> list[DeliveryRecord]:
+        """Returns recent audit delivery records."""
+        query = "SELECT * FROM alert_deliveries WHERE app_id = ?"
+        params: list[Any] = [app_id.strip()]
+        if platform:
+            query += " AND platform = ?"
+            params.append(platform.strip().lower())
+        query += " ORDER BY id DESC LIMIT ?"
+        params.append(max(1, limit))
+
+        with self._connection() as conn:
+            cur = conn.execute(query, params)
+            return [self._row_to_record(row) for row in cur.fetchall()]
+
+    @staticmethod
+    def _row_to_record(row: sqlite3.Row) -> DeliveryRecord:
+        reasons_raw = row["reasons_json"]
+        reasons: list[str] = []
+        if reasons_raw:
+            try:
+                parsed = json.loads(reasons_raw)
+                if isinstance(parsed, list):
+                    reasons = [str(x) for x in parsed]
+            except Exception:
+                pass
+
+        return DeliveryRecord(
+            id=int(row["id"]),
+            app_id=str(row["app_id"]),
+            platform=str(row["platform"]),
+            version=str(row["version"]),
+            provider=str(row["provider"]),
+            alert_fingerprint=str(row["alert_fingerprint"]),
+            gate_status=str(row["gate_status"]),
+            attempted_at=str(row["attempted_at"]),
+            delivered_at=row["delivered_at"],
+            status=str(row["status"]),
+            attempt_count=int(row["attempt_count"]),
+            http_status=row["http_status"],
+            error_code=row["error_code"],
+            error_message=row["error_message"],
+            thread_key=row["thread_key"],
+            message_name=row["message_name"],
+            reasons=reasons,
+            dry_run=bool(row["dry_run"]),
+        )
+
+    def close(self) -> None:
+        if self.is_memory and self._conn is not None:
+            self._conn.close()
+            self._conn = None
+
+    def __enter__(self) -> AlertDeliveryStore:
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        self.close()

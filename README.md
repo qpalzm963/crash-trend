@@ -432,6 +432,37 @@ python3 -m crash_trend.ai_config_service --serve 8080
 
 ---
 
+## Google Chat 品質告警傳送 (Google Chat Quality Alerts Delivery - Issue #59)
+
+系統內建 Google Chat Incoming Webhook 品質通知發送機制，將版本品質退化閘門（Release Gate）之 WARN / FAIL 與復原狀態即時送達團隊 Space：
+
+- **嚴格金鑰隔離與脫敏**：Webhook URL 僅從環境變數注入（預設 `GOOGLE_CHAT_WEBHOOK_URL`），嚴禁寫入設定檔、產物或記錄檔。日誌、異常堆疊與審計儲存中出現之 URL 自動脫敏為 `https://chat.googleapis.com/...<redacted>`。
+- **確定性去重與冷卻 (Deterministic Dedupe & Cooldown)**：
+  - 依 `(app_id, platform, version, gate_status, sorted(reasons), policy_version)` 產生確定性 SHA-256 數位指紋 (`alert_fingerprint`)。
+  - 預設冷卻時間 360 分鐘（6 小時），避免重複洗版。
+  - **狀態變更（Status Change）** 或 **新增退化原因（New Reason）** 自動忽略冷卻即時重發。
+- **指標復原通知 (Recovery Notification)**：
+  - 當前次已通知退化之版本在新一次評估中指標全數修復至 `pass`，系統自動於同一 Space/Thread 發送 `✅ Release Gate Recovered` 復原通知。
+- **發佈專屬 Thread 收攏**：
+  - 支援確定性 `threadKey`（格式：`crash-trend:{app_id}:{platform}:{version}`），同一發佈版本的首次警報、原因變更與復原通知自動收納於同一個討論串。
+- **可靠傳送與有限重試**：
+  - 連線與讀取逾時限制，避免卡住管線。
+  - 針對 429、5xx 與網路暫態錯誤實施有界指數退避重試（最多 3 次），4xx 永久錯誤立即失敗不空轉重試。
+- **解耦式失敗語意 (Decoupled Failure Semantics)**：
+  - Webhook HTTP 傳送失敗 **絕不改變 Release Gate 評估結果**，亦不會中斷 `release_gate.json` 或後續 `build_dashboard` 產出。
+- **CLI 獨立執行與預覽**：
+  ```bash
+  # 預覽通知內容與 Payload（不實際送出 HTTP POST，不寫入 sent 狀態）
+  python3 -m crash_trend.alerts --app shop_app --dry-run
+
+  # 強制略過去重與冷卻送出
+  python3 -m crash_trend.alerts --app shop_app --force
+  ```
+- **SQLite 稽核與狀態儲存**：
+  - 於 `out/<app>/alert_delivery.sqlite3` 記錄每次發送嘗試、狀態、HTTP 碼、指紋與錯誤訊息（嚴禁記錄 URL/Token/User IDs）。
+
+---
+
 ## 週同步與通知
 
 `scripts/weekly_sync.sh` 會：

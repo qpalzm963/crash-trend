@@ -60,6 +60,19 @@ apps:
         anr_rate_change_pct: { warn: 0.10, fail: 0.25 }     # ANR 率上升幅度
         regressed_issues_count: { warn: 1, fail: 3 }        # 復發問題數門檻
         introduced_issues_count: { warn: 5, fail: 10 }      # 新引入問題數門檻
+    release_alerts:                       # 版本品質通知設定 (選填；Dashboard V2.7 - Issue #59)
+      enabled: true                       # 是否啟用通知（預設 true）
+      provider: google_chat               # 通知管道（目前支援 google_chat）
+      notify_on:                          # 觸發通知之狀態清單
+        - fail
+        - warn
+      cooldown_minutes: 360               # 同一版本相同異常冷卻分鐘數（預設 360 分鐘 = 6 小時）
+      resend_on_status_change: true       # 狀態變更時（如 WARN 轉 FAIL）忽略冷卻立即重新發送
+      resend_on_new_reason: true          # 出現新退化原因時忽略冷卻立即發送
+      notify_recovery: true               # 前次異常後若指標復原至 PASS，發送復原通知
+      google_chat:
+        webhook_env: GOOGLE_CHAT_WEBHOOK_URL # Webhook URL 環境變數名稱（嚴禁在設定檔寫死 URL 與 Token）
+        use_threads: true                 # 是否使用版本專屬 threadKey 收攏通知
 
   rider_app:                              # 範例 2：Crashlytics-only 模式 (推薦：輕量、不佔 Sessions 儲存)
     display_name: 外送司機端
