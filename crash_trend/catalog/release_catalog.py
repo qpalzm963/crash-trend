@@ -441,7 +441,37 @@ def build_release_catalog(
                 )
             else:
                 rel_item["release_gate"] = None
+
+            # Attach historical gate evaluations if available (Issue #61)
+            cat_app_id = getattr(catalog, "app_id", None)
+            if cat_app_id:
+                try:
+                    from crash_trend.gate.history import get_gate_history_store
+                    cat_path = getattr(catalog, "catalog_path", None)
+                    hist_path = cat_path.parent if cat_path else None
+                    hist_store = get_gate_history_store(cat_app_id, custom_path=hist_path / "release_gate_history.sqlite3" if hist_path else None)
+                    snaps = hist_store.get_release_gate_history(cat_app_id, pf, ver)
+                    if snaps:
+                        rel_item["gate_history"] = [
+                            {
+                                "evaluated_at": s.evaluated_at,
+                                "gate_status": s.gate_status,
+                                "sample_sufficient": s.sample_sufficient,
+                                "summary": s.summary,
+                                "rules_triggered": list(s.triggered_reasons),
+                                "transition": s.transition.to_dict() if s.transition else None,
+                                "evaluation_key": s.evaluation_key,
+                                "policy_version": s.policy_version,
+                                "rule_results": list(s.rule_results),
+                            }
+                            for s in snaps
+                        ]
+                except Exception:
+                    pass
+
+
             catalog_items.append(rel_item)
+
 
     final_items: list[ReleaseCatalogItem] = []
     for pf in target_platforms:

@@ -259,7 +259,18 @@ function renderReleasesTable() {
         } else if (rg.status === "baseline") {
           gateBadge = '<span class="badge badge-stability-baseline">BASELINE</span>';
         }
+
+        const gh = v.gate_history || [];
+        const latestSnap = gh.length > 0 ? gh[gh.length - 1] : null;
+        if (latestSnap && latestSnap.transition) {
+          if (latestSnap.transition.is_recovery) {
+            gateBadge += ' <span class="badge" style="background:#ceead6;color:#0d652d;font-size:10.5px;font-weight:700">復原 ↗</span>';
+          } else if (latestSnap.transition.is_regression) {
+            gateBadge += ' <span class="badge badge-fatal" style="font-size:10.5px;font-weight:700">退化 ↘</span>';
+          }
+        }
       }
+
 
       let vsPrevHtml = '<span class="mono-num" style="color:var(--text-muted);font-size:11.5px">—</span>';
       if (v.vs_previous && v.vs_previous.previous_version) {
@@ -526,6 +537,79 @@ function renderReleaseModalBody(item) {
          </div>`
       : "";
 
+    // Timeline of sequential evaluations (Issue #61)
+    let timelineHtml = "";
+    const gateHistory = item.gate_history || [];
+    if (gateHistory.length > 0) {
+      const historyItems = gateHistory.map((h, hIdx) => {
+        let hBadge = "";
+        const hSt = (h.gate_status || "").toLowerCase();
+        if (hSt === "pass") {
+          hBadge = '<span class="badge" style="background:#e6f4ea;color:#137333;font-weight:600">PASS</span>';
+        } else if (hSt === "warn") {
+          hBadge = '<span class="badge" style="background:#fef7e0;color:#b06000;font-weight:600">WARN</span>';
+        } else if (hSt === "fail") {
+          hBadge = '<span class="badge badge-fatal" style="font-weight:600">FAIL</span>';
+        } else if (hSt === "insufficient_data") {
+          hBadge = '<span class="badge" style="background:var(--bg-subtle);color:var(--text-muted)">INSUFFICIENT</span>';
+        } else {
+          hBadge = '<span class="badge badge-stability-baseline">BASELINE</span>';
+        }
+
+        let transBadge = "";
+        const tr = h.transition;
+        if (tr) {
+          if (tr.is_recovery) {
+            transBadge = '<span class="badge" style="background:#ceead6;color:#0d652d;font-weight:700;font-size:10.5px">復原 ↗</span>';
+          } else if (tr.transition_type === "escalation") {
+            transBadge = '<span class="badge badge-fatal" style="font-weight:700;font-size:10.5px">惡化升級 ⇈</span>';
+          } else if (tr.transition_type === "de_escalation") {
+            transBadge = '<span class="badge" style="background:#feefc3;color:#b06000;font-size:10.5px">降級 ↘</span>';
+          } else if (tr.is_regression) {
+            transBadge = '<span class="badge badge-fatal" style="font-weight:700;font-size:10.5px">退化 ↘</span>';
+          } else if (tr.transition_type === "initial") {
+            transBadge = '<span class="badge" style="background:var(--bg-subtle);font-size:10.5px">首評</span>';
+          }
+        }
+
+        const triggered = (h.rules_triggered && h.rules_triggered.length > 0)
+          ? `<div style="margin-top:3px;display:flex;gap:4px;flex-wrap:wrap">
+               ${h.rules_triggered.map(r => `<span class="badge badge-fatal" style="font-size:10px">${esc(r)}</span>`).join("")}
+             </div>`
+          : "";
+
+        const timeDisp = esc((h.evaluated_at || "").replace("T", " ").replace("Z", " UTC"));
+        const borderStyle = hIdx < gateHistory.length - 1 ? "border-bottom:1px solid var(--border);" : "";
+        return `
+          <div style="display:flex;gap:10px;padding:6px 0;${borderStyle}align-items:flex-start">
+            <div style="min-width:130px;font-size:11px;font-family:var(--font-mono);color:var(--text-muted);padding-top:2px">
+              ${timeDisp}
+            </div>
+            <div style="min-width:65px">${hBadge}</div>
+            <div style="flex:1">
+              <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+                ${transBadge}
+                <span style="font-size:11.5px;color:var(--text-main)">${esc(h.summary || "無評估摘要")}</span>
+              </div>
+              ${triggered}
+            </div>
+          </div>
+        `;
+      }).join("");
+
+      timelineHtml = `
+        <div style="margin-top:12px;padding-top:10px;border-top:1px dashed var(--border)">
+          <div style="font-size:12px;font-weight:600;color:var(--text-main);margin-bottom:6px;display:flex;align-items:center;gap:6px">
+            <span>評估歷史演進時間軸 (Gate History Timeline)</span>
+            <span class="badge" style="background:var(--bg-surface);border:1px solid var(--border);font-size:10.5px">${gateHistory.length} 次快照</span>
+          </div>
+          <div style="background:var(--bg-surface);border-radius:var(--radius-sm);padding:6px 10px;border:1px solid var(--border)">
+            ${historyItems}
+          </div>
+        </div>
+      `;
+    }
+
     gateCardHtml = `
       <div>
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
@@ -537,10 +621,12 @@ function renderReleaseModalBody(item) {
           ${triggeredPills}
           ${metaBar}
           ${rulesTableHtml}
+          ${timelineHtml}
         </div>
       </div>
     `;
   }
+
 
   const vp = item.vs_previous;
   let vsPrevHtml = '<div style="font-size:12.5px;color:var(--text-muted)">此版本為該平台最早記錄版本或無可供比較的前版基準。</div>';

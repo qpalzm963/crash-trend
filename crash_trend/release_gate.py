@@ -122,7 +122,18 @@ def run_release_gate_for_app(
     dest = out_path or (out_dir(app_name) / "release_gate.json")
     save_release_gate_artifact(dest, artifact)
 
+    # 記錄 Release Gate 歷史快照（Issue #61）
+    # 解耦失敗語意：歷史庫寫入異常絕不可改變、破壞或清除 release_gate.json 與評估結果
+    try:
+        from crash_trend.gate.history import get_gate_history_store
+        db_path = dest.parent / "release_gate_history.sqlite3"
+        hist_store = get_gate_history_store(app_name, custom_path=db_path)
+        hist_store.record_gate_artifact(artifact, policy_version=policy.policy_version)
+    except Exception as hist_err:
+        print(f"  [Warning] 保存 Release Gate 歷史快照失敗（非阻擋錯誤）：{hist_err}", file=sys.stderr)
+
     if verbose:
+
         if not policy.enabled:
             print(f"\n================ [Release Regression Gate: {app_name}] ================")
             print("  Release gate is DISABLED (enabled: false). Generated non-blocking artifact.")
@@ -162,8 +173,43 @@ def main() -> None:
     parser.add_argument("--fail-on-regression", action="store_true", help="若品質閘門判定為 FAIL，則以 exit code 2 結束")
     parser.add_argument("--policy", type=Path, default=None, help="自訂 GatePolicy 檔案路徑 (JSON 或 YAML)")
     parser.add_argument("--out", type=Path, default=None, help="自訂 release_gate.json 輸出路徑")
+    parser.add_argument("--history", action="store_true", help="查詢該 App 之 Release Gate 歷史快照")
+    parser.add_argument("--trend", action="store_true", help="查詢該 App 之近期版本品質趨勢")
+    parser.add_argument("--platform", default=None, help="搭配 --history/--trend 指定平台")
+    parser.add_argument("--version", default=None, dest="target_version", help="搭配 --history 指定版本號")
     parser.add_argument("--quiet", action="store_true", help="減少詳細輸出")
     args = parser.parse_args()
+
+    if args.history or args.trend:
+        from crash_trend.gate.history import get_gate_history_store
+        db_path = (args.out.parent if args.out else out_dir(args.app)) / "release_gate_history.sqlite3"
+        hist_store = get_gate_history_store(args.app, custom_path=db_path)
+        target_pfs = [args.platform.lower()] if args.platform else ["android", "ios"]
+        if args.trend:
+            for pf in target_pfs:
+                trends = hist_store.get_recent_release_gate_trend(args.app, pf)
+                print(f"\n=== Release Gate Quality Trend: {args.app} [{pf.upper()}] ===")
+                if not trends:
+                    print("  尚無品質歷史評估紀錄")
+                    continue
+                for t in trends:
+                    st = t.latest_status.upper()
+                    rec = " (Recovered ↗)" if t.is_recovered else ""
+                    reg = " (Regressed ↘)" if t.is_regressed else ""
+                    print(f"  - v{t.version:<10} [{st:<5}{rec}{reg}] (evaluations: {t.history_count}, latest: {t.latest_evaluated_at})")
+            sys.exit(0)
+        if args.target_version and args.platform:
+            history = hist_store.get_release_gate_history(args.app, args.platform, args.target_version)
+            print(f"\n=== Release Gate History: {args.app} [{args.platform.upper()}] v{args.target_version} ===")
+            if not history:
+                print("  尚無評估歷史紀錄")
+            else:
+                for idx, h in enumerate(history, 1):
+                    tr = f" [{h.transition.transition_type.upper()}]" if h.transition else ""
+                    print(f"  #{idx} {h.evaluated_at} -> [{h.gate_status.upper()}]{tr}")
+                    print(f"     Summary: {h.summary}")
+            sys.exit(0)
+
 
     try:
         artifact = run_release_gate_for_app(

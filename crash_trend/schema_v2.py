@@ -372,6 +372,18 @@ class ReleaseGateSummary(TypedDict):
     evaluated_at: NotRequired[str]
 
 
+class GateHistoryPoint(TypedDict):
+    evaluated_at: str
+    gate_status: str
+    sample_sufficient: bool
+    summary: str
+    rules_triggered: list[str]
+    transition: NotRequired[dict[str, Any] | None]
+    evaluation_key: NotRequired[str]
+    policy_version: NotRequired[str]
+    rule_results: NotRequired[list[RuleEvaluationResult]]
+
+
 class ReleaseCatalogItem(TypedDict):
     version: str
     platform: Literal["ios", "android"]
@@ -389,6 +401,8 @@ class ReleaseCatalogItem(TypedDict):
     issue_lifecycle: NotRequired[ReleaseIssueLifecycle]
     vs_previous: NotRequired[PreviousReleaseComparison | None]
     release_gate: NotRequired[ReleaseGateSummary | None]
+    gate_history: NotRequired[list[GateHistoryPoint] | None]
+
 
 
 class CatalogVersionHistory(TypedDict):
@@ -737,6 +751,22 @@ def validate_release_catalog(catalog: Any, errors: list[str], p: str = "") -> No
                     errors.append(f"{cp}release_gate.evaluated_at must be an ISO 8601 string")
                 if "rule_results" in rg and not isinstance(rg["rule_results"], list):
                     errors.append(f"{cp}release_gate.rule_results must be a list")
+
+        if "gate_history" in item and item["gate_history"] is not None:
+            gh = item["gate_history"]
+            if not isinstance(gh, list):
+                errors.append(f"{cp}gate_history must be a list or null")
+            else:
+                for gh_idx, pt in enumerate(gh):
+                    ghp = f"{cp}gate_history[{gh_idx}]."
+                    if not isinstance(pt, dict):
+                        errors.append(f"{ghp}must be an object")
+                        continue
+                    if "evaluated_at" in pt and not isinstance(pt["evaluated_at"], str):
+                        errors.append(f"{ghp}evaluated_at must be an ISO 8601 string")
+                    if "gate_status" in pt and not isinstance(pt["gate_status"], str):
+                        errors.append(f"{ghp}gate_status must be a string")
+
 
 
 def validate_historical_catalog(data: dict) -> list[str]:
