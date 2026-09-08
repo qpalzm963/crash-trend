@@ -870,27 +870,29 @@ CREATE TABLE IF NOT EXISTS release_gate_snapshots (
     app_id TEXT NOT NULL,
     platform TEXT NOT NULL,
     version TEXT NOT NULL,
-    evaluated_at TEXT NOT NULL,
+    previous_version TEXT,
     gate_status TEXT NOT NULL,
-    should_alert INTEGER NOT NULL DEFAULT 0,
-    alert_severity TEXT NOT NULL DEFAULT 'none',
-    sample_sufficient INTEGER NOT NULL DEFAULT 1,
-    summary TEXT NOT NULL DEFAULT '',
-    rules_triggered_json TEXT NOT NULL DEFAULT '[]',
-    rule_results_json TEXT NOT NULL DEFAULT '[]',
-    evaluation_key TEXT NOT NULL,
-    policy_version TEXT NOT NULL DEFAULT '1.0',
+    sample_sufficient INTEGER NOT NULL,
+    policy_version TEXT NOT NULL,
     policy_identity TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    comparison_window TEXT,
+    evaluated_at TEXT NOT NULL,
+    evaluation_key TEXT NOT NULL UNIQUE,
+    triggered_reasons_json TEXT NOT NULL,
+    rule_results_json TEXT NOT NULL,
+    normalized_metrics_json TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    schema_version TEXT NOT NULL DEFAULT '1.0',
+    created_at TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_gate_snapshots_app_ver
-ON release_gate_snapshots(app_id, platform, version, evaluated_at);
+CREATE INDEX IF NOT EXISTS idx_gate_history_app_platform_ver
+    ON release_gate_snapshots(app_id, platform, version, evaluated_at);
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_gate_snapshots_eval_key
-ON release_gate_snapshots(evaluation_key);
+CREATE INDEX IF NOT EXISTS idx_gate_history_eval_key
+    ON release_gate_snapshots(evaluation_key);
 ```
-- **冪等重試保證**：以 `evaluation_key`（由 `app_id:platform:version:policy_identity:metrics_digest` 產生之 SHA-256）建立 UNIQUE INDEX，搭配 `INSERT OR IGNORE` 保證重複執行或重播不會產生重複快照。
+- **冪等重試保證**：以 `evaluation_key`（由 `app_id:platform:version:evaluated_at:policy_version:policy_identity` 產生之 SHA-256）建立 UNIQUE INDEX，搭配 `INSERT OR IGNORE` 保證重複執行或重播不會產生重複快照。
 - **狀態演進與轉移追蹤**：提供 `get_release_gate_history()` 依 `(evaluated_at DESC, id DESC)` 順序重建 `insufficient -> warn -> fail -> pass (recovery)` 之完整轉移軌跡。
 
 ---
@@ -939,40 +941,68 @@ ON alert_deliveries(alert_fingerprint);
 ## 6. 契約六：Release Gate Artifact JSON 規格（`out/<app>/release_gate.json`）
 
 每次執行 Release Gate 評估時，產出單次最新評估結果的機器可讀 JSON 產物：
+
+#### `ReleaseGateArtifact`
 ```json
 {
   "schema_version": "1.0",
   "app_id": "shop_app",
   "generated_at": "2026-09-08T10:00:00Z",
-  "evaluations": {
+  "overall_status": "warn",
+  "should_alert": true,
+  "alert_severity": "warning",
+  "alert_summary": "App [shop_app] 品質閘門警示： 版本 3.2.0 (android) 品質閘門觸發警告（1 項預警）：crash_rate_change_pct (15.2%) exceeded warn threshold (10.0%)",
+  "platforms": {
     "android": {
       "platform": "android",
-      "version": "3.2.0",
-      "status": "warn",
-      "evaluated_at": "2026-09-08T10:00:00Z",
+      "target_version": "3.2.0",
+      "previous_version": "3.1.0",
+      "gate_status": "warn",
       "sample_sufficient": true,
-      "comparison_window": "30d",
-      "summary": "Crash rate increased by 15.2% (warn threshold: 10.0%)",
-      "rules_triggered": ["crash_rate_change_pct"],
       "rule_results": [
         {
           "rule_name": "crash_rate_change_pct",
-          "metric_value": 0.152,
-          "warn_threshold": 0.10,
+          "metric_name": "crash_rate_change_pct",
+          "current_value": 0.152,
+          "previous_value": 0.05,
+          "warn_threshold": 0.1,
           "fail_threshold": 0.25,
-          "severity": "warn",
+          "status": "warn",
           "reason": "crash_rate_change_pct (15.2%) exceeded warn threshold (10.0%)"
+        },
+        {
+          "rule_name": "crash_free_users_drop",
+          "metric_name": "crash_free_users_drop",
+          "current_value": 0.002,
+          "previous_value": 0.001,
+          "warn_threshold": 0.005,
+          "fail_threshold": 0.01,
+          "status": "pass",
+          "reason": "crash_free_users_drop (0.2%) within warn threshold (0.5%)"
         }
       ],
-      "metrics_snapshot": {
-        "crash_rate_change_pct": 0.152,
-        "crash_free_users_drop": 0.003
-      }
+      "alert": {
+        "should_alert": true,
+        "alert_severity": "warning",
+        "alert_summary": "版本 3.2.0 (android) 品質閘門觸發警告（1 項預警）：crash_rate_change_pct (15.2%) exceeded warn threshold (10.0%)",
+        "trigger_rules": [
+          "crash_rate_change_pct"
+        ]
+      },
+      "evaluated_at": "2026-09-08T10:00:00Z",
+      "comparison_window": "30d"
     }
-  }
+  },
+  "policy_version": "1.0",
+  "policy": {
+    "enabled": true,
+    "policy_version": "1.0",
+    "comparison_window": "30d"
+  },
+  "policy_identity": "a1b2c3d4e5f60718"
 }
 ```
-- **CI Quality Gate 整合**：`pipeline_run.py` 搭配 `--fail-on-regression` 時讀取本產物，若任何平台或 App 出現 `status == "fail"` 則以 exit code `2` 中斷 CI。
+- **CI Quality Gate 整合**：`pipeline_run.py` 搭配 `--fail-on-regression` 時讀取本產物，若任何平台或 App 出現 `overall_status == "fail"`（或任何平台 `gate_status == "fail"`）則以 exit code `2` 中斷 CI。
 
 ---
 

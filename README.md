@@ -475,7 +475,7 @@ python3 -m crash_trend.ai_config_service --serve 8080
 
 每次 Release Gate 評估結果均保存為不可變歷史快照，持久化於 SQLite 儲存庫 `out/<app>/release_gate_history.sqlite3`（資料表 `release_gate_snapshots`），作為品質演進趨勢分析之權威來源：
 
-- **不可變快照與冪等重試**：依據 `(app_id, platform, version, policy_identity, metrics_digest)` 產生 SHA-256 `evaluation_key`，以唯一索引搭配 `INSERT OR IGNORE` 保證重複執行或歷史重播完全冪等，絕不產生重複資料。
+- **不可變快照與冪等重試**：依據 `(app_id, platform, version, evaluated_at, policy_version, policy_identity)` 產生 SHA-256 `evaluation_key`，以唯一索引搭配 `INSERT OR IGNORE` 保證重複執行或歷史重播完全冪等，絕不產生重複資料。
 - **狀態演進與轉移追蹤**：完整記錄版本從 `insufficient_data -> warn -> fail -> pass (recovery)` 的狀態演進軌跡，追蹤指標如何隨修復或新版本發佈逐步收斂。
 - **解耦失敗語意**：歷史快照儲存庫寫入異常絕不中斷主要管線，亦不影響 `release_gate.json` 或後續 `build_dashboard` 產出。
 - **Dashboard 前端整合**：
@@ -654,7 +654,7 @@ crash-trend 的 CLI 工具在設計上與 CI/CD 工作流深度整合，嚴格�
 | 模組 | 主要用途 | 常用參數範例 |
 | :--- | :--- | :--- |
 | `crash_trend.pipeline_run` | 端到端管線編排 | `python3 -m crash_trend.pipeline_run --app shop_app --days 30 --fail-on-regression` |
-| `crash_trend.release_gate` | 版本品質退化閘門獨立評估 | `python3 -m crash_trend.release_gate --app shop_app --platform android --fail-on-regression` |
+| `crash_trend.release_gate` | 版本品質退化閘門獨立評估 | `python3 -m crash_trend.release_gate --app shop_app --fail-on-regression` |
 | `crash_trend.release_gate_history` | 閘門歷史快照與品質趨勢 | `python3 -m crash_trend.release_gate_history --app shop_app --trend --limit 10` |
 | `crash_trend.alerts` | 品質警報發送與審計查詢 | `python3 -m crash_trend.alerts --history --app shop_app --limit 20 --json` |
 | `crash_trend.ai_config_service` | AI 治理原則調整與 Admin API | `python3 -m crash_trend.ai_config_service --app shop_app --mode auto` |
@@ -690,7 +690,7 @@ Dashboard V2.7 標誌著從單純的「事後監控與報表」邁向「主動�
    - 整合 Google Chat Incoming Webhook，實踐版本退化（WARN / FAIL）與復原通知即時推送。
    - 實作確定性 SHA-256 數位指紋與 6 小時去重冷卻，支援狀態變更與新原因即時重發。
    - 支援版本專屬 `threadKey` 討論串收攏，以及嚴格金鑰隔離與 URL 脫敏。
-   - 提供 `--dry-run`、`--force` 與 `--fail-on-alert-failure` 獨立 CLI。
+   - 提供 `--dry-run`、`--force` 獨立 CLI 與 `--history` 審計查詢；管線層提供 `--fail-on-alert-failure` 嚴格退出。
 3. **Issue #61 — Historical Gate Trend**：
    - 建立 SQLite 不可變歷史評估快照庫 `out/<app>/release_gate_history.sqlite3`。
    - 以 `evaluation_key` 保證重播與重試完全冪等。

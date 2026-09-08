@@ -1513,7 +1513,8 @@ def validate_dashboard_v2(data: dict) -> list[str]:
     else:
         if default_app and default_app not in apps:
             errors.append(f"Root default_app '{default_app}' is not present in apps dict")
-        is_modern = str(data.get("schema_version", "")).startswith("2.3") or str(data.get("schema_version", "")).startswith("2.6")
+        schema_ver = str(data.get("schema_version", ""))
+        is_modern = schema_ver not in ("2.0", "2.0.0", "1.0")
         for app_name, app_data in apps.items():
             errors.extend(validate_app_dashboard_v2(app_data, prefix=f"apps['{app_name}']", require_lifecycle=is_modern))
 
