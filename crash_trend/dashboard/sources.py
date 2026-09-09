@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from crash_trend.dashboard.navigation import get_view_container_open_tag
+
 
 def get_sources_html() -> str:
     """Returns HTML markup for #view-notifications (data pipelines & alert observability)."""
     return """    <!-- VIEW: NOTIFICATIONS (通知與管道狀態) -->
-    <section class="view-container" id="view-notifications">
+    """ + get_view_container_open_tag("notifications") + """
       <div class="section-header">
         <div>
           <h2 class="section-title">數據管道與通知 (Data Pipelines)</h2>
