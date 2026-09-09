@@ -36,10 +36,13 @@ from crash_trend.gate.decision import (
     _DECISION_TABLE,
     decision_from_gate_result,
     derive_decision,
+    gate_evaluated_quality,
 )
 from crash_trend.schema_v2 import (
+    CANONICAL_DECISION_ACTIONS,
     VALID_DECISION_ACTIONS,
     VALID_GATE_STATUSES,
+    canonical_decision_status,
     validate_dashboard_v2,
     validate_release_catalog,
     validate_release_decision,
@@ -699,6 +702,410 @@ class TestDecisionBackwardCompatibility(unittest.TestCase):
             data = json.loads((FIXTURES / name).read_text(encoding="utf-8"))
             self.assertEqual(validate_dashboard_v2(data), [], name)
             self.assertNotIn("decision", json.dumps(data, ensure_ascii=False))
+
+
+class TestDecisionSemanticConsistency(unittest.TestCase):
+    """Negative tests: contradictory-but-enum-valid payloads must be rejected.
+
+    #72 刻意讓 Alert / Dashboard consumer 直接信任 `decision` 而不重算，所以
+    「每個欄位各自是合法 enum、但彼此矛盾」的 payload 一旦通過 validation，就會被
+    下游當成 green light。這一組測試鎖住 semantic consistency validation：
+    canonical (status, action) pair，以及 decision.status 與外層 gate 狀態一致。
+    """
+
+    def _catalog_item(self, release_gate: dict[str, Any]) -> dict[str, Any]:
+        """Builds a minimal valid ReleaseCatalogItem carrying the given gate summary."""
+        return {
+            "version": "3.2.0",
+            "platform": "android",
+            "first_seen": "2026-08-01T00:00:00Z",
+            "last_seen": "2026-09-01T00:00:00Z",
+            "release_date": "2026-08-01",
+            "status": "latest",
+            "lifetime_crashes": 10,
+            "lifetime_issues": 2,
+            "lifetime_affected_users": 5,
+            "lifetime_fatal": 3,
+            "lifetime_anr": 1,
+            "recent_health": {},
+            "release_gate": release_gate,
+        }
+
+    def _artifact(self, platform_result: dict[str, Any]) -> dict[str, Any]:
+        """Builds a minimal valid ReleaseGateArtifact carrying the given platform result."""
+        return {
+            "schema_version": "1.0",
+            "app_id": "shop_app",
+            "generated_at": "2026-09-09T10:00:00Z",
+            "overall_status": "fail",
+            "should_alert": True,
+            "alert_severity": "critical",
+            "alert_summary": "summary",
+            "platforms": {"android": platform_result},
+            "policy_version": "1.0",
+            "policy": {},
+        }
+
+    def _platform_result(self, **overrides: Any) -> dict[str, Any]:
+        base: dict[str, Any] = {
+            "platform": "android",
+            "target_version": "3.2.0",
+            "previous_version": "3.1.0",
+            "gate_status": "fail",
+            "sample_sufficient": True,
+            "rule_results": [_rule("crash_rate_regression", "fail", "崩潰率上升 +30.00%，達到失敗門檻 (+25.0%)")],
+            "alert": {
+                "should_alert": True,
+                "alert_severity": "critical",
+                "alert_summary": "summary",
+                "trigger_rules": ["crash_rate_regression"],
+            },
+            "evaluated_at": "2026-09-09T10:00:00Z",
+        }
+        base.update(overrides)
+        return base
+
+    def _gate_summary(self, **overrides: Any) -> dict[str, Any]:
+        base: dict[str, Any] = {
+            "status": "fail",
+            "should_alert": True,
+            "alert_severity": "critical",
+            "alert_summary": "summary",
+            "rules_triggered": ["crash_rate_regression"],
+            "sample_sufficient": True,
+            "rule_results": [_rule("crash_rate_regression", "fail", "崩潰率上升 +30.00%，達到失敗門檻 (+25.0%)")],
+        }
+        base.update(overrides)
+        return base
+
+    def test_canonical_pairs_are_accepted(self) -> None:
+        """Every pair the derivation table produces must remain valid."""
+        for status, (action, recommendation) in _DECISION_TABLE.items():
+            self.assertEqual(
+                validate_release_decision(
+                    {"status": status, "action": action, "recommendation": recommendation, "reasons": []}
+                ),
+                [],
+                status,
+            )
+
+    def test_status_action_mismatch_is_rejected(self) -> None:
+        """A non-canonical (status, action) pair must not pass as two valid enums."""
+        for status, canonical_action in CANONICAL_DECISION_ACTIONS.items():
+            for wrong_action in sorted(VALID_DECISION_ACTIONS - {canonical_action}):
+                errors = validate_release_decision(
+                    {
+                        "status": status,
+                        "action": wrong_action,
+                        "recommendation": "任意文案",
+                        "reasons": [],
+                    }
+                )
+                self.assertTrue(
+                    any("canonical pair" in e for e in errors),
+                    f"status '{status}' + action '{wrong_action}' must be rejected, got {errors}",
+                )
+
+    def test_fail_gate_with_pass_decision_is_rejected_in_platform_gate_result(self) -> None:
+        """The exact payload named in review: gate_status=fail + decision pass/proceed."""
+        artifact = self._artifact(
+            self._platform_result(
+                gate_status="fail",
+                decision={
+                    "status": "pass",
+                    "action": "proceed",
+                    "recommendation": _DECISION_TABLE["pass"][1],
+                    "reasons": [],
+                },
+            )
+        )
+        errors = validate_release_gate_artifact(artifact)
+        self.assertTrue(
+            any("contradicts gate status" in e for e in errors),
+            f"gate_status='fail' with a PASS decision must be rejected, got {errors}",
+        )
+
+    def test_fail_gate_with_pass_decision_is_rejected_in_release_gate_summary(self) -> None:
+        """The same contradiction must be rejected in the Dashboard release_gate summary."""
+        errors: list[str] = []
+        validate_release_catalog(
+            [
+                self._catalog_item(
+                    self._gate_summary(
+                        status="fail",
+                        decision={
+                            "status": "pass",
+                            "action": "proceed",
+                            "recommendation": _DECISION_TABLE["pass"][1],
+                            "reasons": [],
+                        },
+                    )
+                )
+            ],
+            errors,
+        )
+        self.assertTrue(
+            any("contradicts gate status" in e for e in errors),
+            f"release_gate.status='fail' with a PASS decision must be rejected, got {errors}",
+        )
+
+    def test_every_parent_status_mismatch_is_rejected(self) -> None:
+        """No enclosing gate status may disagree with decision.status, in either validator."""
+        for parent_status in sorted(VALID_GATE_STATUSES):
+            for dec_status in sorted(VALID_GATE_STATUSES - {parent_status}):
+                decision = {
+                    "status": dec_status,
+                    "action": CANONICAL_DECISION_ACTIONS[dec_status],
+                    "recommendation": _DECISION_TABLE[dec_status][1],
+                    "reasons": [],
+                }
+                artifact_errors = validate_release_gate_artifact(
+                    self._artifact(self._platform_result(gate_status=parent_status, decision=decision))
+                )
+                self.assertTrue(
+                    any("contradicts gate status" in e for e in artifact_errors),
+                    f"gate_status '{parent_status}' + decision '{dec_status}' must be rejected",
+                )
+                summary_errors: list[str] = []
+                validate_release_catalog(
+                    [self._catalog_item(self._gate_summary(status=parent_status, decision=decision))],
+                    summary_errors,
+                )
+                self.assertTrue(
+                    any("contradicts gate status" in e for e in summary_errors),
+                    f"release_gate.status '{parent_status}' + decision '{dec_status}' must be rejected",
+                )
+
+    def test_consistency_follows_the_canonical_derivation_not_literal_equality(self) -> None:
+        """`pass` on a thin sample legitimately derives `insufficient_data`.
+
+        Validation must accept exactly what `derive_decision()` produces, so the
+        check cannot be a naive `decision.status == gate_status` comparison.
+        """
+        thin_sample_decision = derive_decision("pass", [], sample_sufficient=False)
+        self.assertEqual(thin_sample_decision["status"], "insufficient_data")
+        accepted = self._artifact(
+            self._platform_result(
+                gate_status="pass",
+                sample_sufficient=False,
+                decision=dict(thin_sample_decision),
+            )
+        )
+        self.assertEqual(validate_release_gate_artifact(accepted), [])
+
+        # Conversely, claiming PASS on that same thin sample must be rejected.
+        rejected = self._artifact(
+            self._platform_result(
+                gate_status="pass",
+                sample_sufficient=False,
+                decision={
+                    "status": "pass",
+                    "action": "proceed",
+                    "recommendation": _DECISION_TABLE["pass"][1],
+                    "reasons": [],
+                },
+            )
+        )
+        errors = validate_release_gate_artifact(rejected)
+        self.assertTrue(
+            any("contradicts gate status" in e for e in errors),
+            f"PASS decision on an insufficient sample must be rejected, got {errors}",
+        )
+
+    def test_evaluator_output_always_satisfies_the_consistency_check(self) -> None:
+        """Real gate output must never trip the new validation."""
+        policy = GatePolicy(min_sessions=1000)
+        items: list[dict[str, Any]] = [
+            {
+                "version": "1.0.0",
+                "platform": "android",
+                "status": "latest",
+                "recent_health": {"30d": {"sessions_total": 15000, "sample_sufficient": True}},
+                "vs_previous": None,
+            },
+            {
+                "version": "2.1.0",
+                "platform": "android",
+                "status": "latest",
+                "recent_health": {"30d": {"sessions_total": 500, "crash_events": 2}},
+                "vs_previous": {"previous_version": "2.0.0", "crash_rate_change_pct": 0.5},
+            },
+            {
+                "version": "2.1.0",
+                "platform": "android",
+                "status": "latest",
+                "recent_health": {"30d": {"sessions_total": 20000, "sample_sufficient": True}},
+                "vs_previous": {"previous_version": "2.0.0", "crash_rate_change_pct": 0.30},
+            },
+        ]
+        for item in items:
+            res = dict(evaluate_release(item, policy))
+            self.assertEqual(
+                validate_release_decision(
+                    res["decision"],
+                    parent_status=res["gate_status"],
+                    parent_sample_sufficient=res["sample_sufficient"],
+                ),
+                [],
+                res["gate_status"],
+            )
+
+
+class TestDisabledGateIsNotAGreenLight(unittest.TestCase):
+    """A gate that never evaluated quality must not recommend proceeding.
+
+    disabled-policy 分支根本沒有做品質評估，因此不得產出 `proceed` /「可以繼續
+    發布」的建議（Issue #72 review）。解法是「不附 decision」而非新增第六種狀態：
+    `decision` 為 NotRequired，consumer 早已必須容忍其不存在。
+    """
+
+    DISABLED_ITEM: dict[str, Any] = {
+        "version": "2.1.0",
+        "platform": "android",
+        "status": "latest",
+        "recent_health": {"30d": {"sessions_total": 20000, "sample_sufficient": True}},
+        "vs_previous": {"previous_version": "2.0.0", "crash_rate_change_pct": 0.30},
+    }
+
+    def _disabled_result(self) -> dict[str, Any]:
+        return dict(evaluate_release(self.DISABLED_ITEM, GatePolicy(enabled=False)))
+
+    def test_disabled_policy_attaches_no_decision(self) -> None:
+        self.assertNotIn("decision", self._disabled_result())
+
+    def test_disabled_policy_yields_no_proceed_recommendation(self) -> None:
+        """No canonical action or recommendation wording may appear anywhere in the result."""
+        res = self._disabled_result()
+        blob = json.dumps(res, ensure_ascii=False)
+        for action in sorted(VALID_DECISION_ACTIONS):
+            self.assertNotIn(action, blob, f"disabled gate result leaks decision action '{action}'")
+        for _action, recommendation in _DECISION_TABLE.values():
+            self.assertNotIn(recommendation, blob, "disabled gate result leaks a recommendation")
+        # The "gate not enabled" fact must still be stated.
+        self.assertIn("未啟用", res["alert"]["alert_summary"])
+
+    def test_disabled_state_is_not_relabelled_as_insufficient_data(self) -> None:
+        """「樣本不足」與「未啟用」是不同的事實，不得互相冒充。"""
+        res = self._disabled_result()
+        self.assertNotEqual(res["gate_status"], "insufficient_data")
+        self.assertNotIn("decision", res)
+        self.assertNotIn("樣本不足", res["alert"]["alert_summary"])
+
+    def test_disabled_result_still_validates_inside_a_gate_artifact(self) -> None:
+        """Omitting the NotRequired contract must not break artifact validation."""
+        artifact: dict[str, Any] = {
+            "schema_version": "1.0",
+            "app_id": "shop_app",
+            "generated_at": "2026-09-09T10:00:00Z",
+            "overall_status": "pass",
+            "should_alert": False,
+            "alert_severity": "none",
+            "alert_summary": "App [shop_app] 品質閘門未啟用 (enabled: false)",
+            "platforms": {"android": self._disabled_result()},
+            "policy_version": "1.0",
+            "policy": {},
+        }
+        self.assertEqual(validate_release_gate_artifact(artifact), [])
+
+    def test_gate_evaluated_quality_separates_evaluated_from_unevaluated(self) -> None:
+        """The evidence predicate is what keeps consumers from fabricating a decision."""
+        self.assertFalse(gate_evaluated_quality(self._disabled_result()))
+        self.assertFalse(gate_evaluated_quality({"status": "pass", "rule_results": []}))
+        self.assertFalse(gate_evaluated_quality({"status": "pass"}))
+        # Every enabled-gate branch leaves at least one rule as evidence.
+        policy = GatePolicy(min_sessions=1000)
+        evaluated = dict(evaluate_release(self.DISABLED_ITEM, policy))
+        self.assertTrue(gate_evaluated_quality(evaluated))
+
+    def test_legacy_disabled_gate_summary_is_not_backfilled_into_a_green_light(self) -> None:
+        """renderer.py's legacy backfill must not manufacture the same false green.
+
+        A pre-V3.2 bundle whose `release_gate` describes a non-evaluated gate
+        (`status: pass`, no rule evidence) must come out of the bundle adapter
+        with no decision at all, rather than a `pass -> proceed` green light.
+        """
+        fixture = json.loads((FIXTURES / "dashboard_v2.json").read_text(encoding="utf-8"))
+        app_v2 = fixture["apps"]["shop_app"]
+        for issue in app_v2["top_issues"]:
+            issue.setdefault(
+                "lifecycle",
+                {
+                    "status": "persistent",
+                    "latest_version": "3.2.0",
+                    "first_seen_version": "3.1.0",
+                    "last_seen_version": "3.2.0",
+                    "versions_seen": 2,
+                    "confidence": "high",
+                    "previously_absent_since": None,
+                    "reappeared_version": None,
+                    "reason": None,
+                },
+            )
+        disabled_gate = {
+            "status": "pass",
+            "should_alert": False,
+            "alert_severity": "none",
+            "alert_summary": "版本 3.2.0 (android) 品質閘門未啟用 (enabled: false)",
+            "rules_triggered": [],
+            "sample_sufficient": True,
+            "rule_results": [],
+        }
+        app_v2["release_catalog"] = [
+            {
+                "version": "3.2.0",
+                "platform": "android",
+                "first_seen": "2026-08-01T00:00:00Z",
+                "last_seen": "2026-09-01T00:00:00Z",
+                "release_date": "2026-08-01",
+                "status": "latest",
+                "lifetime_crashes": 10,
+                "lifetime_issues": 2,
+                "lifetime_affected_users": 5,
+                "lifetime_fatal": 3,
+                "lifetime_anr": 1,
+                "recent_health": {},
+                "release_gate": disabled_gate,
+            }
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmproot = Path(tmpdir)
+            out_app = tmproot / "out" / "shop_app"
+            out_app.mkdir(parents=True)
+            (out_app / "dashboard_v2.json").write_text(json.dumps(app_v2, ensure_ascii=False), encoding="utf-8")
+
+            fake_cfg = {
+                "apps": {
+                    "shop_app": {
+                        "app_id": "shop_app",
+                        "display_name": "Shop App",
+                        "platforms": ["android"],
+                    }
+                }
+            }
+            with patch("crash_trend.build_dashboard.ROOT", tmproot):
+                bundle = assemble_bundle_from_apps(fake_cfg)
+
+        self.assertIsNotNone(bundle)
+        assert bundle is not None
+        self.assertEqual(validate_dashboard_v2(bundle), [])
+        rebuilt_gate = bundle["apps"]["shop_app"]["release_catalog"][0]["release_gate"]
+        self.assertNotIn(
+            "decision",
+            rebuilt_gate,
+            "the bundle adapter fabricated a decision for a gate that never evaluated",
+        )
+        self.assertNotIn(_DECISION_TABLE["pass"][1], json.dumps(bundle, ensure_ascii=False))
+
+    def test_canonical_status_helper_is_shared_by_derivation_and_validation(self) -> None:
+        """Derivation and validation must normalize status through one implementation."""
+        for status in (*GATE_STATUS_LITERALS, "totally_unknown", " PASS "):
+            for sample_ok in (True, False):
+                self.assertEqual(
+                    derive_decision(status, [], sample_sufficient=sample_ok)["status"],
+                    canonical_decision_status(status, sample_ok),
+                    f"{status!r} / sample_sufficient={sample_ok}",
+                )
 
 
 if __name__ == "__main__":

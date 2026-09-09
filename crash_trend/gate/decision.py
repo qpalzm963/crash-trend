@@ -20,31 +20,29 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any, Literal, cast
 
-from crash_trend.schema_v2 import DecisionAction, ReleaseDecision
+from crash_trend.schema_v2 import (
+    CANONICAL_DECISION_ACTIONS,
+    DecisionAction,
+    ReleaseDecision,
+    canonical_decision_status,
+)
 
-# Canonical status -> (action, recommendation) mapping. This table is the ONLY
-# place the recommendation wording may exist across the codebase.
+# Canonical status -> recommendation wording. This table is the ONLY place the
+# recommendation wording may exist across the codebase. The paired `action`
+# comes from `CANONICAL_DECISION_ACTIONS` in `crash_trend.schema_v2`, so schema
+# validation and this derivation can never disagree about the canonical pair.
+_RECOMMENDATION_BY_STATUS: dict[str, str] = {
+    "pass": "指標均在安全閾值內，可以繼續發布",
+    "warn": "建議先觀察並調查退化指標，暫緩擴大發布",
+    "fail": "建議停止擴大發布，優先處理退化問題",
+    "insufficient_data": "樣本不足尚無法判定品質，請等待資料累積後再決定是否擴大發布",
+    "baseline": "無前版可比較，本版作為基準；請持續觀察後再決定是否擴大發布",
+}
+
+# Canonical status -> (action, recommendation) derivation table.
 _DECISION_TABLE: dict[str, tuple[DecisionAction, str]] = {
-    "pass": (
-        "proceed",
-        "指標均在安全閾值內，可以繼續發布",
-    ),
-    "warn": (
-        "investigate",
-        "建議先觀察並調查退化指標，暫緩擴大發布",
-    ),
-    "fail": (
-        "hold",
-        "建議停止擴大發布，優先處理退化問題",
-    ),
-    "insufficient_data": (
-        "await_data",
-        "樣本不足尚無法判定品質，請等待資料累積後再決定是否擴大發布",
-    ),
-    "baseline": (
-        "establish_baseline",
-        "無前版可比較，本版作為基準；請持續觀察後再決定是否擴大發布",
-    ),
+    status: (CANONICAL_DECISION_ACTIONS[status], recommendation)
+    for status, recommendation in _RECOMMENDATION_BY_STATUS.items()
 }
 
 
@@ -90,13 +88,7 @@ def derive_decision(
     evidence already exists and must not be softened.
     """
     rules = list(rule_results or [])
-    norm = str(status).strip().lower()
-
-    if norm not in _DECISION_TABLE:
-        norm = "insufficient_data"
-    elif norm == "pass" and not sample_sufficient:
-        norm = "insufficient_data"
-
+    norm = canonical_decision_status(status, sample_sufficient)
     action, recommendation = _DECISION_TABLE[norm]
 
     if norm == "fail":
@@ -120,6 +112,19 @@ def derive_decision(
         "recommendation": recommendation,
         "reasons": reasons,
     }
+
+
+def gate_evaluated_quality(result: Mapping[str, Any]) -> bool:
+    """判斷一份 gate 結果／summary 是否真的做過品質評估。
+
+    啟用中的 gate 必定至少留下一筆 `rule_results`：樣本不足規則、基準版規則，
+    或指標規則本身（即使指標缺漏也會留下 `skip` 佔位）。反之，完全沒有 rule 證據
+    的結果代表 gate 根本沒有評估品質（例如 policy `enabled: false`），此時不得由它
+    推導 Release Decision —— 否則 `pass -> proceed`「可以繼續發布」會把「gate 未啟用」
+    偽裝成「已驗證安全」（Issue #72 review）。
+    """
+    rules = result.get("rule_results")
+    return isinstance(rules, list) and len(rules) > 0
 
 
 def decision_from_gate_result(result: Mapping[str, Any]) -> ReleaseDecision:

@@ -209,6 +209,13 @@ class TestDocsContracts(unittest.TestCase):
         self.assertIn("derive_decision", self.schema_doc_text)
         self.assertIn("crash_trend/gate/decision.py", self.schema_doc_text)
 
+        # Semantic consistency validation and the gate-disabled rule are part of
+        # the contract consumers rely on, so they must be documented too.
+        self.assertIn("canonical_decision_status", self.schema_doc_text)
+        self.assertIn("CANONICAL_DECISION_ACTIONS", self.schema_doc_text)
+        self.assertIn("gate_evaluated_quality", self.schema_doc_text)
+        self.assertIn("enabled: false", self.schema_doc_text)
+
         # The documented ReleaseDecision example must pass the real validator.
         dec_match = re.search(r'"decision": (\{.*?\n      \})', self.schema_doc_text, re.DOTALL)
         self.assertIsNotNone(dec_match, "ReleaseGateArtifact example must embed a decision object")

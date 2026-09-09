@@ -361,8 +361,37 @@ class RuleEvaluationResult(TypedDict):
 
 
 DecisionAction = Literal["proceed", "investigate", "hold", "await_data", "establish_baseline"]
-VALID_DECISION_ACTIONS: set[str] = {"proceed", "investigate", "hold", "await_data", "establish_baseline"}
+
+# Canonical `decision.status -> decision.action` pairing (Issue #72)。
+# 推導端（`crash_trend.gate.decision`）與 schema validation 端共讀這一張表，
+# 因此 payload 不可能帶著「與自身 status 矛盾但各自合法」的 action。
+CANONICAL_DECISION_ACTIONS: dict[str, DecisionAction] = {
+    "pass": "proceed",
+    "warn": "investigate",
+    "fail": "hold",
+    "insufficient_data": "await_data",
+    "baseline": "establish_baseline",
+}
+
+VALID_DECISION_ACTIONS: set[str] = set(CANONICAL_DECISION_ACTIONS.values())
 VALID_GATE_STATUSES: set[str] = {"pass", "warn", "fail", "insufficient_data", "baseline"}
+
+
+def canonical_decision_status(status: Any, sample_sufficient: bool = True) -> str:
+    """回傳「gate status + 樣本狀態」所隱含的唯一 canonical decision status。
+
+    這是 decision status 正規化的唯一實作：`derive_decision()` 用它推導，
+    schema validation 用它檢查，因此「推導得到的 decision」與「validation 接受的
+    decision」不可能分歧。未知 status 與「pass 但樣本不足」一律降級為
+    `insufficient_data`，絕不被讀成綠燈；`warn` / `fail` 已具退化證據，不因樣本
+    狀態被弱化。
+    """
+    norm = str(status).strip().lower()
+    if norm not in CANONICAL_DECISION_ACTIONS:
+        return "insufficient_data"
+    if norm == "pass" and not sample_sufficient:
+        return "insufficient_data"
+    return norm
 
 
 class ReleaseDecision(TypedDict):
@@ -379,8 +408,24 @@ class ReleaseDecision(TypedDict):
     reasons: list[str]
 
 
-def validate_release_decision(data: Any, path: str = "decision") -> list[str]:
-    """Validates a ReleaseDecision payload. Returns a list of error messages."""
+def validate_release_decision(
+    data: Any,
+    path: str = "decision",
+    parent_status: Any = None,
+    parent_sample_sufficient: bool = True,
+) -> list[str]:
+    """Validates a ReleaseDecision payload. Returns a list of error messages.
+
+    除了各欄位的 enum / 型別檢查，還會驗證 **semantic consistency**：Alert 與
+    Dashboard consumer 依 Issue #72 定案「信任 decision、不得重算」，因此互相矛盾
+    但 enum 合法的 payload 必須在 validation 就被擋下，不能被當成綠燈：
+
+    1. `(status, action)` 必須是 `CANONICAL_DECISION_ACTIONS` 上的 canonical pair，
+       而不只是兩個各自合法的 enum 值。
+    2. 傳入 `parent_status` 時（`ReleaseGateSummary.status` 或
+       `PlatformGateResult.gate_status`），`decision.status` 必須等於該外層狀態
+       加上樣本狀態所推導出的 canonical decision status。
+    """
     errors: list[str] = []
     if not isinstance(data, dict):
         return [f"{path} must be an object"]
@@ -400,6 +445,28 @@ def validate_release_decision(data: Any, path: str = "decision") -> list[str]:
             errors.append(f"{path}.reasons must be a list")
         elif not all(isinstance(r, str) for r in data["reasons"]):
             errors.append(f"{path}.reasons must contain only strings")
+
+    status_val = data.get("status")
+    action_val = data.get("action")
+
+    # Semantic consistency 1：status 與 action 必須成對。
+    if status_val in VALID_GATE_STATUSES and action_val in VALID_DECISION_ACTIONS:
+        expected_action = CANONICAL_DECISION_ACTIONS[str(status_val)]
+        if action_val != expected_action:
+            errors.append(
+                f"{path}.action must be '{expected_action}' for status '{status_val}' "
+                f"(canonical pair), got '{action_val}'"
+            )
+
+    # Semantic consistency 2：decision.status 必須與外層 gate status 一致，
+    # 例如 gate_status='fail' 搭配 decision.status='pass' 必須被拒絕。
+    if parent_status is not None and status_val in VALID_GATE_STATUSES:
+        expected_status = canonical_decision_status(parent_status, parent_sample_sufficient)
+        if status_val != expected_status:
+            errors.append(
+                f"{path}.status '{status_val}' contradicts gate status '{parent_status}' "
+                f"(expected '{expected_status}')"
+            )
 
     return errors
 
@@ -914,7 +981,15 @@ def validate_release_catalog(catalog: Any, errors: list[str], p: str = "") -> No
                 if "rule_results" in rg and not isinstance(rg["rule_results"], list):
                     errors.append(f"{cp}release_gate.rule_results must be a list")
                 if "decision" in rg:
-                    errors.extend(validate_release_decision(rg["decision"], f"{cp}release_gate.decision"))
+                    rg_sample = rg.get("sample_sufficient")
+                    errors.extend(
+                        validate_release_decision(
+                            rg["decision"],
+                            f"{cp}release_gate.decision",
+                            parent_status=rg.get("status"),
+                            parent_sample_sufficient=rg_sample if isinstance(rg_sample, bool) else True,
+                        )
+                    )
 
         if "gate_history" in item and item["gate_history"] is not None:
             gh = item["gate_history"]

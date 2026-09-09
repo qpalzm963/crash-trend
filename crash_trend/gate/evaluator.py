@@ -132,7 +132,13 @@ def evaluate_release(
             "alert_summary": f"版本 {ver} ({pf}) 品質閘門未啟用 (enabled: false)",
             "trigger_rules": [],
         }
-        return _attach_decision({
+        # 這條分支完全沒有做任何品質評估，因此刻意不附上 Release Decision
+        # （Issue #72 review）：一旦附上就會被 canonicalize 成 pass -> proceed 的
+        # 綠燈建議，讓「gate 未啟用」被誤讀為「已驗證安全」。`decision` 為
+        # NotRequired，consumer 本來就必須容忍其不存在（舊 bundle / artifact 同樣
+        # 不帶），而「未啟用」這個事實由 alert_summary 表述。
+        # 註：不改用 insufficient_data ——「樣本不足」與「未啟用」是不同的事實。
+        return {
             "platform": pf,
             "target_version": ver,
             "previous_version": None,
@@ -142,7 +148,7 @@ def evaluate_release(
             "alert": dis_alert,
             "evaluated_at": now_iso,
             "comparison_window": None,
-        })
+        }
 
     recent_health = item.get("recent_health") or {}
     sample_ok, total_sess, sess_reason, suff_w = _is_sample_sufficient(item, recent_health, policy)

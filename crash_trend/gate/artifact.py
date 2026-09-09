@@ -154,7 +154,15 @@ def validate_release_gate_artifact(data: Any) -> list[str]:
             if "comparison_window" in pf_res and pf_res["comparison_window"] is not None and not isinstance(pf_res["comparison_window"], str):
                 errors.append(f"platforms['{pf_name}'].comparison_window must be a string or null")
             if "decision" in pf_res:
-                errors.extend(validate_release_decision(pf_res["decision"], f"platforms['{pf_name}'].decision"))
+                pf_sample = pf_res.get("sample_sufficient")
+                errors.extend(
+                    validate_release_decision(
+                        pf_res["decision"],
+                        f"platforms['{pf_name}'].decision",
+                        parent_status=pf_res.get("gate_status"),
+                        parent_sample_sufficient=pf_sample if isinstance(pf_sample, bool) else True,
+                    )
+                )
     elif platforms is not None:
         errors.append("platforms must be a dictionary")
 
