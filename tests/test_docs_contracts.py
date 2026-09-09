@@ -99,15 +99,16 @@ class TestDocsContracts(unittest.TestCase):
             cat_dict = json.loads(cat_path.read_text(encoding="utf-8"))
             self.assertEqual(cat_dict.get("schema_version"), "2.3.0")
 
-        # Document must mention Producer writes 2.3.0 and Bundle writes 2.7.0
+        # Document must mention Producer writes 2.3.0 and Bundle writes 2.8.0
         self.assertIn('"2.3.0"', self.schema_doc_text)
-        self.assertIn('"2.7.0"', self.schema_doc_text)
+        self.assertIn('"2.8.0"', self.schema_doc_text)
         self.assertIn("Producer", self.schema_doc_text)
 
-        # Validator must accept 2.3.0, 2.6.0 as well as 2.7.0
+        # Validator must accept 2.3.0, 2.6.0, 2.7.0 as well as 2.8.0
         self.assertIn("2.3.0", SUPPORTED_SCHEMA_VERSIONS)
         self.assertIn("2.6.0", SUPPORTED_SCHEMA_VERSIONS)
         self.assertIn("2.7.0", SUPPORTED_SCHEMA_VERSIONS)
+        self.assertIn("2.8.0", SUPPORTED_SCHEMA_VERSIONS)
 
     def test_exit_codes_and_cli_contracts_documented(self) -> None:
         """Verifies that Exit Code contracts (0, 1, 2) and CLI flags are clearly documented."""

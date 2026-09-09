@@ -712,6 +712,49 @@ class IssueHistoricalCatalog:
         return self.issues.get(issue_id)
 
 
+def _enrich_issue_with_history(iss: dict, hist: dict | None) -> None:
+    """Enriches an issue dictionary with historical authority, ensuring historical first seen is preserved."""
+    if hist:
+        hist_f_ver = hist.get("first_seen_version")
+        if hist_f_ver:
+            if iss.get("first_seen_version"):
+                earliest_v = min_version([iss["first_seen_version"], hist_f_ver])
+                if earliest_v:
+                    iss["first_seen_version"] = earliest_v
+            else:
+                iss["first_seen_version"] = hist_f_ver
+
+        hist_l_ver = hist.get("last_seen_version")
+        if hist_l_ver:
+            if iss.get("last_seen_version"):
+                latest_v = max_version([iss["last_seen_version"], hist_l_ver])
+                if latest_v:
+                    iss["last_seen_version"] = latest_v
+            else:
+                iss["last_seen_version"] = hist_l_ver
+
+        hist_f_ts = hist.get("first_seen_timestamp")
+        if hist_f_ts:
+            if iss.get("first_seen_timestamp"):
+                iss["first_seen_timestamp"] = min(iss["first_seen_timestamp"], hist_f_ts)
+            else:
+                iss["first_seen_timestamp"] = hist_f_ts
+
+        hist_l_ts = hist.get("last_seen_timestamp")
+        if hist_l_ts:
+            if iss.get("last_seen_timestamp"):
+                iss["last_seen_timestamp"] = max(iss["last_seen_timestamp"], hist_l_ts)
+            else:
+                iss["last_seen_timestamp"] = hist_l_ts
+
+    timeline = iss.get("occurrence_timeline")
+    if isinstance(timeline, dict):
+        if iss.get("first_seen_timestamp"):
+            timeline["first_seen_date"] = iss["first_seen_timestamp"][:10]
+        if iss.get("last_seen_timestamp"):
+            timeline["last_seen_date"] = iss["last_seen_timestamp"][:10]
+
+
 def enrich_app_data_with_lifecycle(
     app_data: dict,
     catalog: IssueHistoricalCatalog | None = None,
@@ -848,15 +891,7 @@ def enrich_app_data_with_lifecycle(
             hist = cat.get_issue_history(iid, platform=iss_pf)
             hist_versions = hist.get("versions_seen", []) if hist else []
 
-            if hist:
-                if hist.get("first_seen_version"):
-                    iss["first_seen_version"] = hist["first_seen_version"]
-                if hist.get("last_seen_version"):
-                    iss["last_seen_version"] = hist["last_seen_version"]
-                if hist.get("first_seen_timestamp") and not iss.get("first_seen_timestamp"):
-                    iss["first_seen_timestamp"] = hist["first_seen_timestamp"]
-                if hist.get("last_seen_timestamp") and not iss.get("last_seen_timestamp"):
-                    iss["last_seen_timestamp"] = hist["last_seen_timestamp"]
+            _enrich_issue_with_history(iss, hist)
 
             v_dist = iss.get("version_distribution") or []
             v_events = {v["version"]: v.get("events", 0) for v in v_dist if isinstance(v, dict) and v.get("version")}
@@ -929,15 +964,7 @@ def enrich_app_data_with_lifecycle(
                 hist = cat.get_issue_history(iid, platform=iss_pf)
                 hist_versions = hist.get("versions_seen", []) if hist else []
 
-                if hist:
-                    if hist.get("first_seen_version"):
-                        iss["first_seen_version"] = hist["first_seen_version"]
-                    if hist.get("last_seen_version"):
-                        iss["last_seen_version"] = hist["last_seen_version"]
-                    if hist.get("first_seen_timestamp") and not iss.get("first_seen_timestamp"):
-                        iss["first_seen_timestamp"] = hist["first_seen_timestamp"]
-                    if hist.get("last_seen_timestamp") and not iss.get("last_seen_timestamp"):
-                        iss["last_seen_timestamp"] = hist["last_seen_timestamp"]
+                _enrich_issue_with_history(iss, hist)
 
                 v_dist = iss.get("version_distribution") or []
                 v_events = {v["version"]: v.get("events", 0) for v in v_dist if isinstance(v, dict) and v.get("version")}

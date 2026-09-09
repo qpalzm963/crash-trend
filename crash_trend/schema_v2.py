@@ -13,8 +13,8 @@ from __future__ import annotations
 import datetime as dt
 from typing import Any, Literal, NotRequired, TypedDict
 
-SCHEMA_VERSION = "2.7.0"
-SUPPORTED_SCHEMA_VERSIONS = {"2.0", "2.3", "2.3.0", "2.6", "2.6.0", "2.7", "2.7.0"}
+SCHEMA_VERSION = "2.8.0"
+SUPPORTED_SCHEMA_VERSIONS = {"2.0", "2.3", "2.3.0", "2.6", "2.6.0", "2.7", "2.7.0", "2.8", "2.8.0"}
 
 # ---------------------------------------------------------------------------
 # TypedDict Definitions (Required by default)
@@ -489,6 +489,25 @@ class HistoricalCatalogData(TypedDict):
     app_versions: dict[str, dict[str, CatalogVersionHistory]]
 
 
+class IssueDailyOccurrence(TypedDict):
+    date: str
+    events: int
+    affected_users: int
+    fatal_events: int
+    anr_events: int
+    non_fatal_events: int
+    platform: NotRequired[Literal["ios", "android"] | str]
+    versions: dict[str, int]
+
+
+class IssueOccurrenceSummary(TypedDict):
+    first_seen_date: str | None
+    last_seen_date: str | None
+    peak_date: str | None
+    peak_events: int
+    daily: list[IssueDailyOccurrence]
+
+
 class IssueSummary(TypedDict):
     issue_id: str
     platform: Literal["ios", "android"]
@@ -507,6 +526,7 @@ class IssueSummary(TypedDict):
     ai_analysis: AIIssueAnalysis
     detail: IssueDetail | None
     lifecycle: NotRequired[IssueLifecycle]
+    occurrence_timeline: NotRequired[IssueOccurrenceSummary]
 
 
 class RecommendedAction(TypedDict):
@@ -685,6 +705,57 @@ def validate_issue_lifecycle(lc: Any, errors: list[str], p: str = "") -> None:
                 errors.append(f"{p}lifecycle.confidence must be high, medium, or low")
             if "versions_seen" in lc and (not isinstance(lc["versions_seen"], int) or lc["versions_seen"] < 0):
                 errors.append(f"{p}lifecycle.versions_seen must be a non-negative integer")
+
+
+def validate_issue_occurrence_summary(timeline: Any, errors: list[str], p: str = "") -> None:
+    """Validates an IssueOccurrenceSummary object against Schema V2.8 rules."""
+    if timeline is None:
+        return
+    if not isinstance(timeline, dict):
+        errors.append(f"{p}occurrence_timeline must be an object")
+        return
+
+    for req_k in ("first_seen_date", "last_seen_date", "peak_date", "peak_events", "daily"):
+        if req_k not in timeline:
+            errors.append(f"{p}occurrence_timeline.{req_k} is required")
+
+    if "first_seen_date" in timeline and timeline["first_seen_date"] is not None:
+        if not is_valid_date(timeline["first_seen_date"]):
+            errors.append(f"{p}occurrence_timeline.first_seen_date must be YYYY-MM-DD or null")
+    if "last_seen_date" in timeline and timeline["last_seen_date"] is not None:
+        if not is_valid_date(timeline["last_seen_date"]):
+            errors.append(f"{p}occurrence_timeline.last_seen_date must be YYYY-MM-DD or null")
+    if "peak_date" in timeline and timeline["peak_date"] is not None:
+        if not is_valid_date(timeline["peak_date"]):
+            errors.append(f"{p}occurrence_timeline.peak_date must be YYYY-MM-DD or null")
+    if "peak_events" in timeline and (not isinstance(timeline["peak_events"], int) or timeline["peak_events"] < 0):
+        errors.append(f"{p}occurrence_timeline.peak_events must be a non-negative integer")
+
+    daily = timeline.get("daily")
+    if isinstance(daily, list):
+        for didx, dpoint in enumerate(daily):
+            if not isinstance(dpoint, dict):
+                errors.append(f"{p}occurrence_timeline.daily[{didx}] must be an object")
+                continue
+            for dk in ("date", "events", "affected_users", "fatal_events", "anr_events", "non_fatal_events", "versions"):
+                if dk not in dpoint:
+                    errors.append(f"{p}occurrence_timeline.daily[{didx}].{dk} is required")
+            if "date" in dpoint and not is_valid_date(dpoint["date"]):
+                errors.append(f"{p}occurrence_timeline.daily[{didx}].date must be YYYY-MM-DD")
+            if "platform" in dpoint and dpoint["platform"] is not None and dpoint["platform"] not in {"ios", "android"}:
+                errors.append(f"{p}occurrence_timeline.daily[{didx}].platform must be 'ios' or 'android'")
+            for int_k in ("events", "affected_users", "fatal_events", "anr_events", "non_fatal_events"):
+                if int_k in dpoint and (not isinstance(dpoint[int_k], int) or dpoint[int_k] < 0):
+                    errors.append(f"{p}occurrence_timeline.daily[{didx}].{int_k} must be a non-negative integer")
+            if "versions" in dpoint:
+                if not isinstance(dpoint["versions"], dict):
+                    errors.append(f"{p}occurrence_timeline.daily[{didx}].versions must be an object")
+                else:
+                    for v_k, v_val in dpoint["versions"].items():
+                        if not isinstance(v_val, int) or v_val < 0:
+                            errors.append(f"{p}occurrence_timeline.daily[{didx}].versions['{v_k}'] must be a non-negative integer")
+    elif daily is not None:
+        errors.append(f"{p}occurrence_timeline.daily must be a list")
 
 
 def validate_release_catalog(catalog: Any, errors: list[str], p: str = "") -> None:
@@ -1080,6 +1151,9 @@ def validate_issue_summary(
     if require_lifecycle and lc is None:
         errors.append(f"{p}lifecycle is required in Schema V2.3")
     validate_issue_lifecycle(lc, errors, p)
+
+    # Occurrence Timeline (V2.8)
+    validate_issue_occurrence_summary(issue.get("occurrence_timeline"), errors, p)
 
 
 def validate_app_dashboard_v2(data: dict, prefix: str = "", require_lifecycle: bool = False) -> list[str]:
