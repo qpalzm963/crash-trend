@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from crash_trend.dashboard.navigation import get_view_container_open_tag
+
 
 def get_releases_html() -> str:
     """Returns HTML markup for version health, device distributions, and release catalog views."""
     return """    <!-- VIEW: VERSION HEALTH (版本健康度) -->
-    <section class="view-container" id="view-version_health">
+    """ + get_view_container_open_tag("version_health") + """
       <div class="section-header">
         <div>
           <h2 class="section-title">版本健康度 (Version Health)</h2>
@@ -37,7 +39,7 @@ def get_releases_html() -> str:
 
 
     <!-- VIEW: DEVICES (裝置分析) -->
-    <section class="view-container" id="view-devices">
+    """ + get_view_container_open_tag("devices") + """
       <div class="section-header">
         <div>
           <h2 class="section-title">裝置與系統分析 (Devices & OS)</h2>
@@ -92,7 +94,7 @@ def get_releases_html() -> str:
 
 
     <!-- VIEW: RELEASES (發佈版本) -->
-    <section class="view-container" id="view-releases">
+    """ + get_view_container_open_tag("releases") + """
       <div class="section-header">
         <div>
           <h2 class="section-title">發佈版本 (Release Catalog & Lifecycle)</h2>
