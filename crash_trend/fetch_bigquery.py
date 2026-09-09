@@ -445,10 +445,13 @@ def norm_error_type(raw: Any, fatal_hint: bool = False) -> str:
 # BigQuery Client & Execution
 # ---------------------------------------------------------------------------
 
-def make_client(project: str) -> bigquery.Client:
+def make_client(project: str, app_cfg: dict | None = None) -> bigquery.Client:
     creds_cfg = (load_config().get("credentials") or {})
     sa_path = creds_cfg.get("bq_service_account")
-    if sa_path:
+    if app_cfg and "bq_service_account" in app_cfg:
+        sa_path = app_cfg["bq_service_account"]
+
+    if sa_path and str(sa_path).lower() not in ("adc", "none", ""):
         sa_file = Path(sa_path).expanduser()
         if not sa_file.exists():
             sys.exit(f"[錯誤] credentials.bq_service_account 指定的檔案不存在：{sa_file}")
@@ -1303,7 +1306,7 @@ def main() -> None:
     is_incremental = bool(not is_bootstrap and watermark)
 
     try:
-        client = make_client(project)
+        client = make_client(project, app_cfg=app)
         tables = list_crash_tables(client, project, dataset, app_config={**app, "app_id": args.app})
     except Exception as e:
         write_json(out_dir(args.app) / "crashlytics_bq.json", {**result, "errors": {"dataset": str(e)[:800]}})

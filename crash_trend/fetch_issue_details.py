@@ -1090,7 +1090,7 @@ def main() -> None:
                 from crash_trend.fetch_bigquery import make_client
             except ImportError:
                 from fetch_bigquery import make_client
-            bq_client = make_client(app["firebase_project"])
+            bq_client = make_client(app["firebase_project"], app_cfg=app)
         except Exception as e:
             print(f"  [注意] 無法建立 BigQuery client：{e}")
 
