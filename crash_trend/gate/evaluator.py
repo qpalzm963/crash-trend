@@ -20,8 +20,19 @@ from crash_trend.gate.artifact import (
     RuleEvaluationResult,
     RuleStatus,
 )
+from crash_trend.gate.decision import decision_from_gate_result
 from crash_trend.gate.history import compute_policy_identity
 from crash_trend.gate.policy import GatePolicy
+
+
+def _attach_decision(result: PlatformGateResult) -> PlatformGateResult:
+    """Attaches the canonical Release Decision contract (Issue #72).
+
+    Single derivation point: consumers read `result["decision"]` and must never
+    re-derive recommendation / action from `gate_status`.
+    """
+    result["decision"] = decision_from_gate_result(result)
+    return result
 
 
 def _is_sample_sufficient(
@@ -121,7 +132,7 @@ def evaluate_release(
             "alert_summary": f"版本 {ver} ({pf}) 品質閘門未啟用 (enabled: false)",
             "trigger_rules": [],
         }
-        return {
+        return _attach_decision({
             "platform": pf,
             "target_version": ver,
             "previous_version": None,
@@ -131,7 +142,7 @@ def evaluate_release(
             "alert": dis_alert,
             "evaluated_at": now_iso,
             "comparison_window": None,
-        }
+        })
 
     recent_health = item.get("recent_health") or {}
     sample_ok, total_sess, sess_reason, suff_w = _is_sample_sufficient(item, recent_health, policy)
@@ -154,7 +165,7 @@ def evaluate_release(
             "status": "insufficient_data",
             "reason": f"樣本數不足：{sess_reason}，未達最小門檻 ({policy.min_sessions} sessions)",
         }
-        return {
+        return _attach_decision({
             "platform": pf,
             "target_version": ver,
             "previous_version": None,
@@ -164,7 +175,7 @@ def evaluate_release(
             "alert": insuf_alert,
             "evaluated_at": now_iso,
             "comparison_window": None,
-        }
+        })
 
     # 2. Baseline Check (No previous version on platform)
     vs_previous = item.get("vs_previous")
@@ -187,7 +198,7 @@ def evaluate_release(
             "status": "pass",
             "reason": "無前版基準資料，作為初始基準版本",
         }
-        return {
+        return _attach_decision({
             "platform": pf,
             "target_version": ver,
             "previous_version": None,
@@ -197,7 +208,7 @@ def evaluate_release(
             "alert": base_alert,
             "evaluated_at": now_iso,
             "comparison_window": None,
-        }
+        })
 
     vs_p = vs_previous if isinstance(vs_previous, dict) else {}
     comp_win = vs_p.get("comparison_window") or suff_w
@@ -221,7 +232,7 @@ def evaluate_release(
             "status": "insufficient_data",
             "reason": f"前版基準 {prev_ver} 樣本數未達充足門檻 ({prev_sess} sessions < {policy.min_sessions} sessions)，暫停退化判定",
         }
-        return {
+        return _attach_decision({
             "platform": pf,
             "target_version": ver,
             "previous_version": prev_ver,
@@ -231,7 +242,7 @@ def evaluate_release(
             "alert": insuf_prev_alert,
             "evaluated_at": now_iso,
             "comparison_window": comp_win,
-        }
+        })
 
     # 3. Normalized Metric Rules Evaluation
     rules: list[RuleEvaluationResult] = []
@@ -472,7 +483,7 @@ def evaluate_release(
 
     comp_win = (vs_p.get("comparison_window") if isinstance(vs_p, dict) else None) or suff_w
 
-    return {
+    return _attach_decision({
         "platform": pf,
         "target_version": ver,
         "previous_version": prev_ver,
@@ -482,7 +493,7 @@ def evaluate_release(
         "alert": alert_payload,
         "evaluated_at": now_iso,
         "comparison_window": comp_win,
-    }
+    })
 
 
 def evaluate_app_release_gate(

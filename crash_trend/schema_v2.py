@@ -360,6 +360,50 @@ class RuleEvaluationResult(TypedDict):
     reason: str
 
 
+DecisionAction = Literal["proceed", "investigate", "hold", "await_data", "establish_baseline"]
+VALID_DECISION_ACTIONS: set[str] = {"proceed", "investigate", "hold", "await_data", "establish_baseline"}
+VALID_GATE_STATUSES: set[str] = {"pass", "warn", "fail", "insufficient_data", "baseline"}
+
+
+class ReleaseDecision(TypedDict):
+    """Canonical Release Decision contract (Issue #72).
+
+    Derived solely by `crash_trend.gate.decision.derive_decision()`. Consumers
+    (Dashboard, Google Chat alerts, CLI / GitHub Check) read these fields and
+    must never re-derive recommendation / action from the gate status.
+    """
+
+    status: Literal["pass", "warn", "fail", "insufficient_data", "baseline"]
+    action: DecisionAction
+    recommendation: str
+    reasons: list[str]
+
+
+def validate_release_decision(data: Any, path: str = "decision") -> list[str]:
+    """Validates a ReleaseDecision payload. Returns a list of error messages."""
+    errors: list[str] = []
+    if not isinstance(data, dict):
+        return [f"{path} must be an object"]
+
+    for req_key in ("status", "action", "recommendation", "reasons"):
+        if req_key not in data:
+            errors.append(f"{path}.{req_key} is required")
+
+    if "status" in data and data["status"] not in VALID_GATE_STATUSES:
+        errors.append(f"{path}.status must be one of: {', '.join(sorted(VALID_GATE_STATUSES))}")
+    if "action" in data and data["action"] not in VALID_DECISION_ACTIONS:
+        errors.append(f"{path}.action must be one of: {', '.join(sorted(VALID_DECISION_ACTIONS))}")
+    if "recommendation" in data and not isinstance(data["recommendation"], str):
+        errors.append(f"{path}.recommendation must be a string")
+    if "reasons" in data:
+        if not isinstance(data["reasons"], list):
+            errors.append(f"{path}.reasons must be a list")
+        elif not all(isinstance(r, str) for r in data["reasons"]):
+            errors.append(f"{path}.reasons must contain only strings")
+
+    return errors
+
+
 class ReleaseGateSummary(TypedDict):
     status: Literal["pass", "warn", "fail", "insufficient_data", "baseline"]
     should_alert: bool
@@ -370,6 +414,9 @@ class ReleaseGateSummary(TypedDict):
     rule_results: NotRequired[list[RuleEvaluationResult]]
     comparison_window: NotRequired[str | None]
     evaluated_at: NotRequired[str]
+    # Canonical Release Decision contract (Issue #72). NotRequired so bundles
+    # produced before V3.2 still validate and render.
+    decision: NotRequired[ReleaseDecision]
 
 
 class GateHistoryPoint(TypedDict):
@@ -851,7 +898,7 @@ def validate_release_catalog(catalog: Any, errors: list[str], p: str = "") -> No
             if not isinstance(rg, dict):
                 errors.append(f"{cp}release_gate must be an object or null")
             else:
-                valid_gate_statuses = {"pass", "warn", "fail", "insufficient_data", "baseline"}
+                valid_gate_statuses = VALID_GATE_STATUSES
                 if "status" in rg and rg["status"] not in valid_gate_statuses:
                     errors.append(f"{cp}release_gate.status must be one of: {', '.join(sorted(valid_gate_statuses))}")
                 if "should_alert" in rg and not isinstance(rg["should_alert"], bool):
@@ -866,6 +913,8 @@ def validate_release_catalog(catalog: Any, errors: list[str], p: str = "") -> No
                     errors.append(f"{cp}release_gate.evaluated_at must be an ISO 8601 string")
                 if "rule_results" in rg and not isinstance(rg["rule_results"], list):
                     errors.append(f"{cp}release_gate.rule_results must be a list")
+                if "decision" in rg:
+                    errors.extend(validate_release_decision(rg["decision"], f"{cp}release_gate.decision"))
 
         if "gate_history" in item and item["gate_history"] is not None:
             gh = item["gate_history"]

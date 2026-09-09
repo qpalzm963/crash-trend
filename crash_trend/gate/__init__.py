@@ -7,12 +7,17 @@ from crash_trend.gate.artifact import (
     AlertSeverity,
     GateStatus,
     PlatformGateResult,
+    ReleaseDecision,
     ReleaseGateArtifact,
     RuleEvaluationResult,
     RuleStatus,
     load_release_gate_artifact,
     save_release_gate_artifact,
     validate_release_gate_artifact,
+)
+from crash_trend.gate.decision import (
+    decision_from_gate_result,
+    derive_decision,
 )
 from crash_trend.gate.evaluator import (
     evaluate_app_release_gate,
@@ -41,6 +46,7 @@ __all__ = [
     "GateStatus",
     "GateTransition",
     "PlatformGateResult",
+    "ReleaseDecision",
     "ReleaseGateArtifact",
     "ReleaseGateHistoryStore",
     "ReleaseGateTrendItem",
@@ -48,6 +54,8 @@ __all__ = [
     "RuleStatus",
     "ThresholdRule",
     "classify_gate_transition",
+    "decision_from_gate_result",
+    "derive_decision",
     "evaluate_app_release_gate",
     "evaluate_release",
     "get_gate_history_store",

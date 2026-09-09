@@ -636,6 +636,33 @@ classDiagram
 | `rules_triggered` | array[string] | 是 | 觸發違規之規則名稱清單 | `["crash_rate_change_pct"]` |
 | `sample_sufficient`| boolean | 否 | 評估時樣本數是否滿足最小閾值要求 | `true` |
 | `evaluated_at` | string (ISO 8601 UTC) | 否 | 評估執行時間戳 | `"2026-09-08T10:00:00Z"` |
+| `decision` | ReleaseDecision | 否 (V3.2+ 規範) | Canonical Release Decision 契約；舊 bundle 未帶此欄位仍可 validate / render | 見下方 `ReleaseDecision` |
+
+#### `ReleaseDecision`
+Release Decision 之 **Single Source of Truth**（Issue #72）。同時內嵌於 `ReleaseCatalogItem["release_gate"]["decision"]` 與 Release Gate Artifact 的 `platforms[<pf>].decision`：
+
+| 欄位名稱 | 型別 | 必填 | 說明 | 範例 |
+| :--- | :--- | :--- | :--- | :--- |
+| `status` | string | 是 | `"pass"`, `"warn"`, `"fail"`, `"insufficient_data"`, `"baseline"` | `"warn"` |
+| `action` | string | 是 | `"proceed"`, `"investigate"`, `"hold"`, `"await_data"`, `"establish_baseline"` | `"investigate"` |
+| `recommendation` | string | 是 | 該狀態對應之建議行動語句（繁體中文） | `"建議先觀察並調查退化指標，暫緩擴大發布"` |
+| `reasons` | array[string] | 是 | 造成該判定之原因；直接重用 `rule_results[].reason` 之 deterministic 文案與門檻證據 | `["ANR 率上升 +34.00%，達到警告門檻 (+20.0%)"]` |
+
+- **唯一推導點**：`crash_trend/gate/decision.py` 之 `derive_decision(status, rule_results, sample_sufficient)` 為唯一實作，且為 deterministic pure function（相同輸入必得相同輸出）。
+- **Consumer 不得自行重算**：Dashboard、Google Chat Alert 與未來 CLI / GitHub Check 一律讀取本契約欄位；任一 consumer 都不得維護獨立的 `status -> recommendation/action` 對應表。`tests/test_release_decision.py` 以 negative / structural contract test 防止該對應表重新出現。
+- **`status` 對 `action` / `recommendation` 之固定對應**（唯一定義於 `crash_trend/gate/decision.py` 之 `_DECISION_TABLE`）：
+
+| `status` | `action` | `recommendation` |
+| :--- | :--- | :--- |
+| `pass` | `proceed` | 指標均在安全閾值內，可以繼續發布 |
+| `warn` | `investigate` | 建議先觀察並調查退化指標，暫緩擴大發布 |
+| `fail` | `hold` | 建議停止擴大發布，優先處理退化問題 |
+| `insufficient_data` | `await_data` | 樣本不足尚無法判定品質，請等待資料累積後再決定是否擴大發布 |
+| `baseline` | `establish_baseline` | 無前版可比較，本版作為基準；請持續觀察後再決定是否擴大發布 |
+
+- **中性狀態保證**：`insufficient_data` 與 `baseline` 為一級狀態，**永不呈現為 PASS**（`action` 絕不為 `proceed`）。未知 status 一律降級為 `insufficient_data`；`pass` 但樣本不足亦降級為 `insufficient_data`。`warn` / `fail` 已具退化證據，不因樣本狀態被弱化。
+- **reasons 來源**：`fail` 取 `status == "fail"` 之規則原因（若無則退回 `warn` 證據），`warn` 取 `warn` 規則，`insufficient_data` 取 `insufficient_data` 規則，`baseline` 取 `baseline_version` 規則；`pass` 為空陣列。本層不新增任何自創文案。
+- **Schema 相容性**：`decision` 為 backward-compatible NotRequired 擴充，未 bump Dashboard Bundle `schema_version`（維持 `2.8.0`）；V3.2 之前產出的 bundle 與 artifact 未帶 `decision` 仍通過 validation。
 
 #### `GateHistoryPoint`
 該版本歷史評估快照資料點（內嵌於 `ReleaseCatalogItem["gate_history"]`）：
@@ -831,6 +858,14 @@ App 層級 Google Chat 警報發送觀測度數據容器（內嵌於 `AppDashboa
         "alert_summary": "版本 3.2.0 (android) 品質閘門觸發警告（1 項預警）：crash_rate_change_pct (15.2%) exceeded warn threshold (10.0%)",
         "trigger_rules": [
           "crash_rate_change_pct"
+        ]
+      },
+      "decision": {
+        "status": "warn",
+        "action": "investigate",
+        "recommendation": "建議先觀察並調查退化指標，暫緩擴大發布",
+        "reasons": [
+          "crash_rate_change_pct (15.2%) exceeded warn threshold (10.0%)"
         ]
       },
       "evaluated_at": "2026-09-08T10:00:00Z",

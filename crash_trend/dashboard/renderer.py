@@ -204,6 +204,30 @@ def assemble_bundle_from_apps(cfg: dict | None = None, root_dir: str | Path | No
                     except Exception:
                         pass
 
+            # Backfill the canonical Release Decision contract for bundles produced
+            # before V3.2 (Issue #72). This is an adapter, not a second derivation:
+            # it calls the single gate domain function so Dashboard and Google Chat
+            # always read identical recommendation / action / reasons.
+            try:
+                from crash_trend.gate.decision import decision_from_gate_result
+
+                decision_catalogs = []
+                if isinstance(a_data.get("release_catalog"), list):
+                    decision_catalogs.append(a_data["release_catalog"])
+                for p_val in (a_data.get("periods") or {}).values():
+                    if isinstance(p_val, dict) and isinstance(p_val.get("release_catalog"), list):
+                        decision_catalogs.append(p_val["release_catalog"])
+
+                for cat_list in decision_catalogs:
+                    for c_item in cat_list:
+                        if not isinstance(c_item, dict):
+                            continue
+                        rg = c_item.get("release_gate")
+                        if isinstance(rg, dict) and not rg.get("decision"):
+                            rg["decision"] = decision_from_gate_result(rg)
+            except Exception:
+                pass
+
             # Enrich release_catalog with Gate history snapshots if available (Issue #61)
             hist_db = eff_root / "out" / app_id / "release_gate_history.sqlite3"
             if hist_db.is_file():
