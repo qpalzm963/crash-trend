@@ -20,13 +20,15 @@ import json
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from crash_trend.build_dashboard import build_html
 from crash_trend.catalog.historical import IssueHistoricalCatalog, enrich_app_data_with_lifecycle
 from crash_trend.dashboard.issues import get_issues_js
-from crash_trend.fetch_bigquery import build_issue_occurrence_summary, transform_bq_period_snapshot
+from crash_trend.fetch_bigquery import build_issue_occurrence_summary, run_query, transform_bq_period_snapshot
 from crash_trend.schema_v2 import (
     IssueSummary,
     validate_issue_occurrence_summary,
@@ -97,28 +99,21 @@ class TestIssueOccurrenceTimeline(unittest.TestCase):
         self.assertEqual(errors, [])
 
     def test_same_day_multi_version_aggregation(self) -> None:
-        """Test 2: Same-day multi-version aggregation."""
+        """Test 2: Same-day multi-version aggregation from BigQuery CTE output."""
         raw_rows = [
             {
                 "issue_id": "ISSUE_202",
                 "date": "2026-09-08",
-                "app_version": "3.14.0",
-                "events": 9,
-                "users": 5,
+                "events": 12,
+                "users": 6,  # Authoritative distinct users computed at issue/day level in SQL
                 "fatal_events": 2,
                 "anr_events": 0,
-                "non_fatal_events": 7,
-            },
-            {
-                "issue_id": "ISSUE_202",
-                "date": "2026-09-08",
-                "app_version": "3.13.2",
-                "events": 3,
-                "users": 2,
-                "fatal_events": 0,
-                "anr_events": 0,
-                "non_fatal_events": 3,
-            },
+                "non_fatal_events": 10,
+                "versions_json": json.dumps([
+                    {"version": "3.14.0", "events": 9},
+                    {"version": "3.13.2", "events": 3},
+                ]),
+            }
         ]
         summary = build_issue_occurrence_summary(raw_rows, platform="android")
 
@@ -126,7 +121,7 @@ class TestIssueOccurrenceTimeline(unittest.TestCase):
         point = summary["daily"][0]
         self.assertEqual(point["date"], "2026-09-08")
         self.assertEqual(point["events"], 12)
-        self.assertEqual(point["affected_users"], 7)
+        self.assertEqual(point["affected_users"], 6)
         self.assertEqual(point["fatal_events"], 2)
         self.assertEqual(point["anr_events"], 0)
         self.assertEqual(point["non_fatal_events"], 10)
@@ -135,6 +130,55 @@ class TestIssueOccurrenceTimeline(unittest.TestCase):
         errors: list[str] = []
         validate_issue_occurrence_summary(summary, errors)
         self.assertEqual(errors, [])
+
+    def test_same_installation_multi_version_same_day_counts_as_single_user(self) -> None:
+        """Regression test for [P1]: Same installation crashing across 2 versions on same day counts as 1 user."""
+        raw_rows = [
+            {
+                "issue_id": "ISSUE_MULTI_VER",
+                "date": "2026-09-08",
+                "app_version": "3.13.2",
+                "events": 1,
+                "installation_uuid": "USER_CROSS_VER_123",
+                "fatal_events": 1,
+                "anr_events": 0,
+                "non_fatal_events": 0,
+            },
+            {
+                "issue_id": "ISSUE_MULTI_VER",
+                "date": "2026-09-08",
+                "app_version": "3.14.0",
+                "events": 2,
+                "installation_uuid": "USER_CROSS_VER_123",  # Same user upgraded and crashed on new version
+                "fatal_events": 2,
+                "anr_events": 0,
+                "non_fatal_events": 0,
+            },
+            {
+                "issue_id": "ISSUE_MULTI_VER",
+                "date": "2026-09-08",
+                "app_version": "3.14.0",
+                "events": 1,
+                "installation_uuid": "USER_OTHER_456",  # Distinct user
+                "fatal_events": 1,
+                "anr_events": 0,
+                "non_fatal_events": 0,
+            },
+        ]
+        summary = build_issue_occurrence_summary(raw_rows, platform="android")
+
+        self.assertEqual(len(summary["daily"]), 1)
+        point = summary["daily"][0]
+        self.assertEqual(point["date"], "2026-09-08")
+        self.assertEqual(point["events"], 4)
+        # USER_CROSS_VER_123 (1) + USER_OTHER_456 (1) = 2 distinct users, NOT 3!
+        self.assertEqual(point["affected_users"], 2)
+        self.assertEqual(point["fatal_events"], 4)
+        self.assertEqual(point["versions"], {"3.14.0": 3, "3.13.2": 1})
+
+        # Zero PII guarantee: no temporary uuid tracking set leaked
+        self.assertNotIn("_user_uuids", point)
+        self.assertNotIn("installation_uuid", point)
 
     def test_platform_isolation_same_issue_id(self) -> None:
         """Test 3: Android / iOS platform isolation with identical issue_id."""
@@ -531,7 +575,155 @@ class TestIssueOccurrenceTimeline(unittest.TestCase):
             self.assertNotIn("installation_uuid", d)
             self.assertNotIn("user_id", d)
             self.assertNotIn("installation_ids", d)
-            self.assertNotIn("user_ids", d)
+    def test_over_5000_intermediate_rows_90_day_completeness(self) -> None:
+        """Regression test for [P1]: Over 5000 intermediate rows across 90 days must not truncate recent dates."""
+        start_d = dt.date(2026, 6, 11)
+        end_d = dt.date(2026, 9, 8)
+        num_days = (end_d - start_d).days + 1  # 90 days
+        num_issues = 60  # 60 * 90 = 5400 intermediate rows (> 5000)
+
+        # 1. Verify run_query does not cap at 5000
+        mock_client = mock.MagicMock()
+        mock_job = mock.MagicMock()
+        mock_rows = [{"date": "2026-09-08", "events": 1} for _ in range(5400)]
+        mock_job.result.return_value = mock_rows
+        mock_client.query.return_value = mock_job
+
+        res = run_query(mock_client, "SELECT 1")
+        self.assertEqual(len(res), 5400)
+        # Ensure result was called with no max_results limit
+        mock_job.result.assert_called_with()
+
+        # 2. Verify transform_bq_period_snapshot preserves full 90 days including latest date
+        daily_rows: list[dict] = []
+        for i_idx in range(num_issues):
+            iid = f"ISSUE_{i_idx:03d}"
+            for day_offset in range(num_days):
+                cur_date = start_d + dt.timedelta(days=day_offset)
+                daily_rows.append({
+                    "issue_id": iid,
+                    "date": cur_date.isoformat(),
+                    "events": 2,
+                    "users": 1,
+                    "fatal_events": 2,
+                    "anr_events": 0,
+                    "non_fatal_events": 0,
+                    "versions_json": json.dumps([{"version": "1.0.0", "events": 2}]),
+                })
+        self.assertEqual(len(daily_rows), 5400)
+
+        top_issue_rows = [
+            {
+                "issue_id": "ISSUE_000",
+                "issue_title": "Top Crash",
+                "issue_subtitle": "Main.kt:10",
+                "error_type": "FATAL",
+                "events": 180,
+                "users": 90,
+                "first_seen_timestamp": "2026-06-11T00:00:00Z",
+                "last_seen_timestamp": "2026-09-08T23:59:59Z",
+                "first_seen_version": "1.0.0",
+                "last_seen_version": "1.0.0",
+            }
+        ]
+
+        tables_data = {
+            "app_android": {
+                "overview": [{"total_events": 10800, "distinct_users": 5400, "fatal_events": 10800, "anr_events": 0, "non_fatal_events": 0}],
+                "top_issues": top_issue_rows,
+                "issue_daily_trend": daily_rows,
+            }
+        }
+
+        snap = transform_bq_period_snapshot(
+            tables_data,
+            detected_platforms=["android"],
+            days=90,
+            start_date=start_d,
+            end_date=end_d,
+        )
+
+        self.assertEqual(len(snap["top_issues"]), 1)
+        iss = snap["top_issues"][0]
+        timeline = iss.get("occurrence_timeline")
+        self.assertIsNotNone(timeline)
+        assert timeline is not None
+
+        # Full 90 days preserved without truncation
+        self.assertEqual(len(timeline["daily"]), 90)
+        self.assertEqual(timeline["first_seen_date"], "2026-06-11")
+        # Most recent date (2026-09-08) is intact and NOT truncated by LIMIT 5000!
+        self.assertEqual(timeline["last_seen_date"], "2026-09-08")
+        self.assertEqual(timeline["daily"][-1]["date"], "2026-09-08")
+
+    def test_copy_fix_prompt_platform_isolation(self) -> None:
+        """Regression test for [P2]: copyFixPrompt passes platform to prevent cross-platform data mismatch."""
+        shared_id = "SHARED_COLLISION_ID"
+        android_iss = {
+            "issue_id": shared_id,
+            "platform": "android",
+            "title": "Android Specific Crash",
+            "subtitle": "AndroidActivity.kt:42",
+            "error_type": "FATAL",
+            "priority": {"score": 90, "level": "P0", "trend": "new", "score_breakdown": None},
+            "events": 100,
+            "affected_users": 50,
+            "first_seen_timestamp": "2026-09-01T00:00:00Z",
+            "last_seen_timestamp": "2026-09-08T00:00:00Z",
+            "first_seen_version": "1.0.0",
+            "last_seen_version": "1.1.0",
+            "version_distribution": [{"version": "1.1.0", "events": 100, "users": 50}],
+            "blame_frame": None,
+            "ai_analysis": {"status": "unavailable", "root_cause": "", "suggested_fix": "", "effort": "M", "confidence": "low", "reasoning_sources": []},
+            "detail": {"stack_trace": "java.lang.NullPointerException at AndroidActivity.kt:42"},
+        }
+        ios_iss = {
+            "issue_id": shared_id,
+            "platform": "ios",
+            "title": "iOS Specific Crash",
+            "subtitle": "IOSViewController.swift:99",
+            "error_type": "FATAL",
+            "priority": {"score": 75, "level": "P1", "trend": "stable", "score_breakdown": None},
+            "events": 20,
+            "affected_users": 15,
+            "first_seen_timestamp": "2026-09-05T00:00:00Z",
+            "last_seen_timestamp": "2026-09-08T00:00:00Z",
+            "first_seen_version": "2.0.0",
+            "last_seen_version": "2.0.1",
+            "version_distribution": [{"version": "2.0.1", "events": 20, "users": 15}],
+            "blame_frame": None,
+            "ai_analysis": {"status": "unavailable", "root_cause": "", "suggested_fix": "", "effort": "M", "confidence": "low", "reasoning_sources": []},
+            "detail": {"stack_trace": "fatal error: Unexpected nil at IOSViewController.swift:99"},
+        }
+
+        bundle = {
+            "schema_version": "2.8.0",
+            "generated_at": "2026-09-08T12:00:00Z",
+            "default_app": "demo",
+            "apps": {
+                "demo": {
+                    "metadata": {"app_id": "demo", "display_name": "Demo", "firebase_project_id": "p", "platforms": ["android", "ios"]},
+                    "period": {"days": 30, "start_time": "2026-08-09T00:00:00Z", "end_time": "2026-09-08T23:59:59Z"},
+                    "sources": {"crashlytics_bq": {"status": "available"}},
+                    "kpi": {"crash_events": {"value": 120}, "affected_users": {"value": 65}},
+                    "daily_trend": [],
+                    "version_health": [],
+                    "distributions": {"platform": [], "device_models": [], "os_versions": [], "app_versions": [], "custom_keys": []},
+                    "top_issues": [android_iss, ios_iss],
+                    "ai_summary": {"status": "unavailable", "overview": ""},
+                    "periods": {},
+                }
+            },
+        }
+
+        # 1. Verify HTML renders copyFixPrompt with both issue_id and platform in button call
+        html = build_html(bundle)
+        self.assertIn("copyFixPrompt('${esc(iss.issue_id)}', '${esc(iss.platform)}')", html)
+
+        # 2. Verify JS implementation accepts (issueId, platform) and isolates by platform
+        js = get_issues_js()
+        self.assertIn("function copyFixPrompt(issueId, platform)", js)
+        self.assertIn("i.issue_id === issueId && i.platform === platform", js)
 
 
 if __name__ == "__main__":

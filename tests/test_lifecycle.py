@@ -604,10 +604,10 @@ class TestCopyPromptStability(unittest.TestCase):
         }
 
         html = build_html(bundle)
-        # Verify button template calls copyFixPrompt with iss.issue_id
-        self.assertIn("copyFixPrompt('${esc(iss.issue_id)}')", html)
-        # Verify copyFixPrompt definition looks up by issueId
-        self.assertIn("function copyFixPrompt(issueId)", html)
+        # Verify button template calls copyFixPrompt with iss.issue_id and iss.platform
+        self.assertIn("copyFixPrompt('${esc(iss.issue_id)}', '${esc(iss.platform)}')", html)
+        # Verify copyFixPrompt definition looks up by issueId and platform
+        self.assertIn("function copyFixPrompt(issueId, platform)", html)
         self.assertIn("i.issue_id === issueId", html)
         self.assertIn("specific_issue_uuid_12345", html)
 
