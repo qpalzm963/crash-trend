@@ -46,6 +46,8 @@ try:
         DailyTrendPoint,
         DeviceDistItem,
         Distributions,
+        IssueDailyOccurrence,
+        IssueOccurrenceSummary,
         IssueSummary,
         OSDistItem,
         OverviewKPI,
@@ -55,6 +57,7 @@ try:
         SourcesAvailability,
         VersionDistCount,
         VersionHealthItem,
+        is_valid_date,
         is_valid_iso8601_utc,
         validate_app_dashboard_v2,
     )
@@ -70,6 +73,8 @@ except ImportError:
         DailyTrendPoint,
         DeviceDistItem,
         Distributions,
+        IssueDailyOccurrence,
+        IssueOccurrenceSummary,
         IssueSummary,
         OSDistItem,
         OverviewKPI,
@@ -79,6 +84,7 @@ except ImportError:
         SourcesAvailability,
         VersionDistCount,
         VersionHealthItem,
+        is_valid_date,
         is_valid_iso8601_utc,
         validate_app_dashboard_v2,
     )
@@ -169,6 +175,23 @@ SQLS: dict[str, str] = {
         GROUP BY 1, 2
         ORDER BY events DESC
         LIMIT 500""",
+    # 5.1 逐 Issue 每日發生趨勢（支援 Issue Occurrence Timeline 與版本細分）
+    "issue_daily_trend": """
+        SELECT
+            issue_id,
+            FORMAT_TIMESTAMP('%Y-%m-%d', event_timestamp) AS date,
+            application.display_version AS app_version,
+            COUNT(*) AS events,
+            COUNT(DISTINCT installation_uuid) AS users,
+            COUNTIF(UPPER(error_type) = 'FATAL') AS fatal_events,
+            COUNTIF(UPPER(error_type) = 'ANR') AS anr_events,
+            COUNTIF(UPPER(error_type) NOT IN ('FATAL', 'ANR') OR error_type IS NULL) AS non_fatal_events
+        FROM `{table}`
+        WHERE event_timestamp >= TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL {days} - 1 DAY))
+          AND event_timestamp < TIMESTAMP_ADD(TIMESTAMP(CURRENT_DATE()), INTERVAL 1 DAY)
+        GROUP BY 1, 2, 3
+        ORDER BY date ASC, events DESC
+        LIMIT 5000""",
     # 5.5. 跨版本歷史目錄（維護真正的跨視窗 Issue 歷史與生命週期）
     "lifecycle_catalog": """
         SELECT
@@ -431,7 +454,7 @@ def list_crash_tables(
 
 
 def run_query(client: bigquery.Client, sql: str) -> list[dict]:
-    rows = client.query(sql).result(max_results=500)
+    rows = client.query(sql).result(max_results=5000)
     out: list[dict] = []
     for r in rows:
         d = dict(r)
@@ -445,6 +468,94 @@ def run_query(client: bigquery.Client, sql: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 # BigQuery Raw Data -> Dashboard V2 Data Schema 轉換
 # ---------------------------------------------------------------------------
+
+def build_issue_occurrence_summary(
+    raw_daily_rows: list[dict],
+    platform: str,
+    first_seen_timestamp: str | None = None,
+    last_seen_timestamp: str | None = None,
+) -> IssueOccurrenceSummary:
+    """Builds an authoritative IssueOccurrenceSummary from daily query rows, strictly isolated by platform."""
+    by_date: dict[str, dict] = {}
+    for r in raw_daily_rows:
+        d_str = str(r.get("date") or "")
+        if not d_str or not is_valid_date(d_str):
+            continue
+        ver = str(r.get("app_version") or "1.0.0")
+        ev = int(r.get("events") or 0)
+        us = int(r.get("users") or 0)
+        fat = int(r.get("fatal_events") or 0)
+        anr = int(r.get("anr_events") or 0)
+        non_fat = int(r.get("non_fatal_events") or 0)
+
+        if d_str not in by_date:
+            by_date[d_str] = {
+                "date": d_str,
+                "events": 0,
+                "affected_users": 0,
+                "fatal_events": 0,
+                "anr_events": 0,
+                "non_fatal_events": 0,
+                "platform": "ios" if platform == "ios" else "android",
+                "versions": {},
+            }
+        bucket = by_date[d_str]
+        bucket["events"] += ev
+        bucket["affected_users"] += us
+        bucket["fatal_events"] += fat
+        bucket["anr_events"] += anr
+        bucket["non_fatal_events"] += non_fat
+        bucket["versions"][ver] = bucket["versions"].get(ver, 0) + ev
+
+    daily: list[IssueDailyOccurrence] = []
+    for d_str in sorted(by_date.keys()):
+        b = by_date[d_str]
+        ev = b["events"]
+        fat = b["fatal_events"]
+        anr = b["anr_events"]
+        nfat = b["non_fatal_events"]
+        if fat + anr + nfat != ev:
+            nfat = max(0, ev - fat - anr)
+        sorted_versions = dict(sorted(b["versions"].items(), key=lambda kv: (-kv[1], kv[0])))
+        daily.append({
+            "date": d_str,
+            "events": ev,
+            "affected_users": b["affected_users"],
+            "fatal_events": fat,
+            "anr_events": anr,
+            "non_fatal_events": nfat,
+            "platform": b["platform"],
+            "versions": sorted_versions,
+        })
+
+    peak_events = max((d["events"] for d in daily), default=0)
+    peak_date: str | None = None
+    if daily:
+        for d in daily:
+            if d["events"] == peak_events:
+                peak_date = d["date"]
+                break
+
+    f_date: str | None = None
+    if first_seen_timestamp and len(first_seen_timestamp) >= 10 and is_valid_date(first_seen_timestamp[:10]):
+        f_date = first_seen_timestamp[:10]
+    elif daily:
+        f_date = daily[0]["date"]
+
+    l_date: str | None = None
+    if last_seen_timestamp and len(last_seen_timestamp) >= 10 and is_valid_date(last_seen_timestamp[:10]):
+        l_date = last_seen_timestamp[:10]
+    elif daily:
+        l_date = daily[-1]["date"]
+
+    return {
+        "first_seen_date": f_date,
+        "last_seen_date": l_date,
+        "peak_date": peak_date,
+        "peak_events": peak_events,
+        "daily": daily,
+    }
+
 
 def transform_bq_period_snapshot(
     tables_data: dict[str, dict],
@@ -498,6 +609,7 @@ def transform_bq_period_snapshot(
     raw_apps: list[dict] = []
     raw_custom_keys: list[dict] = []
     ver_by_issue: dict[tuple[str, str], list[dict]] = {}
+    daily_by_issue: dict[tuple[str, str], list[dict]] = {}
 
     for table_name, t_data in tables_data.items():
         platform = extract_platform_from_table(table_name)
@@ -569,6 +681,11 @@ def transform_bq_period_snapshot(
                     "events": int(iv.get("events") or 0),
                     "users": int(iv.get("users") or 0),
                 })
+
+        for idt in t_data.get("issue_daily_trend") or []:
+            iid = str(idt.get("issue_id") or "")
+            if iid:
+                daily_by_issue.setdefault((platform, iid), []).append(idt)
 
         for it in t_data.get("top_issues") or []:
             raw_issues.append({**it, "_platform": platform})
@@ -712,6 +829,16 @@ def transform_bq_period_snapshot(
                     existing_v_map[nv_ver] = nvd
         else:
             seen_issues[key] = iss_entry
+
+    for key, iss in seen_issues.items():
+        iss_pf = iss.get("platform", "android")
+        iss_timeline = build_issue_occurrence_summary(
+            daily_by_issue.get(key, []),
+            platform=iss_pf,
+            first_seen_timestamp=iss.get("first_seen_timestamp"),
+            last_seen_timestamp=iss.get("last_seen_timestamp"),
+        )
+        iss["occurrence_timeline"] = iss_timeline
 
     top_issues = sorted(seen_issues.values(), key=lambda x: (-x["events"], -x["affected_users"]))[:50]
 

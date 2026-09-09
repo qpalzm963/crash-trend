@@ -132,7 +132,7 @@ flowchart TD
 | **檔案路徑** | `out/dashboard_v2.json` 或 `out/<app>/dashboard_v2.json` | `out/<app>/historical_catalog.json` | `out/<app>/release_gate.json` | `out/<app>/catalog_authority.sqlite3` | `out/<app>/release_gate_history.sqlite3` | `out/<app>/alert_delivery.sqlite3` |
 | **主要定位** | 前端呈現容器（Bundle） | 跨視窗版本演進與狀態累積 | 版本退化判定機器產物 | 精確去重事實來源（SSOT） | 閘門評估不可變歷史序列 | 發送嘗試、去重冷卻與審計 |
 | **儲存引擎** | 純 JSON 檔案 | 純 JSON 檔案 | 純 JSON 檔案 | SQLite 3（WAL 模式） | SQLite 3（WAL 模式） | SQLite 3（WAL 模式） |
-| **Schema 版本** | `2.7.0`（相容 `2.0` ~ `2.7.0`） | Producer: `2.3.0` | `1.0` | `state_version: 1` | `schema_version: 1` | `schema_version: 1` |
+| **Schema 版本** | `2.8.0`（相容 `2.0` ~ `2.8.0`） | Producer: `2.3.0` | `1.0` | `state_version: 1` | `schema_version: 1` | `schema_version: 1` |
 | **PII / 機密安全**| **零 Raw IDs & 零機密** | **零 Raw IDs** | **零 Raw IDs & 零機密** | **加鹽雜湊集合** (SHA-256) | **零 Raw IDs & 零機密** | **全 Scheme 脫敏 & 零 Raw IDs** |
 | **讀寫模式** | 每次 Pipeline Run 全量產出 | 每次 Pipeline Run 增量讀取寫回 | 每次 Gate 評估全量寫入 | 水線批次追加 (`INSERT OR IGNORE`) | 評估完成冪等寫入 | 發送/抑制時追加寫入，唯讀查詢 |
 | **生命週期行為**| 單次消費 / UI 渲染 | 跨週期持久化、水線推進 | 單次評估 / CI 判定依據 | 跨週期持久化、去重計算 | 跨週期不可變歷史快照 | 跨週期審計與 24h 健康度統計 |
@@ -147,7 +147,7 @@ flowchart TD
 前端載入或 static dashboard 內嵌之頂層容器：
 | 欄位名稱 | 型別 | 必填 | 說明 | 範例 |
 | :--- | :--- | :--- | :--- | :--- |
-| `schema_version` | string | 是 | Schema 版本號，當前為 `"2.7.0"`（相容 `"2.0"`, `"2.3"`, `"2.3.0"`, `"2.6"`, `"2.6.0"`, `"2.7"`, `"2.7.0"`） | `"2.7.0"` |
+| `schema_version` | string | 是 | Schema 版本號，當前為 `"2.8.0"`（相容 `"2.0"`, `"2.3"`, `"2.3.0"`, `"2.6"`, `"2.6.0"`, `"2.7"`, `"2.7.0"`, `"2.8"`, `"2.8.0"`） | `"2.8.0"` |
 | `generated_at` | string (ISO 8601 UTC) | 是 | 報表產生時間（UTC，結尾必須為 `Z`） | `"2026-09-02T14:00:00Z"` |
 | `default_app` | string | 是 | 預設開啟的 App key（必須存在於 `apps` 鍵值中） | `"my_app"` |
 | `apps` | object | 是 | Key 為 app ID，Value 為 `AppDashboardV2Data` | `{ "my_app": { ... } }` |
@@ -365,6 +365,7 @@ flowchart TD
 | `ai_analysis` | AIIssueAnalysis | 是 | AI 針對該 Issue 之分析摘要 | 見下方 `AIIssueAnalysis` |
 | `detail` | IssueDetail \| null | 是 (可為 null) | 深度診斷資料（若有抓取） | 見下方 `IssueDetail` |
 | `lifecycle` | IssueLifecycle \| null | 否 (V2.3+ 規範) | 跨版本生命週期狀態 | 見下方 `IssueLifecycle` |
+| `occurrence_timeline` | IssueOccurrenceSummary \| null | 否 (V2.8+ 規範) | 每日發生趨勢、首末發生日期與版本切換 | 見下方 `IssueOccurrenceSummary` |
 
 #### `PriorityInfo`
 ```json
@@ -1128,6 +1129,6 @@ assert len(alert_errors) == 0, f"Alert delivery schema errors: {alert_errors}"
 ```
 
 - **相容性保證與版本職責**：
-  - Historical Catalog Producer 固定產出 `schema_version: "2.3.0"`；`validate_historical_catalog()` 在執行階段嚴格檢核必填欄位並以遞迴掃描強制拒絕任何階層之 `installation_ids` 或 `user_ids` 違規欄位，落實零 raw IDs 保證，同時支援 `{"1.0", "2.0", "2.3", "2.3.0", "2.6", "2.6.0", "2.7", "2.7.0"}` 相容讀取。
-  - 前端 Dashboard Bundle 之頂層 `schema_version` 為 `"2.7.0"`；`schema_v2.py` 之 `SUPPORTED_SCHEMA_VERSIONS` 相容 `{"2.0", "2.3", "2.3.0", "2.6", "2.6.0", "2.7", "2.7.0"}`。
-  - 舊版消費端若僅需要單期快照，直接讀取 `AppDashboardV2Data` 之 `kpi`、`top_issues` 依然完全相容；若需要長週期版本演進分析，可消費新增之 `release_catalog`、`alert_delivery` 欄位。
+  - Historical Catalog Producer 固定產出 `schema_version: "2.3.0"`；`validate_historical_catalog()` 在執行階段嚴格檢核必填欄位並以遞迴掃描強制拒絕任何階層之 `installation_ids` 或 `user_ids` 違規欄位，落實零 raw IDs 保證，同時支援 `{"1.0", "2.0", "2.3", "2.3.0", "2.6", "2.6.0", "2.7", "2.7.0", "2.8", "2.8.0"}` 相容讀取。
+  - 前端 Dashboard Bundle 之頂層 `schema_version` 為 `"2.8.0"`；`schema_v2.py` 之 `SUPPORTED_SCHEMA_VERSIONS` 相容 `{"2.0", "2.3", "2.3.0", "2.6", "2.6.0", "2.7", "2.7.0", "2.8", "2.8.0"}`。
+  - 舊版消費端若僅需要單期快照，直接讀取 `AppDashboardV2Data` 之 `kpi`、`top_issues` 依然完全相容；若需要長週期版本演進分析，可消費新增之 `release_catalog`、`alert_delivery` 欄位；Issue 包含可選的 `occurrence_timeline`。
