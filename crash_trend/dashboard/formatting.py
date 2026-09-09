@@ -146,6 +146,18 @@ function getLifecycleBadgeHtml(lc) {
   return "";
 }
 
+function getErrorTypeBadgeHtml(errorType) {
+  const t = String(errorType || "").toUpperCase();
+  if (t === "FATAL") {
+    return `<span class="badge badge-fatal" title="【致命閃退 (FATAL)】&#10;未捕獲的嚴重崩潰，App 強制中斷退出，用戶直接閃退回桌面。優先級最高。">💥 FATAL 閃退</span>`;
+  } else if (t === "ANR") {
+    return `<span class="badge badge-anr" title="【當機無回應 (ANR)】&#10;Application Not Responding：主執行緒卡住超過 5 秒，系統跳出等待或強制關閉對話框。">⏳ ANR 無回應</span>`;
+  } else if (t === "NON_FATAL" || t === "NON-FATAL") {
+    return `<span class="badge badge-nonfatal" title="【非致命異常 (NON_FATAL)】&#10;App 依然正常運作未閃退，但內部發生錯誤或拋出 Exception（已被程式 try-catch 攔截或 Flutter 框架捕獲）。&#10;可能導致局部功能失效、按鈕沒反應或特定畫面報錯。">⚠️ NON_FATAL (未閃退)</span>`;
+  }
+  return `<span class="badge" title="未知的錯誤類型">${esc(errorType || "—")}</span>`;
+}
+
 // SemVer comparison and authoritative version discovery
 function parseSemverParts(v) {
   if (!v) return [0, 0, 0];
