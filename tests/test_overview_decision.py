@@ -490,3 +490,64 @@ class TestDecisionIsReadNotRederived(_ClientRuntime):
         self.assertIsNone(_field(card, "decision-recommendation"))
         self.assertNotIn(_canonical_wording("pass"), card)
 
+class TestDeepLinkOpensTheRequestedDecision(_ClientRuntime):
+    """外部連結（例如 Google Chat alert）必須開到它所指的那一版決策。
+
+    最糟的失敗不是「連結壞掉」，而是「連結安靜地開到別的版本」——收到 FAIL
+    通知的人會看到另一版的 PASS 卡片，然後放心發布。
+    """
+
+    def test_client_decision_view_matches_the_python_contract(self) -> None:
+        js = nav.get_navigation_js()
+        self.assertIn(f'const ROUTE_DECISION_VIEW = "{nav.DECISION_VIEW}";', js)
+
+    def test_card_permalink_equals_the_canonical_python_helper(self) -> None:
+        """卡片連結必須與 alert 端產生的 canonical 連結逐字元相同。
+
+        否則同一個 release 會有兩種寫法，去重與人工比對都會把它們當成兩個目標。
+        """
+        card = self._render()["cards"]["shop_app|android|3.2.0"]
+        self.assertEqual(
+            _permalink(card),
+            nav.build_deep_link_fragment(
+                nav.DECISION_VIEW, app="shop_app", platform="android", version="3.2.0"
+            ),
+        )
+
+    def test_alert_link_pins_the_requested_release_instead_of_the_latest(self) -> None:
+        self.assertNotEqual(
+            "3.1.2",
+            LATEST_BY_APP_PLATFORM["shop_app"]["ios"],
+            "前提：測的是一個**不是**最新版的 release，否則這條測不到 pinning",
+        )
+        link = nav.build_release_decision_link("shop_app", "ios", "3.1.2")
+        grid = self._render(initial_hash=link)["grid"]
+        self.assertIn('data-decision-platform="ios" data-decision-version="3.1.2"', grid)
+        self.assertIn("連結指定版本", grid)
+        # 另一個平台仍顯示自己的最新版：對照能力不因為 deep link 而消失。
+        self.assertIn(
+            'data-decision-platform="android" data-decision-version="'
+            + LATEST_BY_APP_PLATFORM["shop_app"]["android"]
+            + '"',
+            grid,
+        )
+
+    def test_deep_link_to_an_unevaluated_release_still_shows_no_recommendation(self) -> None:
+        """連結指到一個 gate 未評估的版本時，pinning 不得順手補一則建議。"""
+        link = nav.build_release_decision_link("rider_app", "android", "1.7.4")
+        grid = self._render(initial_hash=link)["grid"]
+        self.assertIn('data-decision-version="1.7.4"', grid)
+        self.assertNotIn(overview.DECISION_PASS_TONE_CLASS, grid)
+        self.assertIsNone(_field(grid, "decision-recommendation"))
+
+    def test_stale_version_from_another_app_does_not_open_another_release(self) -> None:
+        """外部連結常帶著別的 app 的版本號進來；此時只能退回最新版，不得誤命中。"""
+        link = nav.build_deep_link_fragment(
+            nav.DECISION_VIEW, app="rider_app", platform="android", version="3.2.0"
+        )
+        grid = self._render(initial_hash=link)["grid"]
+        self.assertNotIn('data-decision-version="3.2.0"', grid)
+        self.assertIn(
+            'data-decision-version="' + LATEST_BY_APP_PLATFORM["rider_app"]["android"] + '"',
+            grid,
+        )
