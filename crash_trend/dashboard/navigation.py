@@ -730,6 +730,8 @@ def get_navigation_js() -> str:
         '    if (typeof renderReleaseDecisions === "function") renderReleaseDecisions();\n'
         '    // #74 的比較面與決策面共用同一個 pinned release，必須一起重畫。\n'
         '    if (typeof renderReleaseComparison === "function") renderReleaseComparison();\n'
+        '    // #91 的輔助面板（lifecycle / gate history）同樣跟著 pinned release。\n'
+        '    if (typeof renderReleaseAux === "function") renderReleaseAux();\n'
         '    if (resolved.version && typeof openReleaseDetail === "function") {\n'
         "      openReleaseDetail(resolved.version, resolved.platform || null);\n"
         '    } else if (!resolved.version && typeof closeReleaseDetail === "function") {\n'
