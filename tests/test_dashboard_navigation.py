@@ -5,6 +5,10 @@ V3.1 把導覽定義與 routing 字串集中到 `crash_trend.dashboard.navigatio
 `id="view-xxx"` / `switchView('xxx')`，導覽與 view container 就會再次漂移
 （點得到按鈕卻切不到頁面，或存在點不到的孤兒 view）。因此契約是
 「渲染結果必須完全由 NAV_ITEMS 推導」，而非只檢查某些字串存在。
+
+#78 在同一個集中點加上 deep-link routing，因此本檔的 URL routing 守門條件由
+「整份 template 不得出現 URL routing」改為「navigation 模組之外不得出現 URL routing」；
+deep-link 本身的契約測試在 ``tests/test_dashboard_deep_link.py``。
 """
 
 from __future__ import annotations
@@ -74,13 +78,43 @@ class TestRenderedNavigationMatchesRegistry(unittest.TestCase):
 
 
 class TestViewRoutingContract(unittest.TestCase):
-    def test_switch_view_uses_dom_class_routing_without_url_state(self) -> None:
-        """#71 明確不引入 URL state；deep-link routing 屬 Issue #78。"""
+    def test_switch_view_uses_dom_class_routing(self) -> None:
+        """view 切換本體仍是 DOM class routing；#78 只在其後加上 URL state 同步。"""
         routing_js = nav.get_navigation_js()
         self.assertIn("function switchView(viewName)", routing_js)
         self.assertIn('classList.add("active")', routing_js)
-        for url_api in ("location.hash", "pushState", "replaceState", "hashchange"):
-            self.assertNotIn(url_api, assemble_html_template())
+
+    def test_no_ad_hoc_url_routing_outside_navigation_module(self) -> None:
+        """URL state 的讀寫必須只存在於 navigation 模組這一份集中來源。
+
+        #71 當時的守門條件是「整份 template 不得出現任何 URL routing」，
+        目的是防止 deep-link 在「零行為變更」的機械式重構裡偷跑。
+        #78 已正式交付 deep-link routing，該條件因此改為
+        「不得存在 navigation 模組之外的 ad-hoc URL routing」——
+        這才是真正要防的漂移：section module 各自操作 location.hash，
+        導致 routing 又變成多份、與導覽註冊表脫鉤。
+
+        強度並未下降，反而多守了一項：
+        - History API 的呼叫（``history.pushState`` / ``history.replaceState``）
+          在整份 template 內仍然全面禁止，因為 dashboard 常以 ``file://`` 開啟，
+          該 API 會被瀏覽器擋成 SecurityError；deep-link 一律走 fragment。
+        - ``location.hash`` / ``hashchange`` 的出現位置被限制在單一函式產出的區塊內。
+        """
+        template = assemble_html_template()
+        routing_js = nav.get_navigation_js()
+        self.assertIn(routing_js, template)
+
+        outside_navigation = template.replace(routing_js, "")
+        for url_api in ("location.hash", "hashchange", "pushState", "replaceState"):
+            with self.subTest(url_api=url_api):
+                self.assertNotIn(url_api, outside_navigation)
+        for url_api in ("location.hash", "hashchange"):
+            with self.subTest(url_api=url_api):
+                self.assertIn(url_api, routing_js)
+        # navigation 模組內雖然在註解裡提到 History API，但不得真的呼叫它。
+        for history_call in ("history.pushState", "history.replaceState"):
+            with self.subTest(history_call=history_call):
+                self.assertNotIn(history_call, template)
 
     def test_routing_id_prefixes_have_single_definition(self) -> None:
         """switchView 的 id 前綴與 Python 端推導規則必須來自同一組常數。"""
