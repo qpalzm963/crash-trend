@@ -518,6 +518,9 @@ def get_navigation_js() -> str:
         f"const {ROUTE_VIEW_WORKSPACE_CONST} = {{{view_workspace_pairs}}};\n"
         f"const {ROUTE_WORKSPACE_DEFAULT_CONST} = {{{workspace_default_pairs}}};\n"
         f'const ROUTE_DEFAULT_VIEW = "{DEFAULT_VIEW}";\n'
+        "// release decision 的落點 view；#73 的首屏連結由此產生，\n"
+        "// 與 Python 端 build_release_decision_link 指向同一個 view。\n"
+        f'const ROUTE_DECISION_VIEW = "{DECISION_VIEW}";\n'
         f'const ROUTE_PARAM_APP = "{ROUTE_PARAM_APP}";\n'
         f'const ROUTE_PARAM_PLATFORM = "{ROUTE_PARAM_PLATFORM}";\n'
         f'const ROUTE_PARAM_VERSION = "{ROUTE_PARAM_VERSION}";\n'
@@ -722,6 +725,9 @@ def get_navigation_js() -> str:
         "    if (resolved.platform) applyRoutePlatform(resolved.platform);\n"
         "    else clearRoutePlatform();\n"
         "    switchView(resolved.view);\n"
+        "    // #73 的首屏決策面要反映連結指定的 release，而不是永遠只顯示各平台最新版；\n"
+        "    // 因此在 context 已解析、view 已切換之後重畫一次。\n"
+        '    if (typeof renderReleaseDecisions === "function") renderReleaseDecisions();\n'
         '    if (resolved.version && typeof openReleaseDetail === "function") {\n'
         "      openReleaseDetail(resolved.version, resolved.platform || null);\n"
         '    } else if (!resolved.version && typeof closeReleaseDetail === "function") {\n'
