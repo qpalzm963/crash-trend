@@ -438,6 +438,9 @@ def build_release_catalog(
                         "rule_results": gate_eval["rule_results"],
                         "comparison_window": gate_eval.get("comparison_window"),
                         "evaluated_at": gate_eval["evaluated_at"],
+                        # Canonical Release Decision contract (Issue #72)：直接沿用
+                        # gate 評估結果上的 decision，Dashboard 端不得自行重算。
+                        "decision": gate_eval["decision"],
                     },
                 )
             else:

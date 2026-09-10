@@ -636,6 +636,38 @@ classDiagram
 | `rules_triggered` | array[string] | 是 | 觸發違規之規則名稱清單 | `["crash_rate_change_pct"]` |
 | `sample_sufficient`| boolean | 否 | 評估時樣本數是否滿足最小閾值要求 | `true` |
 | `evaluated_at` | string (ISO 8601 UTC) | 否 | 評估執行時間戳 | `"2026-09-08T10:00:00Z"` |
+| `decision` | ReleaseDecision | 否 (V3.2+ 規範) | Canonical Release Decision 契約；舊 bundle 未帶此欄位仍可 validate / render | 見下方 `ReleaseDecision` |
+
+#### `ReleaseDecision`
+Release Decision 之 **Single Source of Truth**（Issue #72）。同時內嵌於 `ReleaseCatalogItem["release_gate"]["decision"]` 與 Release Gate Artifact 的 `platforms[<pf>].decision`：
+
+| 欄位名稱 | 型別 | 必填 | 說明 | 範例 |
+| :--- | :--- | :--- | :--- | :--- |
+| `status` | string | 是 | `"pass"`, `"warn"`, `"fail"`, `"insufficient_data"`, `"baseline"` | `"warn"` |
+| `action` | string | 是 | `"proceed"`, `"investigate"`, `"hold"`, `"await_data"`, `"establish_baseline"` | `"investigate"` |
+| `recommendation` | string | 是 | 該狀態對應之建議行動語句（繁體中文） | `"建議先觀察並調查退化指標，暫緩擴大發布"` |
+| `reasons` | array[string] | 是 | 造成該判定之原因；直接重用 `rule_results[].reason` 之 deterministic 文案與門檻證據 | `["ANR 率上升 +34.00%，達到警告門檻 (+20.0%)"]` |
+
+- **唯一推導點**：`crash_trend/gate/decision.py` 之 `derive_decision(status, rule_results, sample_sufficient)` 為唯一實作，且為 deterministic pure function（相同輸入必得相同輸出）。
+- **Consumer 不得自行重算**：Dashboard、Google Chat Alert 與未來 CLI / GitHub Check 一律讀取本契約欄位；任一 consumer 都不得維護獨立的 `status -> recommendation/action` 對應表。`tests/test_release_decision.py` 以 negative / structural contract test 防止該對應表重新出現。
+- **`status` 對 `action` / `recommendation` 之固定對應**（`action` 唯一定義於 `crash_trend/schema_v2.py` 之 `CANONICAL_DECISION_ACTIONS`，`recommendation` 文案唯一定義於 `crash_trend/gate/decision.py`，兩者組合為 `_DECISION_TABLE`）：
+
+| `status` | `action` | `recommendation` |
+| :--- | :--- | :--- |
+| `pass` | `proceed` | 指標均在安全閾值內，可以繼續發布 |
+| `warn` | `investigate` | 建議先觀察並調查退化指標，暫緩擴大發布 |
+| `fail` | `hold` | 建議停止擴大發布，優先處理退化問題 |
+| `insufficient_data` | `await_data` | 樣本不足尚無法判定品質，請等待資料累積後再決定是否擴大發布 |
+| `baseline` | `establish_baseline` | 無前版可比較，本版作為基準；請持續觀察後再決定是否擴大發布 |
+
+- **中性狀態保證**：`insufficient_data` 與 `baseline` 為一級狀態，**永不呈現為 PASS**（`action` 絕不為 `proceed`）。未知 status 一律降級為 `insufficient_data`；`pass` 但樣本不足亦降級為 `insufficient_data`。`warn` / `fail` 已具退化證據，不因樣本狀態被弱化。
+- **reasons 來源**：`fail` 取 `status == "fail"` 之規則原因（若無則退回 `warn` 證據），`warn` 取 `warn` 規則，`insufficient_data` 取 `insufficient_data` 規則，`baseline` 取 `baseline_version` 規則；`pass` 為空陣列。本層不新增任何自創文案。
+- **Semantic consistency validation**：因為 consumer 一律信任 `decision` 而不重算，「各欄位是合法 enum、但彼此矛盾」的 payload 必須在 validation 就被擋下，不得被讀成 green light。`validate_release_decision()` 除 enum / 型別檢查外另驗證兩項：
+  1. `(status, action)` 必須為 `CANONICAL_DECISION_ACTIONS` 上的 canonical pair（例如 `status: "fail"` 搭配 `action: "proceed"` 一律拒絕）。
+  2. `decision.status` 必須與外層狀態一致 —— `ReleaseCatalogItem["release_gate"]["status"]` 與 Release Gate Artifact 的 `platforms[<pf>].gate_status` 皆會被檢查。比對基準是 `canonical_decision_status(外層狀態, sample_sufficient)`（即 `derive_decision()` 用的同一支正規化函式），而非欄位字面相等；因此「`gate_status: "pass"` + 樣本不足 → `decision.status: "insufficient_data"`」為合法，而在同一份樣本不足的結果上宣稱 `pass` / `proceed` 則被拒絕。
+- **Gate 未啟用時不附 `decision`**：policy `enabled: false` 的分支根本沒有做品質評估，因此 `evaluate_release()` **刻意不附上 `decision`**；`build_release_catalog()` 亦維持 `release_gate: null`。這是為了避免「未啟用」被 canonicalize 成 `pass -> proceed` 而被誤讀為「已驗證安全」。此處**不得**改標為 `insufficient_data` ——「樣本不足」與「未啟用」是不同的事實。「未啟用」的事實由 `alert_summary` 表述。
+- **回填只在有評估證據時進行**：Dashboard bundle adapter（`crash_trend/dashboard/renderer.py`）為舊 bundle 回填 `decision` 時，會先以 `gate_evaluated_quality()` 確認該 summary 至少留有一筆 `rule_results` 證據。啟用中的 gate 必定至少產生一筆規則結果（樣本不足規則、基準版規則，或指標規則的 `skip` 佔位）；完全無證據者代表 gate 未評估，此時寧可讓 `decision` 缺席，也不得在 Dashboard 端獨立製造出 `proceed` 綠燈。
+- **Schema 相容性**：`decision` 為 backward-compatible NotRequired 擴充，未 bump Dashboard Bundle `schema_version`（維持 `2.8.0`）；V3.2 之前產出的 bundle 與 artifact 未帶 `decision` 仍通過 validation。
 
 #### `GateHistoryPoint`
 該版本歷史評估快照資料點（內嵌於 `ReleaseCatalogItem["gate_history"]`）：
@@ -831,6 +863,14 @@ App 層級 Google Chat 警報發送觀測度數據容器（內嵌於 `AppDashboa
         "alert_summary": "版本 3.2.0 (android) 品質閘門觸發警告（1 項預警）：crash_rate_change_pct (15.2%) exceeded warn threshold (10.0%)",
         "trigger_rules": [
           "crash_rate_change_pct"
+        ]
+      },
+      "decision": {
+        "status": "warn",
+        "action": "investigate",
+        "recommendation": "建議先觀察並調查退化指標，暫緩擴大發布",
+        "reasons": [
+          "crash_rate_change_pct (15.2%) exceeded warn threshold (10.0%)"
         ]
       },
       "evaluated_at": "2026-09-08T10:00:00Z",

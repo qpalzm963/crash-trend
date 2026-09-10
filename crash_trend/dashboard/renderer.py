@@ -204,6 +204,38 @@ def assemble_bundle_from_apps(cfg: dict | None = None, root_dir: str | Path | No
                     except Exception:
                         pass
 
+            # Backfill the canonical Release Decision contract for bundles produced
+            # before V3.2 (Issue #72). This is an adapter, not a second derivation:
+            # it calls the single gate domain function so Dashboard and Google Chat
+            # always read identical recommendation / action / reasons.
+            try:
+                from crash_trend.gate.decision import (
+                    decision_from_gate_result,
+                    gate_evaluated_quality,
+                )
+
+                decision_catalogs = []
+                if isinstance(a_data.get("release_catalog"), list):
+                    decision_catalogs.append(a_data["release_catalog"])
+                for p_val in (a_data.get("periods") or {}).values():
+                    if isinstance(p_val, dict) and isinstance(p_val.get("release_catalog"), list):
+                        decision_catalogs.append(p_val["release_catalog"])
+
+                for cat_list in decision_catalogs:
+                    for c_item in cat_list:
+                        if not isinstance(c_item, dict):
+                            continue
+                        rg = c_item.get("release_gate")
+                        # 只有「真的做過品質評估」的 summary 才回填 decision
+                        # （Issue #72 review）：沒有任何 rule 證據代表 gate 未評估
+                        # （例如 enabled: false），若照樣回填就會在 Dashboard 端獨立
+                        # 製造出 pass -> proceed 的 false green。寧可讓 decision 缺席
+                        # （contract 為 NotRequired，consumer 必須容忍）。
+                        if isinstance(rg, dict) and not rg.get("decision") and gate_evaluated_quality(rg):
+                            rg["decision"] = decision_from_gate_result(rg)
+            except Exception:
+                pass
+
             # Enrich release_catalog with Gate history snapshots if available (Issue #61)
             hist_db = eff_root / "out" / app_id / "release_gate_history.sqlite3"
             if hist_db.is_file():

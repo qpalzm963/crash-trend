@@ -31,6 +31,10 @@ class AlertMessage:
     dashboard_url: str | None
     thread_key: str | None
     text: str
+    # Canonical Release Decision contract fields (Issue #72). Copied verbatim
+    # from the gate artifact's decision; never re-derived from gate_status.
+    decision_action: str = ""
+    recommendation: str = ""
 
 
 @dataclass(frozen=True)
