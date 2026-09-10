@@ -143,6 +143,100 @@ class TestDeepLinkParsingIsTotal(unittest.TestCase):
                 self.assertIn(route.view, nav.view_names())
 
 
+#: #75 之前是一級導覽、之後降為工作區底下 panel 的 view，以及它們的新歸屬。
+#: 判準是「view 名稱不再是任何一個一級工作區的 id」——``releases`` 也在其中
+#: （一級項目變成 ``versions``），因此覆蓋範圍比 #75 issue 內文列的五個更完整。
+#: 這幾個名字已經隨著 #78 的分享連結流出去（chat / bookmark），因此每一個都要有
+#: 對應的相容性斷言。
+RELOCATED_VIEW_WORKSPACES: dict[str, str] = {
+    "version_health": "versions",
+    "releases": "versions",
+    "devices": "issues",
+    "notifications": "system",
+    "ai_insights": "system",
+    "settings": "system",
+}
+
+
+class TestRelocatedViewDeepLinkCompatibility(unittest.TestCase):
+    """#75 的 deep-link 相容性決策 (#75 AC「migration 或 backward-compatible fallback」)。
+
+    採用的是**保留而非別名**：V3.5 只改變 view 掛在哪個工作區底下，沒有刪掉任何
+    view container，所以 ``#version_health`` 這類舊連結仍然是一等公民 route，
+    會開到完全同一份內容——不需要 old→new 對照表，也不存在「舊連結掉回首頁」。
+    ``resolveRoute`` 對未知 view 的 Overview fallback 因此不會被這五個名字碰到；
+    本類別的存在就是為了讓「有人把某個 view 從註冊表拿掉」立刻變成紅燈。
+    """
+
+    def test_relocated_view_table_covers_every_view_that_left_the_top_level(self) -> None:
+        """對照表必須恰好等於「view 名稱不再是任何一級工作區 id」的那些 view。
+
+        自動推導出來的集合與手寫的表比對，可避免日後又有 view 被降級卻沒人補測試。
+        """
+        derived = {
+            view: nav.workspace_of(view)
+            for view in nav.view_names()
+            if view not in nav.workspace_ids()
+        }
+        self.assertEqual(derived, RELOCATED_VIEW_WORKSPACES)
+        for view in RELOCATED_VIEW_WORKSPACES:
+            with self.subTest(view=view):
+                self.assertNotIn(view, nav.workspace_ids())
+
+    def test_old_top_level_view_links_still_resolve_to_their_own_view(self) -> None:
+        """五個舊一級 view 名稱必須解析回自己，而不是降級到 Overview。"""
+        for view, workspace in RELOCATED_VIEW_WORKSPACES.items():
+            with self.subTest(view=view):
+                route = nav.parse_deep_link(f"#{view}")
+                self.assertEqual(route.view, view)
+                self.assertNotEqual(
+                    route.view,
+                    nav.DEFAULT_VIEW,
+                    "舊連結掉回 Overview 就是本測試要防的退化",
+                )
+                self.assertEqual(nav.workspace_of(route.view), workspace)
+
+    def test_old_links_keep_their_context_parameters(self) -> None:
+        """舊連結多半帶著 app/platform/version；view 相容但 context 掉了同樣是壞連結。"""
+        for view in RELOCATED_VIEW_WORKSPACES:
+            with self.subTest(view=view):
+                route = nav.parse_deep_link(f"#{view}?app=shop_app&platform=Android&version=3.2.0")
+                self.assertEqual(
+                    (route.view, route.app, route.platform, route.version),
+                    (view, "shop_app", "android", "3.2.0"),
+                )
+
+    def test_old_view_names_are_still_producible_as_canonical_links(self) -> None:
+        """外部 consumer 仍應能產生指向這些 panel 的連結，不該突然 raise。"""
+        for view in RELOCATED_VIEW_WORKSPACES:
+            with self.subTest(view=view):
+                self.assertEqual(nav.build_deep_link_fragment(view), f"#{view}")
+
+    def test_workspace_ids_are_accepted_and_normalised_to_the_default_panel(self) -> None:
+        """使用者看到四個一級項目後可能手打 ``#system``；接受它，但正規化成 panel view。
+
+        若兩種寫法都被視為 canonical，同一個目標會有兩條「正式」連結，
+        alert 去重與人工比對都會把它們看成不同目標。
+        """
+        for workspace in nav.workspace_ids():
+            with self.subTest(workspace=workspace):
+                expected = nav.workspace_default_view(workspace)
+                self.assertEqual(nav.resolve_route_view(workspace), expected)
+                self.assertEqual(nav.parse_deep_link(f"#{workspace}").view, expected)
+                self.assertEqual(nav.build_deep_link_fragment(workspace), f"#{expected}")
+
+    def test_a_view_name_still_wins_over_a_same_named_workspace(self) -> None:
+        """``overview`` / ``issues`` 同時是 view 與 workspace 名；解析必須以 view 為先。
+
+        目前兩者恰好指向同一個 panel，所以這條規則不寫測試也看不出差異；
+        一旦 ``問題`` 工作區的預設 panel 改成別的（例如 devices），沒有這條
+        優先順序，``#issues`` 這條最常見的舊連結就會靜默改開到另一頁。
+        """
+        for token in set(nav.view_names()) & set(nav.workspace_ids()):
+            with self.subTest(token=token):
+                self.assertEqual(nav.resolve_route_view(token), token)
+
+
 class TestRenderedDeepLinkWiring(unittest.TestCase):
     """render 結果與 navigation 模組的假設必須一致。"""
 
@@ -210,12 +304,31 @@ console.log('__REPORT__' + JSON.stringify(out));
 
 NODE_RUNNER = r"""
 const fs = require('fs');
+const path = require('path');
+
+// 真正存在於 render 結果中的 DOM id。lazy-create 的 stub DOM 很方便，但它會讓
+// 「元素根本不存在」與「元素存在且被點亮」變得無法區分——例如 switchView 傳進
+// 一個未註冊的 view 時，真瀏覽器裡 getElementById 回 null、內容區整片空白，
+// 而 stub 會現造一個元素並顯示成「這個 view 是 active 的」。因此把 render 結果
+// 裡真的存在的 id 讀進來，現造出來的元素標記為 synthetic，快照時一律排除。
+let KNOWN_IDS = null;
+try {
+  KNOWN_IDS = new Set(
+    JSON.parse(fs.readFileSync(path.join(path.dirname(process.argv[2]), 'dom_ids.json'), 'utf-8'))
+  );
+} catch (e) {
+  KNOWN_IDS = null;
+}
+function isKnownId(id) {
+  return KNOWN_IDS === null ? true : KNOWN_IDS.has(id);
+}
 
 const elements = {};
 function getOrCreateElement(id) {
   if (!elements[id]) {
     elements[id] = {
       id,
+      synthetic: !isKnownId(id),
       value: 'ALL',
       innerHTML: '',
       textContent: '',
@@ -238,9 +351,17 @@ global.document = {
   getElementById: (id) => getOrCreateElement(id),
   querySelector: (sel) => getOrCreateElement(sel.replace('#', '')),
   // switchView 依賴 querySelectorAll 把舊的 active 清掉；回傳 [] 會讓「同時只有一個
-  // active view」這件事無法驗證，因此依 id 前綴模擬這兩個 class 的集合。
+  // active view」這件事無法驗證，因此依 id 前綴模擬這幾個 class 的集合。
+  // V3.5 (#75)：workspace tab strip / tab 也必須模擬，否則「切了工作區、tab 條
+  // 卻停在上一個工作區」這類 bug 在 runtime 測試裡完全看不見。
   querySelectorAll: (sel) => {
-    const prefix = sel === '.view-container' ? 'view-' : (sel === '.nav-item' ? 'nav-' : null);
+    const prefixes = {
+      '.view-container': 'view-',
+      '.nav-item': 'nav-',
+      '.ws-tabstrip': 'wstrip-',
+      '.ws-tab': 'wstab-',
+    };
+    const prefix = prefixes[sel];
     if (!prefix) return [];
     return Object.keys(elements).filter(id => id.indexOf(prefix) === 0).map(id => elements[id]);
   },
@@ -282,11 +403,18 @@ function historyGo(delta) {
   hashListeners.slice().forEach(fn => fn());
 }
 
-function activeViews() {
+function activeWithPrefix(prefix) {
   return Object.keys(elements)
-    .filter(id => id.indexOf('view-') === 0 && elements[id].classList.contains('active'))
-    .map(id => id.slice('view-'.length))
+    .filter(id =>
+      id.indexOf(prefix) === 0 &&
+      !elements[id].synthetic &&
+      elements[id].classList.contains('active')
+    )
+    .map(id => id.slice(prefix.length))
     .sort();
+}
+function activeViews() {
+  return activeWithPrefix('view-');
 }
 function snapshot() {
   // `let curAppId` 宣告在 eval 的 scope 內，外部讀不到；改用 navigation 模組
@@ -295,10 +423,9 @@ function snapshot() {
   return {
     hash: curHash,
     activeViews: activeViews(),
-    activeNav: Object.keys(elements)
-      .filter(id => id.indexOf('nav-') === 0 && elements[id].classList.contains('active'))
-      .map(id => id.slice('nav-'.length))
-      .sort(),
+    activeNav: activeWithPrefix('nav-'),
+    activeStrips: activeWithPrefix('wstrip-'),
+    activeTabs: activeWithPrefix('wstab-'),
     app: ctx ? ctx.app : null,
     releasePlatformSelect: elements['filterReleasePlatform'] ? elements['filterReleasePlatform'].value : null,
     modalActive: elements['releaseDetailModal'] ? elements['releaseDetailModal'].classList.contains('active') : false,
@@ -431,9 +558,15 @@ class TestDeepLinkRuntimeWithNode(unittest.TestCase):
         self.assertGreaterEqual(len(scripts), 2, "HTML must contain at least 2 <script> tags")
         client_js = scripts[1]
 
+        # 交給 runner 的「真的存在的 DOM id」白名單：讓 stub DOM 不會把
+        # 一個不存在的 view/nav/tab 現造出來，再誤報成 active（見 NODE_RUNNER 註解）。
+        dom_ids = sorted(set(re.findall(r'id="([A-Za-z0-9_-]+)"', html)))
+        self.assertIn(nav.view_container_id(nav.DEFAULT_VIEW), dom_ids, "前提：白名單抓到了 view container id")
+
         with tempfile.TemporaryDirectory() as tmp:
             js_path = Path(tmp) / "client.js"
             js_path.write_text(client_js, encoding="utf-8")
+            (Path(tmp) / "dom_ids.json").write_text(json.dumps(dom_ids), encoding="utf-8")
             runner_path = Path(tmp) / "runner.js"
             runner_path.write_text(NODE_RUNNER, encoding="utf-8")
             argv = [self.node_bin, str(runner_path), str(js_path), initial_hash]
@@ -460,7 +593,9 @@ class TestDeepLinkRuntimeWithNode(unittest.TestCase):
         steps = self._run(self.plain_bundle, "")
         on_load = steps["onLoad"]
         self.assertEqual(on_load["activeViews"], [nav.DEFAULT_VIEW])
-        self.assertEqual(on_load["activeNav"], [nav.DEFAULT_VIEW])
+        # #75 之後 nav 按鈕以 workspace 為鍵；``DEFAULT_VIEW`` 與 ``DEFAULT_WORKSPACE``
+        # 目前字面相同（都是 ``overview``），寫死成 view 會讓這行變成巧合通過。
+        self.assertEqual(on_load["activeNav"], [nav.DEFAULT_WORKSPACE])
         self.assertEqual(on_load["hash"], "")
         self.assertEqual(on_load["historyDepth"], 1)
 
@@ -627,6 +762,92 @@ class TestDeepLinkRuntimeWithNode(unittest.TestCase):
         self.assertEqual(steps["afterBack"]["hash"], link)
         self.assertEqual(steps["afterBack"]["activeViews"], ["releases"], "back 必須把畫面帶回上一個 view")
         self.assertEqual(steps["afterForward"]["activeViews"], ["issues"], "forward 必須再回到 issues")
+
+    def test_old_top_level_view_links_open_their_panel_and_light_the_new_workspace(self) -> None:
+        """#75 的核心相容性驗收：六個舊一級 view 名稱逐一實際載入一次。
+
+        Python 端只證明「字串解析回同一個 view」；真正會壞的是 runtime——
+        nav 按鈕接錯前綴（``nav-<view>`` 找不到元素）會讓導覽整排暗掉，
+        tab strip 沒切會讓 tab 條停在別的工作區，而 view container 若沒被
+        點亮則是整片空白。這些只有跑一遍 client JS 才看得到。
+        """
+        for view, workspace in sorted(RELOCATED_VIEW_WORKSPACES.items()):
+            with self.subTest(view=view):
+                link = f"#{view}"
+                on_load = self._run(self.plain_bundle, link)["onLoad"]
+                self.assertEqual(on_load["activeViews"], [view], "舊連結必須開到自己那個 panel")
+                self.assertEqual(on_load["activeNav"], [workspace], "亮起的必須是新的一級工作區")
+                self.assertEqual(on_load["activeStrips"], [workspace], "只有該工作區的 tab 條可見")
+                self.assertEqual(on_load["activeTabs"], [view], "tab 條上選中的必須是這個 panel")
+                self.assertEqual(on_load["routeContext"]["view"], view)
+                # #78 的決策：載入時不把 URL 正規化成新的 history entry。
+                self.assertEqual(on_load["hash"], link, "舊連結的 URL 不得在載入時被改寫")
+                self.assertEqual(on_load["historyDepth"], 1)
+
+    def test_navigating_between_workspaces_leaves_exactly_one_tab_strip_active(self) -> None:
+        """跨工作區切換後，只能有一個 tab strip / 一個 tab 是 active。
+
+        strip 與 view container 是兩套不同的 DOM 集合，很容易只切了其中一套；
+        殘留的 active strip 會讓兩條 tab 條同時顯示（CSS 只看 ``.active``）。
+        """
+        steps = self._run(
+            self.plain_bundle,
+            "#version_health",
+            steps="""
+              switchView('devices');
+              report.steps.afterDevices = snapshot();
+              switchView('settings');
+              report.steps.afterSettings = snapshot();
+              switchView('overview');
+              report.steps.afterOverview = snapshot();
+            """,
+        )
+        self.assertEqual(steps["onLoad"]["activeStrips"], ["versions"])
+        self.assertEqual(steps["afterDevices"]["activeStrips"], ["issues"])
+        self.assertEqual(steps["afterDevices"]["activeTabs"], ["devices"])
+        self.assertEqual(steps["afterSettings"]["activeStrips"], ["system"])
+        self.assertEqual(steps["afterSettings"]["activeTabs"], ["settings"])
+        # 單一 panel 的工作區沒有 tab 條；切進去時舊的 strip 必須被關掉，
+        # 否則 Overview 上會浮著一條屬於別的工作區的 tab 條。
+        self.assertEqual(steps["afterOverview"]["activeStrips"], [])
+        self.assertEqual(steps["afterOverview"]["activeTabs"], [])
+        self.assertEqual(steps["afterOverview"]["activeViews"], ["overview"])
+
+    def test_switch_view_with_a_workspace_id_never_blanks_the_content_area(self) -> None:
+        """``switchView('system')``（工作區 id，不是 panel view）不得讓內容區整片空白。
+
+        switchView 會先把所有 view container 的 active 清掉再加回目標；若傳進來的
+        token 不是註冊的 view，就沒有任何 container 會被加回來——畫面全白，
+        而且不會有任何 JS 例外可循。因此 switchView 必須先把 token 正規化成
+        panel view（與 deep link 的 resolveRouteView 同一條規則）。
+        """
+        for workspace in nav.workspace_ids():
+            with self.subTest(workspace=workspace):
+                expected_view = nav.workspace_default_view(workspace)
+                steps = self._run(
+                    self.plain_bundle,
+                    "",
+                    steps=f"switchView('{workspace}');\n  report.steps.after = snapshot();\n",
+                )
+                after = steps["after"]
+                self.assertEqual(after["activeViews"], [expected_view], "內容區必須恰好有一個 active view")
+                self.assertEqual(after["activeNav"], [workspace])
+                self.assertEqual(after["routeContext"]["view"], expected_view)
+                # URL 也必須落在 canonical 的 panel view 空間，不是工作區 id。
+                self.assertTrue(
+                    after["hash"].startswith(f"#{expected_view}"),
+                    f'hash 應以 #{expected_view} 開頭，實際為 {after["hash"]!r}',
+                )
+
+    def test_switch_view_with_an_unregistered_token_degrades_to_the_default_view(self) -> None:
+        """完全無效的 token 同樣不得留下空白畫面（例如舊 HTML 快取殘留的 onclick）。"""
+        steps = self._run(
+            self.plain_bundle,
+            "",
+            steps="switchView('no_such_view');\n  report.steps.after = snapshot();\n",
+        )
+        self.assertEqual(steps["after"]["activeViews"], [nav.DEFAULT_VIEW])
+        self.assertEqual(steps["after"]["activeNav"], [nav.DEFAULT_WORKSPACE])
 
 
 class TestCanonicalEncoderParityWithNode(unittest.TestCase):

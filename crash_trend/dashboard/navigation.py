@@ -1,21 +1,45 @@
-"""Dashboard 一級導覽、view routing 與 deep-link 契約的單一集中來源 (Issue #71, #78).
+"""Dashboard 一級導覽、view routing 與 deep-link 契約的單一集中來源 (Issue #71, #78, #75).
 
 V3.1 (#71) 為純機械式重構：把原先散落在 `assets.py` 與各 section module
 的導覽定義與 routing 字串集中管理。
 V3.1.1 (#78) 在同一個集中點上加入 URL/hash deep-link routing，
 不另建第二份 routing registry。
+V3.5 (#75) 在同一份註冊表上把一級導覽收斂成四個**工作區 (workspace)**
+``總覽 / 版本 / 問題 / 系統``，原本的八個一級頁面成為工作區底下的 panel。
 
 集中管理的內容：
-- ``NAV_ITEMS``：一級導覽項目的順序、view 名稱、標籤與圖示。
-- ``DEFAULT_VIEW``：初始啟用的 view（決定 nav 按鈕與 view container 的 ``active``）。
-- ``nav_button_id`` / ``view_container_id``：由 view 名稱推導 DOM id 的唯一規則。
+- ``NAV_ITEMS``：一級導覽工作區的順序、標籤、圖示，以及其底下的 panel（view）。
+- ``DEFAULT_WORKSPACE`` / ``DEFAULT_VIEW``：初始啟用的工作區與 view。
+- ``nav_button_id``（workspace） / ``view_container_id``（view） /
+  ``workspace_tabstrip_id`` / ``workspace_tab_id``：DOM id 的唯一推導規則。
+- ``workspace_of`` / ``workspace_default_view`` / ``resolve_route_view``：
+  view ↔ 工作區的唯一映射。
 - ``get_nav_menu_html``：由 ``NAV_ITEMS`` 產生 sidebar 導覽選單。
+- ``get_workspace_tabs_html``：由 ``NAV_ITEMS`` 產生工作區內的 panel 切換 tab。
 - ``get_view_container_open_tag``：供各 section module 產生 view container 開頭標籤，
   避免 module 內硬寫 ``id="view-xxx"``。
 - ``get_switch_view_call``：供 section module 產生 ``onclick`` routing 呼叫。
 - ``get_navigation_js``：產生 client 端 ``switchView()`` 與 deep-link routing。
 - ``build_deep_link`` / ``build_release_decision_link``：canonical deep link 的唯一產生器，
   供 Google Chat alert 等 consumer 使用，避免各自拼 URL。
+
+V3.5 的 IA 收斂與 routing 相容性 (#75)：
+- **routing 粒度不變，仍是 panel view**。V3.5 沒有刪掉任何 view container，
+  六個不再是一級項目的頁面（``version_health`` / ``releases`` / ``devices``
+  / ``notifications`` / ``ai_insights`` / ``settings``）全部成為工作區底下的
+  panel，因此舊的 ``#version_health`` 等 deep link 依然是**一等公民**，
+  會開到同一份內容，只是 nav 亮的是新的工作區。
+  這是刻意選擇「保留」而非「別名對照表」：沒有 old→new 映射需要維護，
+  也不會有「舊連結掉回首頁」。``resolveRoute`` 對未知 view 的 Overview
+  fallback 因此完全碰不到這六個名字。
+- **工作區 id 是額外接受的別名**：使用者看到四個一級項目後可能手打
+  ``#system``；``resolve_route_view`` 會把工作區 id 正規化成該工作區的預設
+  panel view，canonical 形式永遠落在 panel view 空間，同一個目標不會有兩種寫法。
+- **一級導覽按鈕以 workspace 為鍵**（``nav-<workspace>``），view container 仍以
+  view 為鍵（``view-<view>``）。``switchView`` 一次同時處理三者（nav 按鈕、
+  view container、workspace tab），避免「內容切了、導覽停在別的工作區」，
+  並先把傳入的 token 正規化成 panel view——否則傳進工作區 id 會把所有
+  view container 的 ``active`` 清掉卻沒有任何一個補回來，內容區整片空白。
 
 Deep-link URL 契約 (#78)::
 
@@ -61,6 +85,17 @@ from urllib.parse import quote, unquote
 
 NAV_BUTTON_ID_PREFIX = "nav-"
 VIEW_CONTAINER_ID_PREFIX = "view-"
+#: workspace tab strip 與其中單一 tab 按鈕的 DOM id 前綴 (#75)。
+#: 刻意不沿用 ``nav-`` / ``view-``：那兩個前綴是「一級導覽按鈕」與「view container」
+#: 的反向契約錨點（見 ``tests/test_dashboard_navigation.py``），workspace tab
+#: 若混用同一前綴會被誤判成孤兒 view 或未註冊的導覽按鈕。
+WORKSPACE_TABSTRIP_ID_PREFIX = "wstrip-"
+WORKSPACE_TAB_ID_PREFIX = "wstab-"
+
+#: client 端 IA map 的變數名；由 Python 端的 ``NAV_ITEMS`` 產生其內容，
+#: 名稱集中在此以便契約測試比對，不在測試裡另抄一份字面值。
+ROUTE_VIEW_WORKSPACE_CONST = "ROUTE_VIEW_WORKSPACE"
+ROUTE_WORKSPACE_DEFAULT_CONST = "ROUTE_WORKSPACE_DEFAULT_VIEW"
 
 #: deep link 的 fragment query 參數名（Python 端與 client 端共用同一組字面值）。
 ROUTE_PARAM_APP = "app"
@@ -88,74 +123,142 @@ ROUTE_EXTRA_ESCAPE_CHARS = "!'()*"
 
 
 @dataclass(frozen=True)
-class NavItem:
-    """單一一級導覽項目；``view`` 同時決定 nav 按鈕與 view container 的 DOM id。"""
+class NavPanel:
+    """工作區內的一個 panel；``view`` 決定 view container 與 workspace tab 的 DOM id。"""
 
     view: str
     label: str
+
+
+@dataclass(frozen=True)
+class NavItem:
+    """單一一級導覽項目（V3.5 起代表一個「工作區 workspace」）。
+
+    ``workspace`` 決定 nav 按鈕的 DOM id；``panels`` 是這個工作區底下的 view
+    （順序即 workspace tab 的顯示順序，第一個為點擊 nav 時的預設 panel）。
+    單一 panel 的工作區不會渲染 tab strip，行為與 V2 的一級頁面完全相同。
+    """
+
+    workspace: str
+    label: str
     icon_svg: str
+    panels: tuple[NavPanel, ...]
 
 
 NAV_ITEMS: tuple[NavItem, ...] = (
     NavItem(
-        view="overview",
+        workspace="overview",
         label="總覽 (Overview)",
         icon_svg='<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>',
+        panels=(
+            NavPanel(view="overview", label="總覽 (Overview)"),
+        ),
     ),
     NavItem(
-        view="issues",
-        label="問題列表 (Issues)",
-        icon_svg='<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>',
-    ),
-    NavItem(
-        view="version_health",
-        label="版本健康度 (Version Health)",
-        icon_svg='<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>',
-    ),
-    NavItem(
-        view="devices",
-        label="裝置分析 (Devices)",
-        icon_svg='<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>',
-    ),
-    NavItem(
-        view="releases",
-        label="發佈版本 (Releases)",
+        workspace="versions",
+        label="版本 (Versions)",
         icon_svg='<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/></svg>',
+        panels=(
+            NavPanel(view="version_health", label="版本健康度 (Version Health)"),
+            NavPanel(view="releases", label="發佈版本 (Release Catalog)"),
+        ),
     ),
     NavItem(
-        view="notifications",
-        label="通知 (Notifications)",
-        icon_svg='<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>',
+        workspace="issues",
+        label="問題 (Issues)",
+        icon_svg='<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>',
+        panels=(
+            NavPanel(view="issues", label="問題列表 (Issue List)"),
+            NavPanel(view="devices", label="裝置與系統 Breakdown (Devices & OS)"),
+        ),
     ),
     NavItem(
-        view="ai_insights",
-        label="AI 分析 (AI Insights)",
-        icon_svg='<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>',
-    ),
-    NavItem(
-        view="settings",
-        label="設定 (Settings)",
+        workspace="system",
+        label="系統 (System)",
         icon_svg='<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
+        panels=(
+            NavPanel(view="notifications", label="數據管道與通知 (Pipeline & Alerts)"),
+            NavPanel(view="ai_insights", label="AI 分析 (AI Insights)"),
+            NavPanel(view="settings", label="設定與 AI 治理 (Settings & AI Governance)"),
+        ),
     ),
 )
 
-#: 初始啟用的 view；nav 按鈕與 view container 的 ``active`` class 皆由此推導。
-DEFAULT_VIEW = NAV_ITEMS[0].view
+#: 初始啟用的工作區與 view；nav 按鈕、view container 與 workspace tab 的
+#: ``active`` class 皆由這兩個常數推導。
+DEFAULT_WORKSPACE = NAV_ITEMS[0].workspace
+DEFAULT_VIEW = NAV_ITEMS[0].panels[0].view
+
+
+def workspace_ids() -> tuple[str, ...]:
+    """回傳所有一級導覽工作區 id（依導覽顯示順序）。"""
+    return tuple(item.workspace for item in NAV_ITEMS)
 
 
 def view_names() -> tuple[str, ...]:
-    """回傳所有一級導覽 view 名稱（依導覽顯示順序）。"""
-    return tuple(item.view for item in NAV_ITEMS)
+    """回傳所有 view 名稱（依工作區順序、工作區內 panel 順序）。
+
+    這是 routing 的粒度：deep link 的 ``#<view>`` 一律指 panel view，
+    V3.5 的導覽收斂沒有移除任何 view，只是改變它們掛在哪個工作區底下。
+    """
+    return tuple(panel.view for item in NAV_ITEMS for panel in item.panels)
 
 
-def nav_button_id(view: str) -> str:
-    """回傳導覽按鈕的 DOM id。"""
-    return f"{NAV_BUTTON_ID_PREFIX}{view}"
+def panels_of(workspace: str) -> tuple[NavPanel, ...]:
+    """回傳某工作區底下的 panel（依顯示順序）。"""
+    for item in NAV_ITEMS:
+        if item.workspace == workspace:
+            return item.panels
+    raise KeyError(f"未註冊的 workspace: {workspace!r}；可用值：{workspace_ids()}")
+
+
+def workspace_of(view: str) -> str:
+    """回傳某 view 所屬的工作區 id（決定該 view 啟用時哪個 nav 按鈕要亮）。"""
+    for item in NAV_ITEMS:
+        for panel in item.panels:
+            if panel.view == view:
+                return item.workspace
+    raise KeyError(f"未註冊的 dashboard view: {view!r}；可用值：{view_names()}")
+
+
+def workspace_default_view(workspace: str) -> str:
+    """回傳點擊某工作區 nav 按鈕時要開啟的 view。"""
+    return panels_of(workspace)[0].view
+
+
+def resolve_route_view(token: str) -> str | None:
+    """把 route token 解析成 panel view；無法解析時回傳 ``None``。
+
+    token 可以是 panel view（canonical 形式）或工作區 id（IA 層的別名，
+    例如使用者看到四個一級項目後手打 ``#system``）。工作區 id 一律正規化為
+    該工作區的預設 panel view，因此 canonical 連結永遠落在 panel view 空間，
+    同一個目標不會有兩種寫法。
+    """
+    if token in view_names():
+        return token
+    if token in workspace_ids():
+        return workspace_default_view(token)
+    return None
+
+
+def nav_button_id(workspace: str) -> str:
+    """回傳一級導覽按鈕的 DOM id（V3.5 起以 workspace 為鍵，不再是 view）。"""
+    return f"{NAV_BUTTON_ID_PREFIX}{workspace}"
 
 
 def view_container_id(view: str) -> str:
     """回傳 view container 的 DOM id。"""
     return f"{VIEW_CONTAINER_ID_PREFIX}{view}"
+
+
+def workspace_tabstrip_id(workspace: str) -> str:
+    """回傳某工作區 tab strip 的 DOM id。"""
+    return f"{WORKSPACE_TABSTRIP_ID_PREFIX}{workspace}"
+
+
+def workspace_tab_id(view: str) -> str:
+    """回傳某 panel 對應 workspace tab 按鈕的 DOM id。"""
+    return f"{WORKSPACE_TAB_ID_PREFIX}{view}"
 
 
 def get_switch_view_call(view: str) -> str:
@@ -170,10 +273,11 @@ def get_view_container_open_tag(view: str) -> str:
 
 
 def get_nav_item_html(item: NavItem) -> str:
-    """回傳單一導覽按鈕的 HTML。"""
-    classes = "nav-item active" if item.view == DEFAULT_VIEW else "nav-item"
+    """回傳單一一級導覽按鈕的 HTML；點擊時開啟該工作區的預設 panel。"""
+    classes = "nav-item active" if item.workspace == DEFAULT_WORKSPACE else "nav-item"
+    default_view = item.panels[0].view
     return (
-        f'    <button class="{classes}" onclick="{get_switch_view_call(item.view)}" id="{nav_button_id(item.view)}">\n'
+        f'    <button class="{classes}" onclick="{get_switch_view_call(default_view)}" id="{nav_button_id(item.workspace)}">\n'
         f'      <span class="nav-icon">\n'
         f"        {item.icon_svg}\n"
         f"      </span>\n"
@@ -189,6 +293,33 @@ def get_nav_menu_html() -> str:
         + "".join(get_nav_item_html(item) for item in NAV_ITEMS)
         + "  </nav>\n"
     )
+
+
+def get_workspace_tabs_html() -> str:
+    """回傳所有多 panel 工作區的 tab strip HTML (#75)。
+
+    只有 panel 數 > 1 的工作區才會產生 strip：單一 panel 的工作區沒有可切換的
+    對象，渲染一個只有一顆按鈕的 tab 條只會佔位並讓「目前在哪」變得更難讀。
+    strip 與 view container 是兩套不同的 DOM 前綴，切換由 ``switchView`` 一次
+    同時處理（見 ``get_navigation_js``），因此不會出現 tab 與內容不一致的狀態。
+    """
+    blocks = []
+    for item in NAV_ITEMS:
+        if len(item.panels) < 2:
+            continue
+        strip_classes = "ws-tabstrip active" if item.workspace == DEFAULT_WORKSPACE else "ws-tabstrip"
+        tabs = "".join(
+            f'      <button class="{"ws-tab active" if panel.view == item.panels[0].view else "ws-tab"}"'
+            f' onclick="{get_switch_view_call(panel.view)}" id="{workspace_tab_id(panel.view)}">'
+            f"{panel.label}</button>\n"
+            for panel in item.panels
+        )
+        blocks.append(
+            f'    <div class="{strip_classes}" id="{workspace_tabstrip_id(item.workspace)}">\n'
+            f"{tabs}"
+            f"    </div>\n"
+        )
+    return "    <!-- WORKSPACE TABS (工作區內 panel 切換) -->\n" + "".join(blocks)
 
 
 @dataclass(frozen=True)
@@ -231,9 +362,16 @@ def build_deep_link_fragment(
 
     未註冊的 view 直接 raise：deep link 是對外契約，寧可在產生端炸掉，
     也不要送出一條只會 fallback 到 Overview 的假連結。
+
+    ``view`` 也接受工作區 id（例如 ``system``），會被正規化成該工作區的預設
+    panel view：canonical 形式永遠落在 panel view 空間，同一個目標不會有兩種寫法。
     """
-    if view not in view_names():
-        raise ValueError(f"未註冊的 dashboard view: {view!r}；可用值：{view_names()}")
+    resolved_view = resolve_route_view(view)
+    if resolved_view is None:
+        raise ValueError(
+            f"未註冊的 dashboard view: {view!r}；可用值：{view_names() + workspace_ids()}"
+        )
+    view = resolved_view
     params = (
         (ROUTE_PARAM_APP, app),
         (ROUTE_PARAM_PLATFORM, platform.lower() if platform else platform),
@@ -289,8 +427,9 @@ def build_release_decision_link(
 def parse_deep_link(link: str) -> DeepLinkRoute:
     """解析 canonical deep link（可為完整 URL 或純 fragment）。
 
-    與 client 端 ``parseRouteHash`` 對稱：未知 view 降級為 ``DEFAULT_VIEW``、
-    未知參數忽略、空值視為未提供，因此壞連結不會產生例外。
+    與 client 端 ``parseRouteHash`` 對稱：工作區 id 正規化為該工作區的預設 panel、
+    未知 view 降級為 ``DEFAULT_VIEW``、未知參數忽略、空值視為未提供，
+    因此壞連結不會產生例外。
     """
     fragment = link.split("#", 1)[1] if "#" in link else link
     view_token, _, query = fragment.partition("?")
@@ -305,7 +444,7 @@ def parse_deep_link(link: str) -> DeepLinkRoute:
             parsed[unquote(key)] = value
     platform = parsed.get(ROUTE_PARAM_PLATFORM)
     return DeepLinkRoute(
-        view=view if view in view_names() else DEFAULT_VIEW,
+        view=resolve_route_view(view) or DEFAULT_VIEW,
         app=parsed.get(ROUTE_PARAM_APP),
         platform=platform.lower() if platform else None,
         version=parsed.get(ROUTE_PARAM_VERSION),
@@ -331,16 +470,36 @@ def get_navigation_js() -> str:
     """
     view_list = ", ".join(f'"{view}"' for view in view_names())
     platform_select_ids = ", ".join(f'"{sid}"' for sid in ROUTE_PLATFORM_SELECT_IDS)
+    view_workspace_pairs = ", ".join(f'{view}: "{workspace_of(view)}"' for view in view_names())
+    workspace_default_pairs = ", ".join(
+        f'{ws}: "{workspace_default_view(ws)}"' for ws in workspace_ids()
+    )
     return (
         "// Navigation between views\n"
+        "// V3.5 (#75)：一級導覽是「工作區 (workspace)」，view 是工作區底下的 panel。\n"
+        "// switchView 仍以 view 為單位（deep link 與 routing 粒度不變），但同時要點亮\n"
+        "// 擁有該 view 的工作區 nav 按鈕與對應的 workspace tab，否則會出現「內容切了、\n"
+        "// 導覽卻停在別的工作區」的狀態。\n"
+        "// 未註冊的 token（最典型是 consumer 直接傳工作區 id，例如 switchView('system')）\n"
+        "// 必須先正規化成真正的 panel view：否則所有 view container 的 active 都會被清掉、\n"
+        "// 卻沒有任何一個被加回來，內容區會整片空白——比「切錯頁」嚴重得多。\n"
         "function switchView(viewName) {\n"
+        "  viewName = resolveRouteView(viewName) || ROUTE_DEFAULT_VIEW;\n"
+        f"  const workspace = {ROUTE_VIEW_WORKSPACE_CONST}[viewName];\n"
         '  document.querySelectorAll(".nav-item").forEach(el => el.classList.remove("active"));\n'
-        f'  const btn = $("{NAV_BUTTON_ID_PREFIX}" + viewName);\n'
+        f'  const btn = $("{NAV_BUTTON_ID_PREFIX}" + workspace);\n'
         "  if (btn) btn.classList.add(\"active\");\n"
         "\n"
         '  document.querySelectorAll(".view-container").forEach(el => el.classList.remove("active"));\n'
         f'  const v = $("{VIEW_CONTAINER_ID_PREFIX}" + viewName);\n'
         '  if (v) v.classList.add("active");\n'
+        "\n"
+        '  document.querySelectorAll(".ws-tabstrip").forEach(el => el.classList.remove("active"));\n'
+        f'  const strip = $("{WORKSPACE_TABSTRIP_ID_PREFIX}" + workspace);\n'
+        '  if (strip) strip.classList.add("active");\n'
+        '  document.querySelectorAll(".ws-tab").forEach(el => el.classList.remove("active"));\n'
+        f'  const tab = $("{WORKSPACE_TAB_ID_PREFIX}" + viewName);\n'
+        '  if (tab) tab.classList.add("active");\n'
         "\n"
         "  if (window.innerWidth <= 768) {\n"
         '    $("sidebar").classList.remove("mobile-open");\n'
@@ -354,6 +513,10 @@ def get_navigation_js() -> str:
         "// URL 契約：#<view>?app=<app>&platform=<platform>&version=<version>\n"
         "// 只用 fragment，不用 History API（pushState/replaceState 在 file:// 會被擋）。\n"
         f"const ROUTE_VIEWS = [{view_list}];\n"
+        "// V3.5 (#75)：view → 所屬工作區，以及工作區 → 預設 panel view。\n"
+        "// 兩份 map 都由 Python 端的 NAV_ITEMS 產生，client 不另有一份手寫 IA。\n"
+        f"const {ROUTE_VIEW_WORKSPACE_CONST} = {{{view_workspace_pairs}}};\n"
+        f"const {ROUTE_WORKSPACE_DEFAULT_CONST} = {{{workspace_default_pairs}}};\n"
         f'const ROUTE_DEFAULT_VIEW = "{DEFAULT_VIEW}";\n'
         f'const ROUTE_PARAM_APP = "{ROUTE_PARAM_APP}";\n'
         f'const ROUTE_PARAM_PLATFORM = "{ROUTE_PARAM_PLATFORM}";\n'
@@ -376,6 +539,17 @@ def get_navigation_js() -> str:
         '  catch (e) { return String(raw == null ? "" : raw); }\n'
         "}\n"
         "\n"
+        "// route token → panel view。token 可以是 panel view（canonical 形式），\n"
+        "// 也可以是工作區 id（使用者看到四個一級項目後手打 #system 之類的別名）。\n"
+        "// 無法解析時回傳 null，由呼叫端決定降級目標；與 Python 端\n"
+        "// resolve_route_view() 是同一條規則。\n"
+        "function resolveRouteView(token) {\n"
+        "  if (ROUTE_VIEWS.indexOf(token) >= 0) return token;\n"
+        f"  if (Object.prototype.hasOwnProperty.call({ROUTE_WORKSPACE_DEFAULT_CONST}, token))"
+        f" return {ROUTE_WORKSPACE_DEFAULT_CONST}[token];\n"
+        "  return null;\n"
+        "}\n"
+        "\n"
         "function parseRouteHash(rawHash) {\n"
         '  let raw = String(rawHash == null ? "" : rawHash);\n'
         '  if (raw.charAt(0) === "#") raw = raw.slice(1);\n'
@@ -383,7 +557,7 @@ def get_navigation_js() -> str:
         "  const viewToken = decodeRoutePart(qi >= 0 ? raw.slice(0, qi) : raw);\n"
         '  const query = qi >= 0 ? raw.slice(qi + 1) : "";\n'
         "  const route = {\n"
-        "    view: ROUTE_VIEWS.indexOf(viewToken) >= 0 ? viewToken : ROUTE_DEFAULT_VIEW,\n"
+        "    view: resolveRouteView(viewToken) || ROUTE_DEFAULT_VIEW,\n"
         "    app: null, platform: null, version: null\n"
         "  };\n"
         '  query.split("&").forEach(pair => {\n'
@@ -413,7 +587,7 @@ def get_navigation_js() -> str:
         "\n"
         "function buildRouteHash(route) {\n"
         "  const r = route || {};\n"
-        "  const view = ROUTE_VIEWS.indexOf(r.view) >= 0 ? r.view : ROUTE_DEFAULT_VIEW;\n"
+        "  const view = resolveRouteView(r.view) || ROUTE_DEFAULT_VIEW;\n"
         "  const parts = [];\n"
         "  if (r.app) parts.push(ROUTE_PARAM_APP + \"=\" + encodeRouteValue(r.app));\n"
         "  if (r.platform) parts.push(ROUTE_PARAM_PLATFORM + \"=\" + encodeRouteValue(r.platform));\n"
@@ -476,7 +650,7 @@ def get_navigation_js() -> str:
         "function resolveRoute(route) {\n"
         "  const r = route || {};\n"
         "  const resolved = {\n"
-        "    view: ROUTE_VIEWS.indexOf(r.view) >= 0 ? r.view : ROUTE_DEFAULT_VIEW,\n"
+        "    view: resolveRouteView(r.view) || ROUTE_DEFAULT_VIEW,\n"
         "    app: null, platform: null, version: null, dropped: []\n"
         "  };\n"
         "  const apps = routeAppsData();\n"

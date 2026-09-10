@@ -44,8 +44,15 @@ Crashlytics MCP ───────┘        │                         │
 ### Crash Intelligence Dashboard
 
 - 現代 SaaS Analytics 風格與響應式側邊欄。
-- 8 大功能區：總覽、問題列表、版本健康度、裝置分析、發佈版本、通知管線、AI 分析、系統設定。
-- 支援多 App 切換與 `#<app>` URL hash 直達。
+- 4 大一級工作區（V3.5 資訊架構）：總覽 (Overview)、版本 (Versions)、問題 (Issues)、系統 (System)。
+  - 總覽 (Overview)：單一 panel，不顯示工作區內 tab。
+  - 版本 (Versions)：版本健康度 (Version Health)、發佈版本 (Release Catalog)。
+  - 問題 (Issues)：問題列表 (Issue List)、裝置與系統 Breakdown (Devices & OS)。
+  - 系統 (System)：數據管道與通知 (Pipeline & Alerts)、AI 分析 (AI Insights)、設定與 AI 治理 (Settings & AI Governance)。
+  - 單一 issue 的 AI 分析與「複製 AI 修復 Prompt」留在問題詳情，不需先進入 `系統`。
+- 支援多 App 切換，並以 URL fragment deep link 直達：`#<view>?app=<app>&platform=<platform>&version=<version>`。
+  - `<view>` 是 panel 層級的 view 名稱；V2 八個一級頁面的名稱（如 `#version_health`、`#devices`、`#notifications`、`#ai_insights`、`#settings`）在 V3.5 之後仍然有效，會開到同一份內容，只是亮起的是新的一級工作區。
+  - 一級工作區 id（如 `#system`）亦被接受，並正規化為該工作區的預設 panel view。
 - 單一 `dashboard.html` 自包含輸出，可直接使用 `file://` 開啟。
 - Docker Compose 另提供 Nginx 靜態服務，預設可從 `http://localhost:8787` 查看。
 
