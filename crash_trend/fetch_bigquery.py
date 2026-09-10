@@ -1317,7 +1317,8 @@ def main() -> None:
         sys.exit(
             f"[注意] 無法列出 {project}:{dataset} —— 尚未連結 BigQuery export、無資料，或憑證問題。\n"
             f"  憑證設定：apps.yaml 填 credentials.bq_service_account（SA json 路徑），"
-            f"或本機跑一次 `gcloud auth application-default login`。\n"
+            f"可用 apps.<app_id>.bq_service_account 針對單一 App 覆寫；"
+            f"填 adc 或留空則改用 ADC（本機先跑一次 `gcloud auth application-default login`）。\n"
             f"  {str(e)[:400]}"
         )
 
