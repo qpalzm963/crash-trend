@@ -146,6 +146,25 @@ function getLifecycleBadgeHtml(lc) {
   return "";
 }
 
+// priority.trend 的 badge（#74）。與 getErrorTypeBadgeHtml / getLifecycleBadgeHtml
+// 一樣只在此定義一份：Overview 與 Issues 兩個 render 點共用，文案不會各自演化。
+//
+// trend 的值由 calculate_priority() 依「本期事件數 vs 上期事件數」決定，是既有的
+// deterministic 語意；這裡只把它翻成人看得懂的字，不重新判斷任何東西。
+function getTrendBadgeHtml(trend) {
+  const t = String(trend || "").toLowerCase();
+  if (t === "new") {
+    return `<span class="badge badge-trend-new" title="【趨勢 (Trend)】&#10;上一期沒有這個問題的記錄，本期首次出現。">🆕 新出現</span>`;
+  } else if (t === "worsening") {
+    return `<span class="badge badge-trend-worsening" title="【趨勢 (Trend)】&#10;本期事件數明顯高於上一期，問題正在擴大。">📈 惡化中</span>`;
+  } else if (t === "improving") {
+    return `<span class="badge badge-trend-improving" title="【趨勢 (Trend)】&#10;本期事件數明顯低於上一期，問題正在收斂。">📉 改善中</span>`;
+  } else if (t === "stable") {
+    return `<span class="badge badge-trend-stable" title="【趨勢 (Trend)】&#10;本期事件數與上一期相近，沒有明顯變化。">➖ 持平</span>`;
+  }
+  return `<span class="badge" title="未知的趨勢值">${esc(trend || "—")}</span>`;
+}
+
 function getErrorTypeBadgeHtml(errorType) {
   const t = String(errorType || "").toUpperCase();
   if (t === "FATAL") {
