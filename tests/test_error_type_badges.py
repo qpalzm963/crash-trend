@@ -48,6 +48,25 @@ class TestErrorTypeBadgeHelper(unittest.TestCase):
                 self.assertNotIn("badge-fatal", js, f"{name} 不應自行拼 badge class")
                 self.assertNotIn("badge-anr", js, f"{name} 不應自行拼 badge class")
 
+
+    def test_tooltips_describe_severity_not_triage_priority(self) -> None:
+        """error severity 與 P0-P3 triage priority 是兩個獨立模型,tooltip 不得混談。
+
+        priority 由 calculate_priority() 決定:受影響用戶佔 30/49 分、事件數 10/49,
+        而「FATAL 或 ANR」只給 2/49 的 boost —— 且兩者拿的是**同一個** boost。
+        因此少量用戶的 FATAL 完全可能是 P2 或 P3,tooltip 若聲稱某個層級「優先級最高」
+        會與儀表板同一列顯示的 priority badge 直接矛盾,也不比 ANR 更高。
+        """
+        import re
+
+        js = get_formatting_js()
+        tooltips = re.findall(r'title="【[^"]*"', js)
+        self.assertGreaterEqual(len(tooltips), len(ERROR_TYPES))
+        banned = ("優先級", "優先順序", "priority", "P0", "P1", "P2", "P3")
+        for tip in tooltips:
+            for word in banned:
+                self.assertNotIn(word, tip, f"tooltip 不得引用 triage priority 語彙: {word}")
+
     def test_nonfatal_badge_has_a_border_for_contrast(self) -> None:
         """NON_FATAL 用 subtle 背景，缺 border 在兩種主題下都會與底色黏在一起。"""
         css = get_dashboard_styles()

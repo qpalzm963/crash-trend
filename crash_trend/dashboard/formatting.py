@@ -149,7 +149,7 @@ function getLifecycleBadgeHtml(lc) {
 function getErrorTypeBadgeHtml(errorType) {
   const t = String(errorType || "").toUpperCase();
   if (t === "FATAL") {
-    return `<span class="badge badge-fatal" title="【致命閃退 (FATAL)】&#10;未捕獲的嚴重崩潰，App 強制中斷退出，用戶直接閃退回桌面。優先級最高。">💥 FATAL 閃退</span>`;
+    return `<span class="badge badge-fatal" title="【致命閃退 (FATAL)】&#10;未捕獲的嚴重崩潰，App 強制中斷退出，屬影響最嚴重的錯誤層級。">💥 FATAL 閃退</span>`;
   } else if (t === "ANR") {
     return `<span class="badge badge-anr" title="【當機無回應 (ANR)】&#10;Application Not Responding：主執行緒卡住超過 5 秒，系統跳出等待或強制關閉對話框。">⏳ ANR 無回應</span>`;
   } else if (t === "NON_FATAL" || t === "NON-FATAL") {
