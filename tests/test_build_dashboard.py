@@ -45,15 +45,23 @@ class TestBuildDashboardV2(unittest.TestCase):
         self.assertIn("<head>", html)
         self.assertIn("<body>", html)
 
-        # 2. Sidebar items (8 standard navigation entries)
-        self.assertIn("總覽 (Overview)", html)
-        self.assertIn("問題列表 (Issues)", html)
-        self.assertIn("版本健康度 (Version Health)", html)
-        self.assertIn("裝置分析 (Devices)", html)
-        self.assertIn("發佈版本 (Releases)", html)
-        self.assertIn("通知 (Notifications)", html)
-        self.assertIn("AI 分析 (AI Insights)", html)
-        self.assertIn("設定 (Settings)", html)
+        # 2. Sidebar items — V3.5 (#75) 收斂為四個一級工作區。
+        #    原本這裡列的是 8 個一級導覽項目；#75 是那個收斂該發生的 ticket，
+        #    因此改列「四個工作區 + 各工作區底下的 panel 標籤」。斷言數量從 8 條
+        #    增加到 12 條，覆蓋範圍沒有縮小：舊的八個頁面全部仍以 panel 形式存在，
+        #    只是標籤改寫成工作區內的 tab 名稱。
+        for workspace_label in ("總覽 (Overview)", "版本 (Versions)", "問題 (Issues)", "系統 (System)"):
+            self.assertIn(workspace_label, html)
+        for panel_label in (
+            "版本健康度 (Version Health)",
+            "發佈版本 (Release Catalog)",
+            "問題列表 (Issue List)",
+            "裝置與系統 Breakdown (Devices & OS)",
+            "數據管道與通知 (Pipeline & Alerts)",
+            "AI 分析 (AI Insights)",
+            "設定與 AI 治理 (Settings & AI Governance)",
+        ):
+            self.assertIn(panel_label, html)
 
         # 3. Header components
         self.assertIn("appSelector", html)
