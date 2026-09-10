@@ -25,25 +25,26 @@ from __future__ import annotations
 import datetime as dt
 import json
 import sys
-from pathlib import Path
 from typing import Any
 
 try:
-    from crash_trend.config import ROOT, app_argparser, get_app, is_sessions_enabled, load_config, out_dir, write_json
+    from crash_trend.bq_credentials import make_bq_client
+    from crash_trend.config import ROOT, app_argparser, get_app, is_sessions_enabled, out_dir, write_json
     from crash_trend.fetch_bigquery import list_crash_tables
     from crash_trend.schema_v2 import CrashFreeMetric
 except ImportError:
     try:
-        from config import ROOT, app_argparser, get_app, is_sessions_enabled, load_config, out_dir, write_json
+        from bq_credentials import make_bq_client
+        from config import ROOT, app_argparser, get_app, is_sessions_enabled, out_dir, write_json
         from fetch_bigquery import list_crash_tables
         from schema_v2 import CrashFreeMetric
     except ImportError:
+        from crash_trend.bq_credentials import make_bq_client
         from crash_trend.config import (
             ROOT,
             app_argparser,
             get_app,
             is_sessions_enabled,
-            load_config,
             out_dir,
             write_json,
         )
@@ -194,21 +195,14 @@ SQLS = {
 # BigQuery Client & Table Discovery
 # ---------------------------------------------------------------------------
 
-def make_sessions_client(project: str) -> Any:
-    """Creates a BigQuery client using service account or Application Default Credentials."""
-    from google.cloud import bigquery
+def make_sessions_client(project: str, app_cfg: dict | None = None) -> Any:
+    """建立 Sessions BigQuery client。憑證解析共用 bq_credentials.resolve_bq_credentials，
+    與 Crashlytics 端（fetch_bigquery.make_client）採用同一套優先序與 sentinel 語意。
 
-    creds_cfg = (load_config().get("credentials") or {})
-    sa_path = creds_cfg.get("bq_service_account")
-    if sa_path:
-        sa_file = Path(sa_path).expanduser()
-        if not sa_file.exists():
-            raise FileNotFoundError(f"credentials.bq_service_account not found: {sa_file}")
-        from google.oauth2 import service_account
-
-        creds = service_account.Credentials.from_service_account_file(str(sa_file))
-        return bigquery.Client(project=project, credentials=creds)
-    return bigquery.Client(project=project)
+    設定了 service account 但檔案不存在時拋 BQCredentialsError；呼叫端會據此把 Sessions
+    標記為 unavailable 並附上原因，不會靜默退回 ADC。
+    """
+    return make_bq_client(project, app_cfg)
 
 
 def list_session_tables(
@@ -486,7 +480,7 @@ def fetch_sessions_data(
     """Fetches Firebase Sessions data from BigQuery with graceful degradation."""
     if client is None:
         try:
-            client = make_sessions_client(project)
+            client = make_sessions_client(project, app_cfg=app_config)
         except Exception as exc:
             reason = f"BigQuery client initialization failed: {exc}"
             print(f"  [Sessions] {reason}", file=sys.stderr)

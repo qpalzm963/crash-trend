@@ -9,6 +9,11 @@
 
 credentials:
   # BigQuery 服務帳號 json 路徑（用 scripts/create_sa.sh 產生；筆電與伺服器共用同一把）
+  # 此為全域預設值，可被 apps.<app_id>.bq_service_account 覆寫（見 shop_app / rider_app 範例）
+  # 特殊值 adc / none / 空值 → 改用 Application Default Credentials（本機先跑
+  #   `gcloud auth application-default login`，不落地任何金鑰檔）
+  # 指定了路徑但檔案不存在時，Crashlytics 與 Sessions 兩條抓取路徑都會以明確錯誤失敗，
+  #   不會靜默退回 ADC（避免用比預期弱的身分抓到不完整的資料）
   bq_service_account: ~/.config/crash-trend/sa.json
 
 ai:
@@ -34,6 +39,8 @@ apps:
   shop_app:                               # 範例 1：完整模式 (Crashlytics + Sessions)
     display_name: 購物商城 App             # 儀表板與報表顯示名稱
     firebase_project: shop-app-12345      # Firebase 專案 ID（BigQuery 專案同名或關聯專案）
+    bq_service_account: ~/.config/crash-trend/shop-app-sa.json  # 選填：此 App 專屬 SA，覆寫全域 credentials.bq_service_account
+                                          # （Crashlytics 與 Sessions 兩條路徑共用同一把，不會分岔）
     data_sources:                         # 資料源設定 (選填，可細部控制)
       crashlytics_bigquery: true          # 預設 true
       sessions: true                      # 啟用 Firebase Sessions 計算 Crash-free 率
@@ -83,6 +90,7 @@ apps:
   rider_app:                              # 範例 2：Crashlytics-only 模式 (推薦：輕量、不佔 Sessions 儲存)
     display_name: 外送司機端
     firebase_project: rider-app-67890
+    bq_service_account: adc               # 選填：此 App 改用 ADC（本機開發常用），覆寫全域 SA
     data_sources:
       crashlytics_bigquery: true          # 啟用 Crashlytics 匯出 (錯誤排行、堆疊、每日趨勢、受影響人數)
       sessions: false                     # 停用 Sessions 匯出 (不查詢 firebase_sessions，免額外儲存)

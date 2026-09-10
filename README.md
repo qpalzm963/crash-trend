@@ -253,7 +253,7 @@ http://localhost:8787
 
 ```yaml
 credentials:
-  bq_service_account: ~/.config/crash-trend/sa.json
+  bq_service_account: ~/.config/crash-trend/sa.json   # 全域預設；可被 apps.<app_id>.bq_service_account 覆寫，adc 代表用 ADC
 
 ai:
   mode: auto
@@ -288,6 +288,42 @@ apps:
     platforms: [android, ios]
     core_paths: [checkout, payment, CartActivity]
     custom_keys: [user_tier, network_type]
+```
+
+### BigQuery 憑證
+
+憑證解析有唯一實作（`crash_trend/bq_credentials.py::resolve_bq_credentials`），
+Crashlytics 抓取（`fetch_bigquery`）與 Sessions 抓取（`fetch_sessions`）兩條路徑共用同一套規則，
+不會出現同一個 App 兩半用不同身分的情況。
+
+| 設定位置 | 說明 |
+|---|---|
+| `credentials.bq_service_account` | 全域預設 service account json 路徑 |
+| `apps.<app_id>.bq_service_account` | 單一 App 覆寫，優先於全域（不同 App 屬於不同 GCP 專案時使用） |
+
+值的解讀規則：
+
+| 值 | 行為 |
+|---|---|
+| json 檔路徑（支援 `~`） | 以該 service account 建立 BigQuery client |
+| `adc` / `none` / 空值 / 未設定 | 使用 Application Default Credentials，不落地任何金鑰檔 |
+| 路徑存在設定但檔案不存在 | 兩條路徑皆以明確錯誤失敗，**不會**靜默退回 ADC |
+
+```yaml
+credentials:
+  bq_service_account: ~/.config/crash-trend/sa.json   # 全域預設
+
+apps:
+  shop_app:
+    bq_service_account: ~/.config/crash-trend/shop-app-sa.json  # 專屬 SA，覆寫全域
+  rider_app:
+    bq_service_account: adc                                     # 本機改用 ADC，覆寫全域
+```
+
+使用 ADC 時，本機先跑一次：
+
+```bash
+gcloud auth application-default login
 ```
 
 ### Data Source Profile
