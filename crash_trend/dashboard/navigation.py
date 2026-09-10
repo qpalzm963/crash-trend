@@ -35,6 +35,18 @@ history 進出完全靠 ``location.hash`` 賦值 + ``hashchange``。
   （以 toast 告知），畫面退回可顯示的狀態，但 URL 保持原樣。若在載入時把 URL
   正規化成一個新的 history entry，使用者按 back 會回到原始壞連結並再次被正規化，
   形成回不去的 history 迴圈；URL 會在使用者下一次主動導覽時自然被寫成正規形式。
+- **context 驗證是串聯的（cascading），降級只保留安全前綴**：``app`` → ``platform``
+  → ``version`` 是一條依賴鏈，下游的意義由上游界定。若明確要求的 app 不存在，
+  platform / version 不得改用 fallback app 去驗證；若明確要求的 platform 不存在，
+  version 不得在「不限平台」的條件下命中。否則一條半殘的連結會安靜地開到
+  **另一個** release，比沒有連結更糟。「完全沒要求」（無 ``app`` 參數 → 用目前/預設 app）
+  與「要求了但無效」是不同狀況，兩者必須分開判斷。
+- **套用 route 是取代而非疊加**：route 移除掉的 context 必須連同其 UI 一起清掉
+  （關掉 release 詳情、platform select 回到中性 ``ALL``），否則 back/forward 會留下
+  與 URL 不一致的殘留畫面。清除都在 ``routeApplyDepth > 0`` 的窗口內完成，
+  不會產生額外 history entry。
+- **canonical 編碼兩端逐位元一致**：見 ``encode_route_value``；client 端不直接用
+  ``encodeURIComponent``（它放行 ``!'()*``），而是額外 escape 這些字元來對齊 Python。
 - **version context 的還原方式是開啟該 release 的詳情**，不去改動 ``filterVersion``
   下拉選單（其選項由 ``updateVersionFilterOptions`` 動態產生，寫入不存在的值會讓
   篩選器變成空白）。Decision-first Overview 對 version context 的呈現屬 #73。
@@ -62,6 +74,17 @@ DECISION_VIEW = "overview"
 #: 這些 id 定義在 `releases.py` / `issues.py` 的 HTML 內，
 #: 由 ``tests/test_dashboard_deep_link.py`` 反向驗證其仍存在於 render 結果，避免漂移。
 ROUTE_PLATFORM_SELECT_IDS = ("filterReleasePlatform", "filterPlatform")
+
+#: platform filter select 的「中性」選項值（全部平台）。route 移除 platform context 時
+#: 要把這些 select 回復成此值，而不是空字串（空字串不是有效 option，會讓篩選器變空白）。
+#: 同樣由 ``tests/test_dashboard_deep_link.py`` 反向驗證其仍是 render 結果中的 option。
+ROUTE_PLATFORM_ALL = "ALL"
+
+#: ``encodeURIComponent`` 不會編碼、但 Python ``quote(safe="")`` 會編碼的字元。
+#: 兩端 canonical encoder 必須逐位元一致（同一個 release 產生同一條連結），
+#: 因此 client 端在 ``encodeURIComponent`` 之後額外補上這幾個字元的 escape。
+#: 由 ``tests/test_dashboard_deep_link.py`` 的 parity 測試逐字元把關。
+ROUTE_EXTRA_ESCAPE_CHARS = "!'()*"
 
 
 @dataclass(frozen=True)
@@ -183,6 +206,20 @@ class DeepLinkRoute:
     version: str | None = None
 
 
+def encode_route_value(value: str) -> str:
+    """canonical deep link 的參數值編碼（Python 與 client 端共用同一條規則）。
+
+    規則採「RFC 3986 unreserved 之外全部 percent-encode」，也就是
+    ``quote(safe="")``：只有 ``A-Za-z0-9-_.~`` 保持字面。刻意不採用
+    ``encodeURIComponent`` 的較寬鬆集合（它額外放行 ``!'()*``）——
+    連結會被貼進 Google Chat 等會自動偵測 URL 邊界的環境，
+    ``(`` / ``)`` 留字面容易被切斷；較嚴格的一端才是安全的 canonical 形式。
+    client 端以 ``encodeURIComponent`` + 補escape 這幾個字元來對齊（見
+    ``ROUTE_EXTRA_ESCAPE_CHARS``）。
+    """
+    return quote(str(value), safe="")
+
+
 def build_deep_link_fragment(
     view: str = DEFAULT_VIEW,
     *,
@@ -202,7 +239,7 @@ def build_deep_link_fragment(
         (ROUTE_PARAM_PLATFORM, platform.lower() if platform else platform),
         (ROUTE_PARAM_VERSION, version),
     )
-    query = "&".join(f"{key}={quote(str(value), safe='')}" for key, value in params if value)
+    query = "&".join(f"{key}={encode_route_value(value)}" for key, value in params if value)
     return f"#{view}?{query}" if query else f"#{view}"
 
 
@@ -322,6 +359,8 @@ def get_navigation_js() -> str:
         f'const ROUTE_PARAM_PLATFORM = "{ROUTE_PARAM_PLATFORM}";\n'
         f'const ROUTE_PARAM_VERSION = "{ROUTE_PARAM_VERSION}";\n'
         f"const ROUTE_PLATFORM_SELECT_IDS = [{platform_select_ids}];\n"
+        f'const ROUTE_PLATFORM_ALL = "{ROUTE_PLATFORM_ALL}";\n'
+        f'const ROUTE_EXTRA_ESCAPE_CHARS = "{ROUTE_EXTRA_ESCAPE_CHARS}";\n'
         "\n"
         "let curRouteView = ROUTE_DEFAULT_VIEW;\n"
         "let curRouteContext = { platform: null, version: null };\n"
@@ -360,13 +399,25 @@ def get_navigation_js() -> str:
         "  return route;\n"
         "}\n"
         "\n"
+        "// canonical 參數值編碼；必須與 Python 端 encode_route_value()（quote(safe=\"\")）\n"
+        "// 逐位元一致，否則同一個 release 會產生兩條不同的「canonical」連結。\n"
+        "// encodeURIComponent 額外放行 ROUTE_EXTRA_ESCAPE_CHARS 這幾個字元，在此補上。\n"
+        "function encodeRouteValue(value) {\n"
+        "  let out = encodeURIComponent(String(value));\n"
+        "  for (let i = 0; i < ROUTE_EXTRA_ESCAPE_CHARS.length; i++) {\n"
+        "    const c = ROUTE_EXTRA_ESCAPE_CHARS.charAt(i);\n"
+        '    out = out.split(c).join("%" + c.charCodeAt(0).toString(16).toUpperCase());\n'
+        "  }\n"
+        "  return out;\n"
+        "}\n"
+        "\n"
         "function buildRouteHash(route) {\n"
         "  const r = route || {};\n"
         "  const view = ROUTE_VIEWS.indexOf(r.view) >= 0 ? r.view : ROUTE_DEFAULT_VIEW;\n"
         "  const parts = [];\n"
-        "  if (r.app) parts.push(ROUTE_PARAM_APP + \"=\" + encodeURIComponent(r.app));\n"
-        "  if (r.platform) parts.push(ROUTE_PARAM_PLATFORM + \"=\" + encodeURIComponent(r.platform));\n"
-        "  if (r.version) parts.push(ROUTE_PARAM_VERSION + \"=\" + encodeURIComponent(r.version));\n"
+        "  if (r.app) parts.push(ROUTE_PARAM_APP + \"=\" + encodeRouteValue(r.app));\n"
+        "  if (r.platform) parts.push(ROUTE_PARAM_PLATFORM + \"=\" + encodeRouteValue(r.platform));\n"
+        "  if (r.version) parts.push(ROUTE_PARAM_VERSION + \"=\" + encodeRouteValue(r.version));\n"
         '  return "#" + view + (parts.length ? "?" + parts.join("&") : "");\n'
         "}\n"
         "\n"
@@ -414,6 +465,14 @@ def get_navigation_js() -> str:
         "}\n"
         "\n"
         "// 把連結要求的 context 對 bundle 實際資料做驗證；不存在者一律降級並記在 dropped。\n"
+        "//\n"
+        "// app → platform → version 是一條**依賴鏈**：platform 的意義由 app 界定，\n"
+        "// version 的意義又由 platform 界定。因此驗證必須是串聯的（cascading）——\n"
+        "// 一旦某層被明確要求卻無效，其下游一律連帶丟棄，只保留「安全前綴」。\n"
+        "// 否則會出現比沒有連結更糟的情況：把 app 丟掉後改拿 fallback app 去比對\n"
+        "// platform/version，或把無效 platform 當成「沒指定 platform」而讓 version\n"
+        "// 在任意平台上命中——兩者都會開到**另一個** release。\n"
+        "// 注意「完全沒要求」與「要求了但無效」必須分開判斷，所以用 r.* 而非 resolved.*。\n"
         "function resolveRoute(route) {\n"
         "  const r = route || {};\n"
         "  const resolved = {\n"
@@ -421,20 +480,31 @@ def get_navigation_js() -> str:
         "    app: null, platform: null, version: null, dropped: []\n"
         "  };\n"
         "  const apps = routeAppsData();\n"
+        "  // 依賴鏈是否已在上游斷掉；斷掉之後下游只記 dropped、不再嘗試解析。\n"
+        "  let broken = false;\n"
         "  if (r.app) {\n"
         "    if (apps[r.app]) resolved.app = r.app;\n"
-        '    else resolved.dropped.push(ROUTE_PARAM_APP + "=" + r.app);\n'
+        "    else {\n"
+        '      resolved.dropped.push(ROUTE_PARAM_APP + "=" + r.app);\n'
+        "      broken = true;\n"
+        "    }\n"
         "  }\n"
+        "  // 沒要求 app 時退回目前/預設 app 是刻意保留的行為（無 app 參數的連結仍可用）；\n"
+        "  // 但「要求了一個不存在的 app」不得退回 fallback app 來解析 platform/version。\n"
         "  const appId = resolved.app || routeCurAppId();\n"
-        "  const appData = (appId && apps[appId]) ? apps[appId] : null;\n"
+        "  const appData = (!broken && appId && apps[appId]) ? apps[appId] : null;\n"
         "  if (r.platform) {\n"
-        "    if (routeKnownPlatforms(appData).indexOf(r.platform) >= 0) resolved.platform = r.platform;\n"
-        '    else resolved.dropped.push(ROUTE_PARAM_PLATFORM + "=" + r.platform);\n'
+        "    if (!broken && routeKnownPlatforms(appData).indexOf(r.platform) >= 0) {\n"
+        "      resolved.platform = r.platform;\n"
+        "    } else {\n"
+        '      resolved.dropped.push(ROUTE_PARAM_PLATFORM + "=" + r.platform);\n'
+        "      broken = true;\n"
+        "    }\n"
         "  }\n"
         "  if (r.version) {\n"
-        "    const match = routeKnownVersions(appData).some(v =>\n"
+        "    const match = !broken && routeKnownVersions(appData).some(v =>\n"
         "      v.version === r.version &&\n"
-        '      (!resolved.platform || !v.platform || v.platform === "all" || v.platform === resolved.platform)\n'
+        '      (!r.platform || !v.platform || v.platform === "all" || v.platform === resolved.platform)\n'
         "    );\n"
         "    if (match) resolved.version = r.version;\n"
         '    else resolved.dropped.push(ROUTE_PARAM_VERSION + "=" + r.version);\n'
@@ -451,6 +521,18 @@ def get_navigation_js() -> str:
         '  if (typeof renderReleasesTable === "function") renderReleasesTable();\n'
         "}\n"
         "\n"
+        "// route 不含 platform（例如 back 回到一個沒有 platform 的 entry）時，畫面上殘留的\n"
+        "// select 值會與 URL/context 說的不一致，必須回復成既有的中性選項 ROUTE_PLATFORM_ALL\n"
+        "// （不是空字串——空字串不是有效 option，會讓篩選器變空白）。\n"
+        "// 只在真的有殘留值時才動作，避免每次套用 route 都多跑一輪 render。\n"
+        "function clearRoutePlatform() {\n"
+        "  const stale = ROUTE_PLATFORM_SELECT_IDS.some(id => {\n"
+        "    const sel = $(id);\n"
+        "    return !!sel && !!sel.value && sel.value !== ROUTE_PLATFORM_ALL;\n"
+        "  });\n"
+        "  if (stale) applyRoutePlatform(ROUTE_PLATFORM_ALL);\n"
+        "}\n"
+        "\n"
         "function applyRoute(route) {\n"
         "  const resolved = resolveRoute(route);\n"
         "  routeApplyDepth++;\n"
@@ -459,10 +541,17 @@ def get_navigation_js() -> str:
         "      switchApp(resolved.app);\n"
         "    }\n"
         "    curRouteContext = { platform: resolved.platform, version: resolved.version };\n"
+        "    // 套用 route 是**取代**而非疊加：route 移除掉的 context 必須連同其 UI 一起清掉，\n"
+        "    // 否則 back 回到沒有 version 的 entry 時，release 詳情會繼續開著（URL 說沒有版本，\n"
+        "    // 畫面卻停在某個版本），platform 下拉選單同理。清除動作全部發生在\n"
+        "    // routeApplyDepth > 0 的窗口內，syncRouteHash 會早退，不會多產生 history entry。\n"
         "    if (resolved.platform) applyRoutePlatform(resolved.platform);\n"
+        "    else clearRoutePlatform();\n"
         "    switchView(resolved.view);\n"
         '    if (resolved.version && typeof openReleaseDetail === "function") {\n'
         "      openReleaseDetail(resolved.version, resolved.platform || null);\n"
+        '    } else if (!resolved.version && typeof closeReleaseDetail === "function") {\n'
+        "      closeReleaseDetail();\n"
         "    }\n"
         '    if (resolved.dropped.length && typeof showToast === "function") {\n'
         '      showToast("連結中的部分內容在此資料中不存在，已忽略：" + resolved.dropped.join(", "));\n'
