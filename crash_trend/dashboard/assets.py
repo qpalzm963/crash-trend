@@ -10,9 +10,9 @@ DEFAULT_ROOT = Path(__file__).resolve().parent.parent.parent
 VENDOR_JS = DEFAULT_ROOT / "vendor" / "chart.umd.min.js"
 
 
-def get_vendor_chartjs(vendor_path: Path | None = None) -> str:
+def get_vendor_chartjs(vendor_path: Path | str | None = None) -> str:
     """Reads vendor Chart.js library or returns an empty fallback if missing."""
-    v_file = vendor_path or VENDOR_JS
+    v_file = Path(vendor_path) if vendor_path else VENDOR_JS
     if v_file.is_file():
         return v_file.read_text(encoding="utf-8")
     return "/* Chart.js vendor script not found */"
