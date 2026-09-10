@@ -22,6 +22,7 @@ from crash_trend.gate.artifact import (
 )
 from crash_trend.gate.decision import decision_from_gate_result
 from crash_trend.gate.history import compute_policy_identity
+from crash_trend.gate.metric_rules import classify_threshold_breach
 from crash_trend.gate.policy import GatePolicy
 
 
@@ -259,18 +260,18 @@ def evaluate_release(
     is_zero_base_cr = bool(vs_p.get("zero_baseline_crash"))
     if cr_diff is not None:
         cr_val = float(cr_diff)
-        cr_st: RuleStatus
+        # 判定一律走 classify_threshold_breach（#74）：Dashboard comparison 與這裡
+        # 共用同一個原語，因此不可能出現「Gate PASS 但 comparison 顯示異常」。
+        cr_st: RuleStatus = classify_threshold_breach(
+            cr_val, policy.crash_rate_change_pct, zero_baseline=is_zero_base_cr
+        )
         if is_zero_base_cr:
-            cr_st = "fail"
             cr_msg = "前版基準無崩潰 (0 事件)，本版出現崩潰事件，判定為零基準退化 (Zero-baseline Regression)"
-        elif cr_val >= policy.crash_rate_change_pct.fail:
-            cr_st = "fail"
+        elif cr_st == "fail":
             cr_msg = f"崩潰率上升 {cr_val * 100:+.2f}%，達到失敗門檻 (+{policy.crash_rate_change_pct.fail * 100:.1f}%)"
-        elif cr_val >= policy.crash_rate_change_pct.warn:
-            cr_st = "warn"
+        elif cr_st == "warn":
             cr_msg = f"崩潰率上升 {cr_val * 100:+.2f}%，達到警告門檻 (+{policy.crash_rate_change_pct.warn * 100:.1f}%)"
         else:
-            cr_st = "pass"
             cr_msg = f"崩潰率變動 {cr_val * 100:+.2f}% 於正常範圍"
         rules.append({
             "rule_name": "crash_rate_regression",
@@ -299,15 +300,12 @@ def evaluate_release(
     if cfu_diff is not None:
         # cfu_diff is (current - prev); a drop means cfu_diff < 0
         drop_val = -float(cfu_diff)
-        cfu_st: RuleStatus
-        if drop_val >= policy.crash_free_users_drop.fail:
-            cfu_st = "fail"
+        cfu_st: RuleStatus = classify_threshold_breach(drop_val, policy.crash_free_users_drop)
+        if cfu_st == "fail":
             cfu_msg = f"無崩潰用戶率下降 {drop_val * 100:.2f}%，達到失敗門檻 (-{policy.crash_free_users_drop.fail * 100:.2f}%)"
-        elif drop_val >= policy.crash_free_users_drop.warn:
-            cfu_st = "warn"
+        elif cfu_st == "warn":
             cfu_msg = f"無崩潰用戶率下降 {drop_val * 100:.2f}%，達到警告門檻 (-{policy.crash_free_users_drop.warn * 100:.2f}%)"
         else:
-            cfu_st = "pass"
             cfu_msg = f"無崩潰用戶率變動 {float(cfu_diff) * 100:+.2f}% 於正常範圍"
         rules.append({
             "rule_name": "crash_free_users_drop",
@@ -336,18 +334,16 @@ def evaluate_release(
     is_zero_base_fat = bool(vs_p.get("zero_baseline_fatal"))
     if fatal_diff is not None:
         fat_val = float(fatal_diff)
-        fat_st: RuleStatus
+        fat_st: RuleStatus = classify_threshold_breach(
+            fat_val, policy.fatal_rate_change_pct, zero_baseline=is_zero_base_fat
+        )
         if is_zero_base_fat:
-            fat_st = "fail"
             fat_msg = "前版基準無 Fatal 崩潰 (0 事件)，本版出現 Fatal 崩潰事件，判定為零基準退化 (Zero-baseline Regression)"
-        elif fat_val >= policy.fatal_rate_change_pct.fail:
-            fat_st = "fail"
+        elif fat_st == "fail":
             fat_msg = f"Fatal 崩潰率上升 {fat_val * 100:+.2f}%，達到失敗門檻 (+{policy.fatal_rate_change_pct.fail * 100:.1f}%)"
-        elif fat_val >= policy.fatal_rate_change_pct.warn:
-            fat_st = "warn"
+        elif fat_st == "warn":
             fat_msg = f"Fatal 崩潰率上升 {fat_val * 100:+.2f}%，達到警告門檻 (+{policy.fatal_rate_change_pct.warn * 100:.1f}%)"
         else:
-            fat_st = "pass"
             fat_msg = f"Fatal 崩潰率變動 {fat_val * 100:+.2f}% 於正常範圍"
         rules.append({
             "rule_name": "fatal_rate_regression",
@@ -376,18 +372,16 @@ def evaluate_release(
     is_zero_base_anr = bool(vs_p.get("zero_baseline_anr"))
     if anr_diff is not None:
         anr_val = float(anr_diff)
-        anr_st: RuleStatus
+        anr_st: RuleStatus = classify_threshold_breach(
+            anr_val, policy.anr_rate_change_pct, zero_baseline=is_zero_base_anr
+        )
         if is_zero_base_anr:
-            anr_st = "fail"
             anr_msg = "前版基準無 ANR (0 事件)，本版出現 ANR 事件，判定為零基準退化 (Zero-baseline Regression)"
-        elif anr_val >= policy.anr_rate_change_pct.fail:
-            anr_st = "fail"
+        elif anr_st == "fail":
             anr_msg = f"ANR 率上升 {anr_val * 100:+.2f}%，達到失敗門檻 (+{policy.anr_rate_change_pct.fail * 100:.1f}%)"
-        elif anr_val >= policy.anr_rate_change_pct.warn:
-            anr_st = "warn"
+        elif anr_st == "warn":
             anr_msg = f"ANR 率上升 {anr_val * 100:+.2f}%，達到警告門檻 (+{policy.anr_rate_change_pct.warn * 100:.1f}%)"
         else:
-            anr_st = "pass"
             anr_msg = f"ANR 率變動 {anr_val * 100:+.2f}% 於正常範圍"
         rules.append({
             "rule_name": "anr_rate_regression",

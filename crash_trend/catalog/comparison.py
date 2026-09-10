@@ -1,16 +1,20 @@
-"""Previous-release normalized comparison and stability evaluation (Issue #29, #47, #53).
+"""Previous-release normalized comparison and stability evaluation (Issue #29, #47, #53, #74).
 
 Provides:
 - compute_previous_release_comparison: Evaluates normalized crash rate, fatal rate,
-  ANR rate differences and stability status vs immediate previous release.
+  ANR rate differences and stability status vs immediate previous release, plus the
+  gate-aligned per-metric classification (Issue #74).
 """
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from crash_trend.catalog.issue_lifecycle import is_version_sample_sufficient
 from crash_trend.schema_v2 import PreviousReleaseComparison
+
+if TYPE_CHECKING:
+    from crash_trend.gate.policy import GatePolicy
 
 
 def compute_previous_release_comparison(
@@ -24,12 +28,17 @@ def compute_previous_release_comparison(
     min_adoption_rate: float = 0.05,
     min_sessions: int = 1000,
     min_version_events: int = 20,
+    policy: GatePolicy | None = None,
 ) -> PreviousReleaseComparison:
     """Computes comparison metrics between current release and previous release.
 
     Prefers matching recent_health windows (30d -> 90d -> 7d) that satisfy sample
     sufficiency with valid sessions_total for normalized exposure comparison.
     Falls back to any matching window with sessions, then lifetime sessions/events.
+
+    `policy` 提供 #74 per-metric classification 的 threshold 來源；省略時使用
+    `GatePolicy()` 的預設值——那與 `load_gate_policy(None)` 的產物是同一組數值，
+    因此「沒有 app 設定」與「app 設定裡沒寫 release_gate」不會得到兩套門檻。
     """
     prev_recent = v_prev_info.get("recent_health", {})
 
@@ -256,7 +265,7 @@ def compute_previous_release_comparison(
 
     stability_status = "improved" if stability == "improving" else ("regressed" if stability == "degrading" else stability)
 
-    return {
+    result: PreviousReleaseComparison = {
         "previous_version": v_prev,
         "crash_rate_change_pct": crash_rate_diff,
         "crash_free_users_diff": cfu_diff,
@@ -275,3 +284,15 @@ def compute_previous_release_comparison(
         "zero_baseline_fatal": zero_base_fatal,
         "zero_baseline_anr": zero_base_anr,
     }
+
+    # #74：per-metric classification 沿用 Release Gate policy threshold。
+    # lazy import 以避免 catalog <-> gate 的 package import 迴圈（與
+    # `release_catalog.py` 引入 `evaluate_release` 的既有做法一致）。
+    from crash_trend.gate.metric_rules import build_comparison_metric_evaluations
+    from crash_trend.gate.policy import GatePolicy
+
+    eff_policy = policy if policy is not None else GatePolicy()
+    result["metric_evaluations"] = build_comparison_metric_evaluations(
+        dict(result), eff_policy
+    )
+    return result

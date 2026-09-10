@@ -314,6 +314,48 @@ class ReleaseRecentHealth(TypedDict):
     active_issues_count: NotRequired[int]
 
 
+#: `ComparisonMetricEvaluation.threshold_source` 的唯一合法值（#74）。
+#: V3 明確不建立 historical statistical variance baseline（那是 backlog #76）：
+#: comparison 的 normal / warn / fail 一律沿用 Release Gate policy threshold，
+#: 因此 threshold 來源只有一個，consumer 也就無從對同一個指標拿到兩套門檻。
+COMPARISON_THRESHOLD_SOURCE = "release_gate_policy"
+
+#: `ComparisonMetricEvaluation.classification` 的合法值。與 gate 的
+#: `RuleStatus` 同一套詞彙（`skip` = 沒有比較資料，不得被畫成正常）。
+VALID_COMPARISON_CLASSIFICATIONS: set[str] = {"pass", "warn", "fail", "skip"}
+
+
+class ComparisonMetricEvaluation(TypedDict):
+    """單一指標的 current vs previous 比較結果，含 gate 對齊的 classification（#74）。
+
+    命名沿用既有 conventions 而非 issue 草稿：`metric_name` / `rule_name` /
+    `warn_threshold` / `fail_threshold` / `reason` 與 `RuleEvaluationResult` 同名同義，
+    因此同一個指標在 gate artifact 與 dashboard bundle 裡是同一組詞彙。
+
+    刻意用 `classification` 而不是 `status`：這是**單一指標**對 threshold 的判定，
+    不是 release 層級的結論。release 層級的建議只有一個來源，`release_gate.decision`
+    （#72／#73），本欄位不得被拿去反推那個結論。
+    """
+
+    metric_name: str
+    rule_name: str
+    label: str
+    #: `increase` = 數值越大越差；`decrease` = 數值越小越差。
+    direction: Literal["increase", "decrease"]
+    #: 變化量；`None` 代表沒有比較資料（classification 為 `skip`）。
+    change: float | None
+    classification: Literal["pass", "warn", "fail", "skip"]
+    #: threshold 與 `change` 同方向（下降型指標存負值，與 gate rule 慣例一致）。
+    warn_threshold: float | int
+    fail_threshold: float | int
+    #: threshold 的顯示字串。前端只印出它，不自行把比例排版成百分比。
+    threshold_display: str
+    threshold_source: str
+    policy_version: str
+    zero_baseline: bool
+    reason: str
+
+
 class PreviousReleaseComparison(TypedDict):
     previous_version: str | None
     crash_rate_change_pct: float | None
@@ -332,6 +374,9 @@ class PreviousReleaseComparison(TypedDict):
     zero_baseline_crash: NotRequired[bool]
     zero_baseline_fatal: NotRequired[bool]
     zero_baseline_anr: NotRequired[bool]
+    #: 每個指標的 gate 對齊 classification（#74）。NotRequired：舊 bundle 沒有這個
+    #: 欄位仍必須 validate / render，前端在缺欄位時不呈現比較面而非畫出空殼。
+    metric_evaluations: NotRequired[list[ComparisonMetricEvaluation]]
 
 
 class ReleaseIssueLifecycle(TypedDict):
@@ -872,6 +917,65 @@ def validate_issue_occurrence_summary(timeline: Any, errors: list[str], p: str =
         errors.append(f"{p}occurrence_timeline.daily must be a list")
 
 
+def validate_comparison_metric_evaluations(
+    evaluations: Any,
+    errors: list[str],
+    p: str = "",
+) -> None:
+    """Validates `vs_previous.metric_evaluations[]` (Issue #74).
+
+    `threshold_source` 被限制成單一合法值，因此「comparison 的門檻其實來自別的地方」
+    這件事無法悄悄通過 validation——那正是本單要防的矛盾來源。
+    """
+    if not isinstance(evaluations, list):
+        errors.append(f"{p}metric_evaluations must be a list or null")
+        return
+
+    for idx, ev in enumerate(evaluations):
+        ep = f"{p}metric_evaluations[{idx}]."
+        if not isinstance(ev, dict):
+            errors.append(f"{p}metric_evaluations[{idx}] must be an object")
+            continue
+
+        for req_f in (
+            "metric_name", "rule_name", "label", "direction", "change",
+            "classification", "warn_threshold", "fail_threshold",
+            "threshold_display", "threshold_source", "policy_version",
+            "zero_baseline", "reason",
+        ):
+            if req_f not in ev:
+                errors.append(f"{ep}{req_f} is required")
+
+        for str_f in ("metric_name", "rule_name", "label", "threshold_display", "policy_version", "reason"):
+            if str_f in ev and (not isinstance(ev[str_f], str) or not ev[str_f]):
+                errors.append(f"{ep}{str_f} must be a non-empty string")
+
+        if "direction" in ev and ev["direction"] not in {"increase", "decrease"}:
+            errors.append(f"{ep}direction must be 'increase' or 'decrease'")
+
+        if "classification" in ev and ev["classification"] not in VALID_COMPARISON_CLASSIFICATIONS:
+            errors.append(
+                f"{ep}classification must be one of: "
+                f"{', '.join(sorted(VALID_COMPARISON_CLASSIFICATIONS))}"
+            )
+
+        if "change" in ev and ev["change"] is not None and not isinstance(ev["change"], (int, float)):
+            errors.append(f"{ep}change must be a number or null")
+
+        for num_f in ("warn_threshold", "fail_threshold"):
+            if num_f in ev and not isinstance(ev[num_f], (int, float)):
+                errors.append(f"{ep}{num_f} must be a number")
+
+        if "threshold_source" in ev and ev["threshold_source"] != COMPARISON_THRESHOLD_SOURCE:
+            errors.append(f"{ep}threshold_source must be '{COMPARISON_THRESHOLD_SOURCE}'")
+
+        if "zero_baseline" in ev and not isinstance(ev["zero_baseline"], bool):
+            errors.append(f"{ep}zero_baseline must be a boolean")
+
+        if ev.get("change") is None and ev.get("classification") != "skip":
+            errors.append(f"{ep}classification must be 'skip' when change is null")
+
+
 def validate_release_catalog(catalog: Any, errors: list[str], p: str = "") -> None:
     """Validates a list of ReleaseCatalogItem objects against Schema V2.6 rules."""
     if catalog is None:
@@ -950,6 +1054,10 @@ def validate_release_catalog(catalog: Any, errors: list[str], p: str = "") -> No
                     errors.append(f"{cp}vs_previous.zero_baseline_fatal must be a boolean")
                 if "zero_baseline_anr" in vp and not isinstance(vp["zero_baseline_anr"], bool):
                     errors.append(f"{cp}vs_previous.zero_baseline_anr must be a boolean")
+                if "metric_evaluations" in vp and vp["metric_evaluations"] is not None:
+                    validate_comparison_metric_evaluations(
+                        vp["metric_evaluations"], errors, f"{cp}vs_previous."
+                    )
 
         if "issue_lifecycle" in item and item["issue_lifecycle"] is not None:
             il = item["issue_lifecycle"]

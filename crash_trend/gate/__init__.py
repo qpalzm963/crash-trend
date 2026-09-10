@@ -31,6 +31,16 @@ from crash_trend.gate.history import (
     classify_gate_transition,
     get_gate_history_store,
 )
+from crash_trend.gate.metric_rules import (
+    COMPARISON_METRIC_SPECS,
+    ComparisonMetricSpec,
+    MetricClassification,
+    build_comparison_metric_evaluations,
+    classify_threshold_breach,
+    evaluate_comparison_metric,
+    format_threshold_display,
+    threshold_rule_for,
+)
 from crash_trend.gate.policy import (
     GatePolicy,
     ThresholdRule,
@@ -39,12 +49,15 @@ from crash_trend.gate.policy import (
 )
 
 __all__ = [
+    "COMPARISON_METRIC_SPECS",
     "AlertHookPayload",
     "AlertSeverity",
+    "ComparisonMetricSpec",
     "GatePolicy",
     "GateSnapshot",
     "GateStatus",
     "GateTransition",
+    "MetricClassification",
     "PlatformGateResult",
     "ReleaseDecision",
     "ReleaseGateArtifact",
@@ -53,16 +66,21 @@ __all__ = [
     "RuleEvaluationResult",
     "RuleStatus",
     "ThresholdRule",
+    "build_comparison_metric_evaluations",
     "classify_gate_transition",
+    "classify_threshold_breach",
     "decision_from_gate_result",
     "derive_decision",
     "evaluate_app_release_gate",
+    "evaluate_comparison_metric",
     "evaluate_release",
+    "format_threshold_display",
     "get_gate_history_store",
     "load_gate_policy",
     "load_gate_policy_from_file",
     "load_release_gate_artifact",
     "save_release_gate_artifact",
+    "threshold_rule_for",
     "validate_release_gate_artifact",
 ]
 

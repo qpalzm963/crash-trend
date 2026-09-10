@@ -401,6 +401,7 @@ def build_release_catalog(
                     min_adoption_rate=eff_policy.min_adoption_rate,
                     min_sessions=eff_policy.min_sessions,
                     min_version_events=eff_policy.min_version_events,
+                    policy=eff_policy,
                 )
 
             stability_status = vs_previous.get("stability", "baseline") if vs_previous else "baseline"
