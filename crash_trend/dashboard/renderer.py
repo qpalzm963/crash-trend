@@ -33,6 +33,7 @@ from crash_trend.dashboard.assets import (
 )
 from crash_trend.dashboard.formatting import get_formatting_js
 from crash_trend.dashboard.issues import get_issues_html, get_issues_js
+from crash_trend.dashboard.navigation import get_workspace_tabs_html
 from crash_trend.dashboard.overview import get_overview_html, get_overview_js
 from crash_trend.dashboard.releases import get_releases_html, get_releases_js
 from crash_trend.dashboard.settings import get_settings_html, get_settings_js
@@ -54,6 +55,8 @@ def assemble_html_template() -> str:
         "\n\n",
         get_header_html(),
         "\n  <main class=\"content-area\">\n\n",
+        get_workspace_tabs_html(),
+        "\n",
         get_overview_html(),
         "\n",
         get_issues_html(),
