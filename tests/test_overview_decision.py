@@ -440,6 +440,16 @@ class TestFiveStateUxNeverShowsAGreenLightItCannotJustify(_ClientRuntime):
         個別卡片都正確、但 grid 組裝時補了一張預設卡——只有這條抓得到。
         """
         grid = self.steps["grids"]["rider_app"]
+        # 先確認這一屏真的畫出了 rider_app 的卡片。少了這一步，整組 negative
+        # 斷言在「grid 是空的」時會全部通過——測試會在渲染根本沒發生時保持綠燈。
+        self.assertIn(
+            'data-decision-platform="android" data-decision-version="'
+            + LATEST_BY_APP_PLATFORM["rider_app"]["android"]
+            + '"',
+            grid,
+            "前提：首屏確實渲染了 rider_app 的卡片（否則以下斷言會空過）",
+        )
+        self.assertIn('data-decision-platform="ios"', grid)
         self.assertNotIn(overview.DECISION_PASS_TONE_CLASS, grid)
         self.assertIsNone(_field(grid, "decision-recommendation"))
         self.assertIsNone(_field(grid, "decision-action"))
