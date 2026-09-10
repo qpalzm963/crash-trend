@@ -1,0 +1,4009 @@
+{
+  "schema_version": "2.0",
+  "generated_at": "2026-09-02T14:00:00Z",
+  "default_app": "shop_app",
+  "apps": {
+    "shop_app": {
+      "metadata": {
+        "app_id": "shop_app",
+        "display_name": "E-Commerce Shop",
+        "firebase_project_id": "shop-app-prod-12345",
+        "platforms": [
+          "android",
+          "ios"
+        ],
+        "source_repo": "~/projects/shop_app",
+        "custom_keys_monitored": [
+          "user_tier",
+          "screen_name",
+          "network_type"
+        ]
+      },
+      "period": {
+        "days": 30,
+        "start_time": "2026-08-03T14:00:00Z",
+        "end_time": "2026-09-02T14:00:00Z",
+        "comparison_period": {
+          "days": 30,
+          "start_time": "2026-07-04T14:00:00Z",
+          "end_time": "2026-08-03T14:00:00Z"
+        }
+      },
+      "sources": {
+        "crashlytics_bq": {
+          "status": "available",
+          "tables_queried": [
+            "com_example_shop_ANDROID",
+            "com_example_shop_IOS"
+          ],
+          "last_sync_timestamp": "2026-09-02T14:00:00Z",
+          "error_message": null
+        },
+        "firebase_sessions": {
+          "status": "available",
+          "last_sync_timestamp": "2026-09-02T14:00:00Z",
+          "error_message": null
+        },
+        "mcp_crashlytics": {
+          "status": "available",
+          "last_sync_timestamp": "2026-09-02T14:05:00Z",
+          "error_message": null
+        },
+        "gemini_ai": {
+          "status": "available",
+          "model": "gemini-flash-latest",
+          "last_sync_timestamp": "2026-09-02T14:10:00Z",
+          "error_message": null
+        }
+      },
+      "kpi": {
+        "crash_events": {
+          "value": 12450,
+          "previous_value": 15600,
+          "change_pct": -20.19,
+          "status": "available"
+        },
+        "affected_users": {
+          "value": 4120,
+          "previous_value": 5300,
+          "change_pct": -22.26,
+          "status": "available"
+        },
+        "crash_free_users": {
+          "rate": 0.9985,
+          "total": 520000,
+          "crashed": 780,
+          "previous_rate": 0.9972,
+          "change_pct_points": 0.13,
+          "status": "available",
+          "unavailable_reason": null
+        },
+        "crash_free_sessions": {
+          "rate": 0.9992,
+          "total": 3400000,
+          "crashed": 2720,
+          "previous_rate": 0.9988,
+          "change_pct_points": 0.04,
+          "status": "available",
+          "unavailable_reason": null
+        },
+        "new_issues_count": {
+          "value": 4,
+          "previous_value": 6,
+          "change_pct": -33.33,
+          "status": "available"
+        },
+        "events_by_error_type": {
+          "fatal": 8200,
+          "anr": 1350,
+          "non_fatal": 2900
+        }
+      },
+      "daily_trend": [
+        {
+          "date": "2026-08-04",
+          "crash_events": 392,
+          "affected_users": 133,
+          "fatal_events": 259,
+          "anr_events": 42,
+          "non_fatal_events": 91,
+          "sessions_total": 117600,
+          "crashed_sessions": 78,
+          "crash_free_sessions_rate": 0.9993,
+          "by_platform": {
+            "android": {
+              "events": 227,
+              "users": 77
+            },
+            "ios": {
+              "events": 165,
+              "users": 56
+            }
+          }
+        },
+        {
+          "date": "2026-08-05",
+          "crash_events": 392,
+          "affected_users": 133,
+          "fatal_events": 259,
+          "anr_events": 42,
+          "non_fatal_events": 91,
+          "sessions_total": 117600,
+          "crashed_sessions": 78,
+          "crash_free_sessions_rate": 0.9993,
+          "by_platform": {
+            "android": {
+              "events": 227,
+              "users": 77
+            },
+            "ios": {
+              "events": 165,
+              "users": 56
+            }
+          }
+        },
+        {
+          "date": "2026-08-06",
+          "crash_events": 392,
+          "affected_users": 133,
+          "fatal_events": 259,
+          "anr_events": 42,
+          "non_fatal_events": 91,
+          "sessions_total": 117600,
+          "crashed_sessions": 78,
+          "crash_free_sessions_rate": 0.9993,
+          "by_platform": {
+            "android": {
+              "events": 227,
+              "users": 77
+            },
+            "ios": {
+              "events": 165,
+              "users": 56
+            }
+          }
+        },
+        {
+          "date": "2026-08-07",
+          "crash_events": 392,
+          "affected_users": 133,
+          "fatal_events": 259,
+          "anr_events": 42,
+          "non_fatal_events": 91,
+          "sessions_total": 117600,
+          "crashed_sessions": 78,
+          "crash_free_sessions_rate": 0.9993,
+          "by_platform": {
+            "android": {
+              "events": 227,
+              "users": 77
+            },
+            "ios": {
+              "events": 165,
+              "users": 56
+            }
+          }
+        },
+        {
+          "date": "2026-08-08",
+          "crash_events": 476,
+          "affected_users": 161,
+          "fatal_events": 314,
+          "anr_events": 51,
+          "non_fatal_events": 111,
+          "sessions_total": 119200,
+          "crashed_sessions": 95,
+          "crash_free_sessions_rate": 0.9992,
+          "by_platform": {
+            "android": {
+              "events": 276,
+              "users": 93
+            },
+            "ios": {
+              "events": 200,
+              "users": 68
+            }
+          }
+        },
+        {
+          "date": "2026-08-09",
+          "crash_events": 476,
+          "affected_users": 161,
+          "fatal_events": 314,
+          "anr_events": 51,
+          "non_fatal_events": 111,
+          "sessions_total": 119200,
+          "crashed_sessions": 95,
+          "crash_free_sessions_rate": 0.9992,
+          "by_platform": {
+            "android": {
+              "events": 276,
+              "users": 93
+            },
+            "ios": {
+              "events": 200,
+              "users": 68
+            }
+          }
+        },
+        {
+          "date": "2026-08-10",
+          "crash_events": 392,
+          "affected_users": 133,
+          "fatal_events": 259,
+          "anr_events": 42,
+          "non_fatal_events": 91,
+          "sessions_total": 117600,
+          "crashed_sessions": 78,
+          "crash_free_sessions_rate": 0.9993,
+          "by_platform": {
+            "android": {
+              "events": 227,
+              "users": 77
+            },
+            "ios": {
+              "events": 165,
+              "users": 56
+            }
+          }
+        },
+        {
+          "date": "2026-08-11",
+          "crash_events": 392,
+          "affected_users": 133,
+          "fatal_events": 259,
+          "anr_events": 42,
+          "non_fatal_events": 91,
+          "sessions_total": 117600,
+          "crashed_sessions": 78,
+          "crash_free_sessions_rate": 0.9993,
+          "by_platform": {
+            "android": {
+              "events": 227,
+              "users": 77
+            },
+            "ios": {
+              "events": 165,
+              "users": 56
+            }
+          }
+        },
+        {
+          "date": "2026-08-12",
+          "crash_events": 392,
+          "affected_users": 133,
+          "fatal_events": 259,
+          "anr_events": 42,
+          "non_fatal_events": 91,
+          "sessions_total": 117600,
+          "crashed_sessions": 78,
+          "crash_free_sessions_rate": 0.9993,
+          "by_platform": {
+            "android": {
+              "events": 227,
+              "users": 77
+            },
+            "ios": {
+              "events": 165,
+              "users": 56
+            }
+          }
+        },
+        {
+          "date": "2026-08-13",
+          "crash_events": 392,
+          "affected_users": 133,
+          "fatal_events": 259,
+          "anr_events": 42,
+          "non_fatal_events": 91,
+          "sessions_total": 117600,
+          "crashed_sessions": 78,
+          "crash_free_sessions_rate": 0.9993,
+          "by_platform": {
+            "android": {
+              "events": 227,
+              "users": 77
+            },
+            "ios": {
+              "events": 165,
+              "users": 56
+            }
+          }
+        },
+        {
+          "date": "2026-08-14",
+          "crash_events": 392,
+          "affected_users": 133,
+          "fatal_events": 259,
+          "anr_events": 42,
+          "non_fatal_events": 91,
+          "sessions_total": 117600,
+          "crashed_sessions": 78,
+          "crash_free_sessions_rate": 0.9993,
+          "by_platform": {
+            "android": {
+              "events": 227,
+              "users": 77
+            },
+            "ios": {
+              "events": 165,
+              "users": 56
+            }
+          }
+        },
+        {
+          "date": "2026-08-15",
+          "crash_events": 476,
+          "affected_users": 161,
+          "fatal_events": 314,
+          "anr_events": 51,
+          "non_fatal_events": 111,
+          "sessions_total": 119200,
+          "crashed_sessions": 95,
+          "crash_free_sessions_rate": 0.9992,
+          "by_platform": {
+            "android": {
+              "events": 276,
+              "users": 93
+            },
+            "ios": {
+              "events": 200,
+              "users": 68
+            }
+          }
+        },
+        {
+          "date": "2026-08-16",
+          "crash_events": 476,
+          "affected_users": 161,
+          "fatal_events": 314,
+          "anr_events": 51,
+          "non_fatal_events": 111,
+          "sessions_total": 119200,
+          "crashed_sessions": 95,
+          "crash_free_sessions_rate": 0.9992,
+          "by_platform": {
+            "android": {
+              "events": 276,
+              "users": 93
+            },
+            "ios": {
+              "events": 200,
+              "users": 68
+            }
+          }
+        },
+        {
+          "date": "2026-08-17",
+          "crash_events": 392,
+          "affected_users": 133,
+          "fatal_events": 259,
+          "anr_events": 42,
+          "non_fatal_events": 91,
+          "sessions_total": 117600,
+          "crashed_sessions": 78,
+          "crash_free_sessions_rate": 0.9993,
+          "by_platform": {
+            "android": {
+              "events": 227,
+              "users": 77
+            },
+            "ios": {
+              "events": 165,
+              "users": 56
+            }
+          }
+        },
+        {
+          "date": "2026-08-18",
+          "crash_events": 392,
+          "affected_users": 133,
+          "fatal_events": 259,
+          "anr_events": 42,
+          "non_fatal_events": 91,
+          "sessions_total": 117600,
+          "crashed_sessions": 78,
+          "crash_free_sessions_rate": 0.9993,
+          "by_platform": {
+            "android": {
+              "events": 227,
+              "users": 77
+            },
+            "ios": {
+              "events": 165,
+              "users": 56
+            }
+          }
+        },
+        {
+          "date": "2026-08-19",
+          "crash_events": 392,
+          "affected_users": 133,
+          "fatal_events": 259,
+          "anr_events": 42,
+          "non_fatal_events": 91,
+          "sessions_total": 117600,
+          "crashed_sessions": 78,
+          "crash_free_sessions_rate": 0.9993,
+          "by_platform": {
+            "android": {
+              "events": 227,
+              "users": 77
+            },
+            "ios": {
+              "events": 165,
+              "users": 56
+            }
+          }
+        },
+        {
+          "date": "2026-08-20",
+          "crash_events": 392,
+          "affected_users": 133,
+          "fatal_events": 259,
+          "anr_events": 42,
+          "non_fatal_events": 91,
+          "sessions_total": 117600,
+          "crashed_sessions": 78,
+          "crash_free_sessions_rate": 0.9993,
+          "by_platform": {
+            "android": {
+              "events": 227,
+              "users": 77
+            },
+            "ios": {
+              "events": 165,
+              "users": 56
+            }
+          }
+        },
+        {
+          "date": "2026-08-21",
+          "crash_events": 392,
+          "affected_users": 133,
+          "fatal_events": 259,
+          "anr_events": 42,
+          "non_fatal_events": 91,
+          "sessions_total": 117600,
+          "crashed_sessions": 78,
+          "crash_free_sessions_rate": 0.9993,
+          "by_platform": {
+            "android": {
+              "events": 227,
+              "users": 77
+            },
+            "ios": {
+              "events": 165,
+              "users": 56
+            }
+          }
+        },
+        {
+          "date": "2026-08-22",
+          "crash_events": 476,
+          "affected_users": 161,
+          "fatal_events": 314,
+          "anr_events": 51,
+          "non_fatal_events": 111,
+          "sessions_total": 119200,
+          "crashed_sessions": 95,
+          "crash_free_sessions_rate": 0.9992,
+          "by_platform": {
+            "android": {
+              "events": 276,
+              "users": 93
+            },
+            "ios": {
+              "events": 200,
+              "users": 68
+            }
+          }
+        },
+        {
+          "date": "2026-08-23",
+          "crash_events": 476,
+          "affected_users": 161,
+          "fatal_events": 314,
+          "anr_events": 51,
+          "non_fatal_events": 111,
+          "sessions_total": 119200,
+          "crashed_sessions": 95,
+          "crash_free_sessions_rate": 0.9992,
+          "by_platform": {
+            "android": {
+              "events": 276,
+              "users": 93
+            },
+            "ios": {
+              "events": 200,
+              "users": 68
+            }
+          }
+        },
+        {
+          "date": "2026-08-24",
+          "crash_events": 392,
+          "affected_users": 133,
+          "fatal_events": 259,
+          "anr_events": 42,
+          "non_fatal_events": 91,
+          "sessions_total": 117600,
+          "crashed_sessions": 78,
+          "crash_free_sessions_rate": 0.9993,
+          "by_platform": {
+            "android": {
+              "events": 227,
+              "users": 77
+            },
+            "ios": {
+              "events": 165,
+              "users": 56
+            }
+          }
+        },
+        {
+          "date": "2026-08-25",
+          "crash_events": 392,
+          "affected_users": 133,
+          "fatal_events": 259,
+          "anr_events": 42,
+          "non_fatal_events": 91,
+          "sessions_total": 117600,
+          "crashed_sessions": 78,
+          "crash_free_sessions_rate": 0.9993,
+          "by_platform": {
+            "android": {
+              "events": 227,
+              "users": 77
+            },
+            "ios": {
+              "events": 165,
+              "users": 56
+            }
+          }
+        },
+        {
+          "date": "2026-08-26",
+          "crash_events": 392,
+          "affected_users": 133,
+          "fatal_events": 259,
+          "anr_events": 42,
+          "non_fatal_events": 91,
+          "sessions_total": 117600,
+          "crashed_sessions": 78,
+          "crash_free_sessions_rate": 0.9993,
+          "by_platform": {
+            "android": {
+              "events": 227,
+              "users": 77
+            },
+            "ios": {
+              "events": 165,
+              "users": 56
+            }
+          }
+        },
+        {
+          "date": "2026-08-27",
+          "crash_events": 392,
+          "affected_users": 133,
+          "fatal_events": 259,
+          "anr_events": 42,
+          "non_fatal_events": 91,
+          "sessions_total": 117600,
+          "crashed_sessions": 78,
+          "crash_free_sessions_rate": 0.9993,
+          "by_platform": {
+            "android": {
+              "events": 227,
+              "users": 77
+            },
+            "ios": {
+              "events": 165,
+              "users": 56
+            }
+          }
+        },
+        {
+          "date": "2026-08-28",
+          "crash_events": 392,
+          "affected_users": 133,
+          "fatal_events": 259,
+          "anr_events": 42,
+          "non_fatal_events": 91,
+          "sessions_total": 117600,
+          "crashed_sessions": 78,
+          "crash_free_sessions_rate": 0.9993,
+          "by_platform": {
+            "android": {
+              "events": 227,
+              "users": 77
+            },
+            "ios": {
+              "events": 165,
+              "users": 56
+            }
+          }
+        },
+        {
+          "date": "2026-08-29",
+          "crash_events": 476,
+          "affected_users": 161,
+          "fatal_events": 314,
+          "anr_events": 51,
+          "non_fatal_events": 111,
+          "sessions_total": 119200,
+          "crashed_sessions": 95,
+          "crash_free_sessions_rate": 0.9992,
+          "by_platform": {
+            "android": {
+              "events": 276,
+              "users": 93
+            },
+            "ios": {
+              "events": 200,
+              "users": 68
+            }
+          }
+        },
+        {
+          "date": "2026-08-30",
+          "crash_events": 476,
+          "affected_users": 161,
+          "fatal_events": 314,
+          "anr_events": 51,
+          "non_fatal_events": 111,
+          "sessions_total": 119200,
+          "crashed_sessions": 95,
+          "crash_free_sessions_rate": 0.9992,
+          "by_platform": {
+            "android": {
+              "events": 276,
+              "users": 93
+            },
+            "ios": {
+              "events": 200,
+              "users": 68
+            }
+          }
+        },
+        {
+          "date": "2026-08-31",
+          "crash_events": 392,
+          "affected_users": 133,
+          "fatal_events": 259,
+          "anr_events": 42,
+          "non_fatal_events": 91,
+          "sessions_total": 117600,
+          "crashed_sessions": 78,
+          "crash_free_sessions_rate": 0.9993,
+          "by_platform": {
+            "android": {
+              "events": 227,
+              "users": 77
+            },
+            "ios": {
+              "events": 165,
+              "users": 56
+            }
+          }
+        },
+        {
+          "date": "2026-09-01",
+          "crash_events": 392,
+          "affected_users": 133,
+          "fatal_events": 259,
+          "anr_events": 42,
+          "non_fatal_events": 91,
+          "sessions_total": 117600,
+          "crashed_sessions": 78,
+          "crash_free_sessions_rate": 0.9993,
+          "by_platform": {
+            "android": {
+              "events": 227,
+              "users": 77
+            },
+            "ios": {
+              "events": 165,
+              "users": 56
+            }
+          }
+        },
+        {
+          "date": "2026-09-02",
+          "crash_events": 410,
+          "affected_users": 139,
+          "fatal_events": 249,
+          "anr_events": 60,
+          "non_fatal_events": 101,
+          "sessions_total": 117600,
+          "crashed_sessions": 82,
+          "crash_free_sessions_rate": 0.9993,
+          "by_platform": {
+            "android": {
+              "events": 237,
+              "users": 80
+            },
+            "ios": {
+              "events": 173,
+              "users": 59
+            }
+          }
+        }
+      ],
+      "version_health": [
+        {
+          "version": "3.2.0",
+          "platform": "all",
+          "release_date": "2026-08-20",
+          "crash_events": 6800,
+          "affected_users": 2300,
+          "crash_free_users_rate": 0.9982,
+          "crash_free_sessions_rate": 0.9991,
+          "adoption_rate": 0.58,
+          "status": "latest",
+          "trend": "stable"
+        },
+        {
+          "version": "3.1.2",
+          "platform": "all",
+          "release_date": "2026-07-28",
+          "crash_events": 4100,
+          "affected_users": 1350,
+          "crash_free_users_rate": 0.9988,
+          "crash_free_sessions_rate": 0.9994,
+          "adoption_rate": 0.32,
+          "status": "active",
+          "trend": "improving"
+        },
+        {
+          "version": "3.1.0",
+          "platform": "all",
+          "release_date": "2026-07-05",
+          "crash_events": 1550,
+          "affected_users": 470,
+          "crash_free_users_rate": 0.9991,
+          "crash_free_sessions_rate": 0.9996,
+          "adoption_rate": 0.1,
+          "status": "maintenance",
+          "trend": "improving"
+        }
+      ],
+      "distributions": {
+        "platform": [
+          {
+            "name": "android",
+            "events": 7200,
+            "users": 2450,
+            "share": 0.578
+          },
+          {
+            "name": "ios",
+            "events": 5250,
+            "users": 1670,
+            "share": 0.422
+          }
+        ],
+        "device_models": [
+          {
+            "model": "Pixel 8",
+            "platform": "android",
+            "events": 1420,
+            "users": 480,
+            "share": 0.114
+          },
+          {
+            "model": "iPhone 15 Pro",
+            "platform": "ios",
+            "events": 1200,
+            "users": 410,
+            "share": 0.096
+          },
+          {
+            "model": "Galaxy S24",
+            "platform": "android",
+            "events": 980,
+            "users": 340,
+            "share": 0.078
+          },
+          {
+            "model": "iPhone 14",
+            "platform": "ios",
+            "events": 850,
+            "users": 290,
+            "share": 0.068
+          }
+        ],
+        "os_versions": [
+          {
+            "os_version": "Android 14",
+            "platform": "android",
+            "events": 4500,
+            "users": 1520,
+            "share": 0.361
+          },
+          {
+            "os_version": "iOS 18.0.1",
+            "platform": "ios",
+            "events": 3100,
+            "users": 1050,
+            "share": 0.249
+          },
+          {
+            "os_version": "Android 13",
+            "platform": "android",
+            "events": 2700,
+            "users": 930,
+            "share": 0.217
+          },
+          {
+            "os_version": "iOS 17.6.1",
+            "platform": "ios",
+            "events": 2150,
+            "users": 620,
+            "share": 0.173
+          }
+        ],
+        "app_versions": [
+          {
+            "app_version": "3.2.0",
+            "platform": "all",
+            "events": 6800,
+            "users": 2300,
+            "share": 0.546
+          },
+          {
+            "app_version": "3.1.2",
+            "platform": "all",
+            "events": 4100,
+            "users": 1350,
+            "share": 0.329
+          },
+          {
+            "app_version": "3.1.0",
+            "platform": "all",
+            "events": 1550,
+            "users": 470,
+            "share": 0.125
+          }
+        ],
+        "custom_keys": [
+          {
+            "key": "user_tier",
+            "value": "vip",
+            "platform": "all",
+            "events": 4500
+          },
+          {
+            "key": "user_tier",
+            "value": "standard",
+            "platform": "all",
+            "events": 7950
+          }
+        ]
+      },
+      "top_issues": [
+        {
+          "issue_id": "8a7f1b2c",
+          "platform": "android",
+          "title": "NullPointerException: userProfile must not be null",
+          "subtitle": "CheckoutActivity.kt:142",
+          "error_type": "FATAL",
+          "priority": {
+            "score": 92,
+            "level": "P0",
+            "trend": "new",
+            "score_breakdown": {
+              "users_normalized": 10.0,
+              "events_normalized": 9.2,
+              "fatal_anr_boost": 2,
+              "worsening_boost": 2,
+              "latest_version_boost": 2,
+              "core_path_boost": 3
+            }
+          },
+          "events": 3420,
+          "affected_users": 2100,
+          "first_seen_timestamp": "2026-08-20T10:15:00Z",
+          "last_seen_timestamp": "2026-09-02T13:40:00Z",
+          "first_seen_version": "3.2.0",
+          "last_seen_version": "3.2.0",
+          "version_distribution": [
+            {
+              "version": "3.2.0",
+              "events": 3420,
+              "users": 2100
+            }
+          ],
+          "blame_frame": {
+            "file": "app/src/main/java/com/example/shop/CheckoutActivity.kt",
+            "line": 142,
+            "symbol": "com.example.shop.CheckoutActivity.processPayment",
+            "class_name": "com.example.shop.CheckoutActivity",
+            "method_name": "processPayment",
+            "is_blame": true,
+            "source_available": true
+          },
+          "ai_analysis": {
+            "status": "available",
+            "root_cause": "結帳流程在特定網路延遲條件下，userProfile 尚未初始化完成即觸發 processPayment，引發 NPE 致命閃退。",
+            "suggested_fix": "於 processPayment 入口處加入 userProfile 空值檢查，並在未載入完成時顯示 Loading 狀態而非直接取值。",
+            "effort": "S",
+            "confidence": "high",
+            "reasoning_sources": [
+              "stack_trace",
+              "blame_frame",
+              "version_concentration"
+            ]
+          },
+          "detail": {
+            "stack_trace": "java.lang.NullPointerException: Attempt to invoke virtual method 'java.lang.String com.example.shop.model.UserProfile.getId()' on a null object reference\n\tat com.example.shop.CheckoutActivity.processPayment(CheckoutActivity.kt:142)\n\tat com.example.shop.CheckoutActivity.access$processPayment(CheckoutActivity.kt:28)\n\tat com.example.shop.CheckoutActivity$onCreate$1.onClick(CheckoutActivity.kt:65)",
+            "breadcrumbs": [
+              {
+                "timestamp": "2026-09-02T13:39:50Z",
+                "category": "navigation",
+                "message": "User navigated to /cart",
+                "level": "info"
+              },
+              {
+                "timestamp": "2026-09-02T13:39:58Z",
+                "category": "navigation",
+                "message": "User navigated to /checkout",
+                "level": "info"
+              },
+              {
+                "timestamp": "2026-09-02T13:40:00Z",
+                "category": "ui_click",
+                "message": "Clicked #btn_pay_now",
+                "level": "info"
+              }
+            ],
+            "logs": [
+              {
+                "timestamp": "2026-09-02T13:39:58Z",
+                "message": "[CheckoutActivity] Initializing checkout view"
+              },
+              {
+                "timestamp": "2026-09-02T13:40:00Z",
+                "message": "[PaymentGateway] Triggering payment flow"
+              }
+            ],
+            "custom_keys": {
+              "user_tier": "vip",
+              "screen_name": "checkout_summary",
+              "network_type": "WIFI"
+            },
+            "top_devices": [
+              {
+                "model": "Pixel 8",
+                "events": 1420
+              },
+              {
+                "model": "Galaxy S24",
+                "events": 980
+              }
+            ],
+            "top_os": [
+              {
+                "os_version": "Android 14",
+                "events": 3420
+              }
+            ]
+          }
+        },
+        {
+          "issue_id": "3b2e9d1a",
+          "platform": "android",
+          "title": "Application Not Responding (ANR): Input dispatching timed out",
+          "subtitle": "AppDatabase_Impl.kt:88",
+          "error_type": "ANR",
+          "priority": {
+            "score": 78,
+            "level": "P1",
+            "trend": "worsening",
+            "score_breakdown": {
+              "users_normalized": 6.5,
+              "events_normalized": 4.2,
+              "fatal_anr_boost": 2,
+              "worsening_boost": 2,
+              "latest_version_boost": 2,
+              "core_path_boost": 3
+            }
+          },
+          "events": 1350,
+          "affected_users": 950,
+          "first_seen_timestamp": "2026-07-28T08:00:00Z",
+          "last_seen_timestamp": "2026-09-02T12:10:00Z",
+          "first_seen_version": "3.1.2",
+          "last_seen_version": "3.2.0",
+          "version_distribution": [
+            {
+              "version": "3.2.0",
+              "events": 950,
+              "users": 680
+            },
+            {
+              "version": "3.1.2",
+              "events": 400,
+              "users": 270
+            }
+          ],
+          "blame_frame": {
+            "file": "app/src/main/java/com/example/shop/data/AppDatabase_Impl.kt",
+            "line": 88,
+            "symbol": "com.example.shop.data.AppDatabase_Impl.createOpenHelper",
+            "class_name": "com.example.shop.data.AppDatabase_Impl",
+            "method_name": "createOpenHelper",
+            "is_blame": true,
+            "source_available": false
+          },
+          "ai_analysis": {
+            "status": "available",
+            "root_cause": "冷啟動時在 Main Thread 執行 Room 資料庫 Migration 與索引初始化，造成主執行緒卡頓超過 5 秒引發 ANR。",
+            "suggested_fix": "將資料庫初始預熱與 Migration 操作移至 Dispatchers.IO 協程中非同步執行。",
+            "effort": "M",
+            "confidence": "high",
+            "reasoning_sources": [
+              "stack_trace",
+              "blame_frame"
+            ]
+          },
+          "detail": {
+            "stack_trace": "\"main\" prio=5 tid=1 Blocked\n  | group=\"main\" sCount=1 ucsCount=0 flags=1 obj=0x73295840\n  at com.example.shop.data.AppDatabase_Impl.createOpenHelper(AppDatabase_Impl.kt:88)\n  at androidx.room.RoomDatabase.init(RoomDatabase.kt:145)",
+            "breadcrumbs": [],
+            "logs": [],
+            "custom_keys": {
+              "screen_name": "splash"
+            },
+            "top_devices": [
+              {
+                "model": "Galaxy A54",
+                "events": 600
+              }
+            ],
+            "top_os": [
+              {
+                "os_version": "Android 14",
+                "events": 1100
+              }
+            ]
+          }
+        },
+        {
+          "issue_id": "4c9e8d7a",
+          "platform": "ios",
+          "title": "EXC_BAD_ACCESS: KERN_INVALID_ADDRESS at 0x0000000000000010",
+          "subtitle": "ImageLoader.swift:72",
+          "error_type": "FATAL",
+          "priority": {
+            "score": 65,
+            "level": "P2",
+            "trend": "improving",
+            "score_breakdown": {
+              "users_normalized": 4.0,
+              "events_normalized": 3.5,
+              "fatal_anr_boost": 2,
+              "worsening_boost": 0,
+              "latest_version_boost": 0,
+              "core_path_boost": 0
+            }
+          },
+          "events": 980,
+          "affected_users": 620,
+          "first_seen_timestamp": "2026-07-05T09:00:00Z",
+          "last_seen_timestamp": "2026-08-25T16:00:00Z",
+          "first_seen_version": "3.1.0",
+          "last_seen_version": "3.1.2",
+          "version_distribution": [
+            {
+              "version": "3.1.2",
+              "events": 180,
+              "users": 120
+            },
+            {
+              "version": "3.1.0",
+              "events": 800,
+              "users": 500
+            }
+          ],
+          "blame_frame": {
+            "file": "ShopApp/Services/ImageLoader.swift",
+            "line": 72,
+            "symbol": "ImageLoader.cacheImage(_:forKey:)",
+            "class_name": "ImageLoader",
+            "method_name": "cacheImage",
+            "is_blame": true,
+            "source_available": true
+          },
+          "ai_analysis": {
+            "status": "available",
+            "root_cause": "舊版 3.1.0 快取釋放時競態條件導致野指標存取，3.2.0 已加入鎖保護，目前僅餘舊版本用戶殘留。",
+            "suggested_fix": "3.2.0 已修復，建議透過強制更新或推播提醒用戶升級。",
+            "effort": "S",
+            "confidence": "high",
+            "reasoning_sources": [
+              "version_concentration"
+            ]
+          },
+          "detail": null
+        }
+      ],
+      "ai_summary": {
+        "status": "available",
+        "model": "gemini-flash-latest",
+        "generated_at": "2026-09-02T14:10:00Z",
+        "overview": "本期整體崩潰事件較上月下降 20.2%，整體 Crash-free rate 提升至 99.85%。然而 3.2.0 新版在結帳流程中引入 1 個高頻 P0 NPE 崩潰，影響約 2,100 位用戶。",
+        "key_takeaways": [
+          "P0: CheckoutActivity.kt:142 佔本期總閃退量 27.5%，建議立即發布 3.2.1 Hotfix",
+          "Android 啟動 ANR 集中在 AppDatabase 初始化，需將 Migration 移出 Main Thread",
+          "iOS 平台穩定性極佳，舊有 ImageLoader 崩潰隨用戶升級至 3.2.0 已大幅收斂"
+        ],
+        "distribution_insights": "崩潰高度集中於 Android 平台（佔 57.8%）及 3.2.0 版本，其中 Pixel 8 與 Galaxy S24 為主要崩潰機型。",
+        "recommended_actions": [
+          {
+            "priority": "P0",
+            "issue_id": "8a7f1b2c",
+            "action": "修復 CheckoutActivity userProfile 空值檢查並發布 Hotfix",
+            "effort": "S"
+          },
+          {
+            "priority": "P1",
+            "issue_id": "3b2e9d1a",
+            "action": "將 Room 資料庫初始化移至 Background Thread 解決 ANR",
+            "effort": "M"
+          }
+        ],
+        "data_limitations": "MCP stack trace 部分 frame 缺乏 symbol 資訊；自訂 keys VIP 佔比約 36%。"
+      },
+      "limitations": [
+        "Firebase Sessions 數據自 2026-08-03 開始收集",
+        "MCP stack trace 部分為 headless 模式抓取"
+      ],
+      "release_catalog": [
+        {
+          "version": "3.2.0",
+          "platform": "android",
+          "first_seen": "2026-08-20T09:00:00Z",
+          "last_seen": "2026-09-02T13:40:00Z",
+          "release_date": "2026-08-20",
+          "status": "latest",
+          "lifetime_crashes": 5200,
+          "lifetime_issues": 8,
+          "lifetime_affected_users": 1900,
+          "lifetime_fatal": 340,
+          "lifetime_anr": 240,
+          "recent_health": {
+            "7": {
+              "crash_events": 1450,
+              "affected_users": 520,
+              "sessions_total": 11000,
+              "crash_free_users_rate": 0.9958,
+              "crash_free_sessions_rate": 0.9979,
+              "adoption_rate": 0.58,
+              "fatal_events": 95,
+              "fatal_count": 95,
+              "anr_events": 64,
+              "anr_count": 64,
+              "new_issues_count": 3,
+              "active_issues_count": 3,
+              "sample_sufficient": true,
+              "status": "latest",
+              "trend": "degrading"
+            },
+            "7d": {
+              "crash_events": 1450,
+              "affected_users": 520,
+              "sessions_total": 11000,
+              "crash_free_users_rate": 0.9958,
+              "crash_free_sessions_rate": 0.9979,
+              "adoption_rate": 0.58,
+              "fatal_events": 95,
+              "fatal_count": 95,
+              "anr_events": 64,
+              "anr_count": 64,
+              "new_issues_count": 3,
+              "active_issues_count": 3,
+              "sample_sufficient": true,
+              "status": "latest",
+              "trend": "degrading"
+            },
+            "30": {
+              "crash_events": 5200,
+              "affected_users": 1900,
+              "sessions_total": 42000,
+              "crash_free_users_rate": 0.9962,
+              "crash_free_sessions_rate": 0.9981,
+              "adoption_rate": 0.58,
+              "fatal_events": 340,
+              "fatal_count": 340,
+              "anr_events": 240,
+              "anr_count": 240,
+              "new_issues_count": 8,
+              "active_issues_count": 8,
+              "sample_sufficient": true,
+              "status": "latest",
+              "trend": "degrading"
+            },
+            "30d": {
+              "crash_events": 5200,
+              "affected_users": 1900,
+              "sessions_total": 42000,
+              "crash_free_users_rate": 0.9962,
+              "crash_free_sessions_rate": 0.9981,
+              "adoption_rate": 0.58,
+              "fatal_events": 340,
+              "fatal_count": 340,
+              "anr_events": 240,
+              "anr_count": 240,
+              "new_issues_count": 8,
+              "active_issues_count": 8,
+              "sample_sufficient": true,
+              "status": "latest",
+              "trend": "degrading"
+            },
+            "90": {
+              "crash_events": 5200,
+              "affected_users": 1900,
+              "sessions_total": 42000,
+              "crash_free_users_rate": 0.9962,
+              "crash_free_sessions_rate": 0.9981,
+              "adoption_rate": 0.58,
+              "fatal_events": 340,
+              "fatal_count": 340,
+              "anr_events": 240,
+              "anr_count": 240,
+              "new_issues_count": 8,
+              "active_issues_count": 8,
+              "sample_sufficient": true,
+              "status": "latest",
+              "trend": "degrading"
+            },
+            "90d": {
+              "crash_events": 5200,
+              "affected_users": 1900,
+              "sessions_total": 42000,
+              "crash_free_users_rate": 0.9962,
+              "crash_free_sessions_rate": 0.9981,
+              "adoption_rate": 0.58,
+              "fatal_events": 340,
+              "fatal_count": 340,
+              "anr_events": 240,
+              "anr_count": 240,
+              "new_issues_count": 8,
+              "active_issues_count": 8,
+              "sample_sufficient": true,
+              "status": "latest",
+              "trend": "degrading"
+            }
+          },
+          "stability_status": "degrading",
+          "issue_lifecycle": {
+            "introduced_count": 6,
+            "persistent_count": 3,
+            "regressed_count": 2,
+            "resolved_count": 4,
+            "introduced": [
+              "8a7f1b2c",
+              "5d1c7e93",
+              "6f2a4b81",
+              "7c3d9e02",
+              "1b8f6a4d",
+              "2e5c0d77"
+            ],
+            "persistent": [
+              "3b2e9d1a",
+              "9f4a2c60",
+              "0c7b5e18"
+            ],
+            "regressed": [
+              "4a8d1f52",
+              "8e6c3b09"
+            ],
+            "resolved": [
+              "2f9b7d41",
+              "5c0e8a36",
+              "1d4f2b90",
+              "7a3e6c58"
+            ],
+            "introduced_issues": [
+              "8a7f1b2c",
+              "5d1c7e93",
+              "6f2a4b81",
+              "7c3d9e02",
+              "1b8f6a4d",
+              "2e5c0d77"
+            ],
+            "persistent_issues": [
+              "3b2e9d1a",
+              "9f4a2c60",
+              "0c7b5e18"
+            ],
+            "regressed_issues": [
+              "4a8d1f52",
+              "8e6c3b09"
+            ],
+            "resolved_issues": [
+              "2f9b7d41",
+              "5c0e8a36",
+              "1d4f2b90",
+              "7a3e6c58"
+            ]
+          },
+          "vs_previous": {
+            "previous_version": "3.1.2",
+            "crash_rate_change_pct": 0.3757,
+            "crash_free_users_diff": -0.0026,
+            "fatal_change_pct": 0.0794,
+            "fatal_rate_change_pct": 0.0794,
+            "anr_change_pct": 1.0,
+            "anr_rate_change_pct": 1.0,
+            "new_issues_diff": 4,
+            "new_issues_count": 4,
+            "stability": "degrading",
+            "stability_status": "regressed",
+            "comparison_window": "30d",
+            "previous_sample_sufficient": true,
+            "previous_sessions_total": 40000,
+            "zero_baseline_crash": false,
+            "zero_baseline_fatal": false,
+            "zero_baseline_anr": true
+          },
+          "release_gate": {
+            "status": "fail",
+            "should_alert": true,
+            "alert_severity": "critical",
+            "alert_summary": "版本 3.2.0 (android) 品質閘門判定失敗（2 項超標）：崩潰率上升 +37.57%，達到失敗門檻 (+25.0%)；前版基準無 ANR (0 事件)，本版出現 ANR 事件，判定為零基準退化 (Zero-baseline Regression)",
+            "rules_triggered": [
+              "crash_rate_regression",
+              "anr_rate_regression"
+            ],
+            "sample_sufficient": true,
+            "rule_results": [
+              {
+                "rule_name": "crash_rate_regression",
+                "metric_name": "crash_rate_change_pct",
+                "current_value": 0.3757,
+                "previous_value": 0.0,
+                "warn_threshold": 0.1,
+                "fail_threshold": 0.25,
+                "status": "fail",
+                "reason": "崩潰率上升 +37.57%，達到失敗門檻 (+25.0%)"
+              },
+              {
+                "rule_name": "crash_free_users_drop",
+                "metric_name": "crash_free_users_diff",
+                "current_value": -0.0026,
+                "previous_value": 0.0,
+                "warn_threshold": -0.005,
+                "fail_threshold": -0.015,
+                "status": "pass",
+                "reason": "無崩潰用戶率變動 -0.26% 於正常範圍"
+              },
+              {
+                "rule_name": "fatal_rate_regression",
+                "metric_name": "fatal_rate_change_pct",
+                "current_value": 0.0794,
+                "previous_value": 0.0,
+                "warn_threshold": 0.1,
+                "fail_threshold": 0.25,
+                "status": "pass",
+                "reason": "Fatal 崩潰率變動 +7.94% 於正常範圍"
+              },
+              {
+                "rule_name": "anr_rate_regression",
+                "metric_name": "anr_rate_change_pct",
+                "current_value": 1.0,
+                "previous_value": 0.0,
+                "warn_threshold": 0.1,
+                "fail_threshold": 0.25,
+                "status": "fail",
+                "reason": "前版基準無 ANR (0 事件)，本版出現 ANR 事件，判定為零基準退化 (Zero-baseline Regression)"
+              },
+              {
+                "rule_name": "regressed_issues_count",
+                "metric_name": "regressed_issues_count",
+                "current_value": 2,
+                "previous_value": 0,
+                "warn_threshold": 1,
+                "fail_threshold": 3,
+                "status": "warn",
+                "reason": "復發問題數 2 個，達到警告門檻 (1 個)"
+              },
+              {
+                "rule_name": "introduced_issues_count",
+                "metric_name": "introduced_issues_count",
+                "current_value": 6,
+                "previous_value": 0,
+                "warn_threshold": 5,
+                "fail_threshold": 10,
+                "status": "warn",
+                "reason": "新引入問題數 6 個，達到警告門檻 (5 個)"
+              }
+            ],
+            "comparison_window": "30d",
+            "evaluated_at": "2026-09-02T14:15:00Z",
+            "decision": {
+              "status": "fail",
+              "action": "hold",
+              "recommendation": "建議停止擴大發布，優先處理退化問題",
+              "reasons": [
+                "崩潰率上升 +37.57%，達到失敗門檻 (+25.0%)",
+                "前版基準無 ANR (0 事件)，本版出現 ANR 事件，判定為零基準退化 (Zero-baseline Regression)"
+              ]
+            }
+          },
+          "gate_history": [
+            {
+              "evaluated_at": "2026-08-21T02:00:00Z",
+              "gate_status": "pass",
+              "sample_sufficient": true,
+              "summary": "版本 3.2.0 (android) 品質閘門通過，所有正規化指標均在安全閾值內",
+              "rules_triggered": [],
+              "transition": {
+                "previous_status": null,
+                "current_status": "pass",
+                "status_changed": false,
+                "is_recovery": false,
+                "is_regression": false,
+                "transition_type": "initial"
+              },
+              "evaluation_key": "23fad9f6bc3b449213981cd690c917303bcc521999cf279dd4aaf167c6b82b6f",
+              "policy_version": "1.0",
+              "policy_identity": "3775854fd1b7aca0",
+              "comparison_window": "30d",
+              "rule_results": [
+                {
+                  "rule_name": "crash_rate_regression",
+                  "metric_name": "crash_rate_change_pct",
+                  "current_value": -0.037,
+                  "previous_value": 0.0,
+                  "warn_threshold": 0.1,
+                  "fail_threshold": 0.25,
+                  "status": "pass",
+                  "reason": "崩潰率變動 -3.70% 於正常範圍"
+                },
+                {
+                  "rule_name": "crash_free_users_drop",
+                  "metric_name": "crash_free_users_diff",
+                  "current_value": 0.0002,
+                  "previous_value": 0.0,
+                  "warn_threshold": -0.005,
+                  "fail_threshold": -0.015,
+                  "status": "pass",
+                  "reason": "無崩潰用戶率變動 +0.02% 於正常範圍"
+                },
+                {
+                  "rule_name": "fatal_rate_regression",
+                  "metric_name": "fatal_rate_change_pct",
+                  "current_value": -0.1111,
+                  "previous_value": 0.0,
+                  "warn_threshold": 0.1,
+                  "fail_threshold": 0.25,
+                  "status": "pass",
+                  "reason": "Fatal 崩潰率變動 -11.11% 於正常範圍"
+                },
+                {
+                  "rule_name": "anr_rate_regression",
+                  "metric_name": "anr_rate_change_pct",
+                  "current_value": 0.0,
+                  "previous_value": 0.0,
+                  "warn_threshold": 0.1,
+                  "fail_threshold": 0.25,
+                  "status": "pass",
+                  "reason": "ANR 率變動 +0.00% 於正常範圍"
+                },
+                {
+                  "rule_name": "regressed_issues_count",
+                  "metric_name": "regressed_issues_count",
+                  "current_value": 0,
+                  "previous_value": 0,
+                  "warn_threshold": 1,
+                  "fail_threshold": 3,
+                  "status": "pass",
+                  "reason": "復發問題數 0 個於正常範圍"
+                },
+                {
+                  "rule_name": "introduced_issues_count",
+                  "metric_name": "introduced_issues_count",
+                  "current_value": 2,
+                  "previous_value": 0,
+                  "warn_threshold": 5,
+                  "fail_threshold": 10,
+                  "status": "pass",
+                  "reason": "新引入問題數 2 個於正常範圍"
+                }
+              ]
+            },
+            {
+              "evaluated_at": "2026-08-28T02:00:00Z",
+              "gate_status": "warn",
+              "sample_sufficient": true,
+              "summary": "版本 3.2.0 (android) 品質閘門觸發警告（2 項預警）：崩潰率上升 +21.21%，達到警告門檻 (+10.0%)；復發問題數 1 個，達到警告門檻 (1 個)",
+              "rules_triggered": [
+                "crash_rate_regression",
+                "regressed_issues_count"
+              ],
+              "transition": {
+                "previous_status": "pass",
+                "current_status": "warn",
+                "status_changed": true,
+                "is_recovery": false,
+                "is_regression": true,
+                "transition_type": "regression"
+              },
+              "evaluation_key": "3b3de5dc921c0a37874969ef3f659fa4fc3441315ce7d53eca4e8e3609bc259c",
+              "policy_version": "1.0",
+              "policy_identity": "3775854fd1b7aca0",
+              "comparison_window": "30d",
+              "rule_results": [
+                {
+                  "rule_name": "crash_rate_regression",
+                  "metric_name": "crash_rate_change_pct",
+                  "current_value": 0.2121,
+                  "previous_value": 0.0,
+                  "warn_threshold": 0.1,
+                  "fail_threshold": 0.25,
+                  "status": "warn",
+                  "reason": "崩潰率上升 +21.21%，達到警告門檻 (+10.0%)"
+                },
+                {
+                  "rule_name": "crash_free_users_drop",
+                  "metric_name": "crash_free_users_diff",
+                  "current_value": -0.0009,
+                  "previous_value": 0.0,
+                  "warn_threshold": -0.005,
+                  "fail_threshold": -0.015,
+                  "status": "pass",
+                  "reason": "無崩潰用戶率變動 -0.09% 於正常範圍"
+                },
+                {
+                  "rule_name": "fatal_rate_regression",
+                  "metric_name": "fatal_rate_change_pct",
+                  "current_value": -0.0909,
+                  "previous_value": 0.0,
+                  "warn_threshold": 0.1,
+                  "fail_threshold": 0.25,
+                  "status": "pass",
+                  "reason": "Fatal 崩潰率變動 -9.09% 於正常範圍"
+                },
+                {
+                  "rule_name": "anr_rate_regression",
+                  "metric_name": "anr_rate_change_pct",
+                  "current_value": 0.0,
+                  "previous_value": 0.0,
+                  "warn_threshold": 0.1,
+                  "fail_threshold": 0.25,
+                  "status": "pass",
+                  "reason": "ANR 率變動 +0.00% 於正常範圍"
+                },
+                {
+                  "rule_name": "regressed_issues_count",
+                  "metric_name": "regressed_issues_count",
+                  "current_value": 1,
+                  "previous_value": 0,
+                  "warn_threshold": 1,
+                  "fail_threshold": 3,
+                  "status": "warn",
+                  "reason": "復發問題數 1 個，達到警告門檻 (1 個)"
+                },
+                {
+                  "rule_name": "introduced_issues_count",
+                  "metric_name": "introduced_issues_count",
+                  "current_value": 4,
+                  "previous_value": 0,
+                  "warn_threshold": 5,
+                  "fail_threshold": 10,
+                  "status": "pass",
+                  "reason": "新引入問題數 4 個於正常範圍"
+                }
+              ]
+            },
+            {
+              "evaluated_at": "2026-09-02T14:15:00Z",
+              "gate_status": "fail",
+              "sample_sufficient": true,
+              "summary": "版本 3.2.0 (android) 品質閘門判定失敗（2 項超標）：崩潰率上升 +37.57%，達到失敗門檻 (+25.0%)；前版基準無 ANR (0 事件)，本版出現 ANR 事件，判定為零基準退化 (Zero-baseline Regression)",
+              "rules_triggered": [
+                "crash_rate_regression",
+                "anr_rate_regression"
+              ],
+              "transition": {
+                "previous_status": "warn",
+                "current_status": "fail",
+                "status_changed": true,
+                "is_recovery": false,
+                "is_regression": true,
+                "transition_type": "escalation"
+              },
+              "evaluation_key": "2fdda014aee5395858a9543496b1b4605999a58526ccea06ec8a4890739d10df",
+              "policy_version": "1.0",
+              "policy_identity": "3775854fd1b7aca0",
+              "comparison_window": "30d",
+              "rule_results": [
+                {
+                  "rule_name": "crash_rate_regression",
+                  "metric_name": "crash_rate_change_pct",
+                  "current_value": 0.3757,
+                  "previous_value": 0.0,
+                  "warn_threshold": 0.1,
+                  "fail_threshold": 0.25,
+                  "status": "fail",
+                  "reason": "崩潰率上升 +37.57%，達到失敗門檻 (+25.0%)"
+                },
+                {
+                  "rule_name": "crash_free_users_drop",
+                  "metric_name": "crash_free_users_diff",
+                  "current_value": -0.0026,
+                  "previous_value": 0.0,
+                  "warn_threshold": -0.005,
+                  "fail_threshold": -0.015,
+                  "status": "pass",
+                  "reason": "無崩潰用戶率變動 -0.26% 於正常範圍"
+                },
+                {
+                  "rule_name": "fatal_rate_regression",
+                  "metric_name": "fatal_rate_change_pct",
+                  "current_value": 0.0794,
+                  "previous_value": 0.0,
+                  "warn_threshold": 0.1,
+                  "fail_threshold": 0.25,
+                  "status": "pass",
+                  "reason": "Fatal 崩潰率變動 +7.94% 於正常範圍"
+                },
+                {
+                  "rule_name": "anr_rate_regression",
+                  "metric_name": "anr_rate_change_pct",
+                  "current_value": 1.0,
+                  "previous_value": 0.0,
+                  "warn_threshold": 0.1,
+                  "fail_threshold": 0.25,
+                  "status": "fail",
+                  "reason": "前版基準無 ANR (0 事件)，本版出現 ANR 事件，判定為零基準退化 (Zero-baseline Regression)"
+                },
+                {
+                  "rule_name": "regressed_issues_count",
+                  "metric_name": "regressed_issues_count",
+                  "current_value": 2,
+                  "previous_value": 0,
+                  "warn_threshold": 1,
+                  "fail_threshold": 3,
+                  "status": "warn",
+                  "reason": "復發問題數 2 個，達到警告門檻 (1 個)"
+                },
+                {
+                  "rule_name": "introduced_issues_count",
+                  "metric_name": "introduced_issues_count",
+                  "current_value": 6,
+                  "previous_value": 0,
+                  "warn_threshold": 5,
+                  "fail_threshold": 10,
+                  "status": "warn",
+                  "reason": "新引入問題數 6 個，達到警告門檻 (5 個)"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "version": "3.1.2",
+          "platform": "android",
+          "first_seen": "2026-07-28T08:00:00Z",
+          "last_seen": "2026-09-02T13:10:00Z",
+          "release_date": "2026-07-28",
+          "status": "active",
+          "lifetime_crashes": 9800,
+          "lifetime_issues": 13,
+          "lifetime_affected_users": 3100,
+          "lifetime_fatal": 810,
+          "lifetime_anr": 0,
+          "recent_health": {
+            "7": {
+              "crash_events": 840,
+              "affected_users": 280,
+              "sessions_total": 9500,
+              "crash_free_users_rate": 0.9989,
+              "crash_free_sessions_rate": 0.9995,
+              "adoption_rate": 0.32,
+              "fatal_events": 70,
+              "fatal_count": 70,
+              "anr_events": 0,
+              "anr_count": 0,
+              "new_issues_count": 2,
+              "active_issues_count": 2,
+              "sample_sufficient": true,
+              "status": "active",
+              "trend": "improving"
+            },
+            "7d": {
+              "crash_events": 840,
+              "affected_users": 280,
+              "sessions_total": 9500,
+              "crash_free_users_rate": 0.9989,
+              "crash_free_sessions_rate": 0.9995,
+              "adoption_rate": 0.32,
+              "fatal_events": 70,
+              "fatal_count": 70,
+              "anr_events": 0,
+              "anr_count": 0,
+              "new_issues_count": 2,
+              "active_issues_count": 2,
+              "sample_sufficient": true,
+              "status": "active",
+              "trend": "improving"
+            },
+            "30": {
+              "crash_events": 3600,
+              "affected_users": 1180,
+              "sessions_total": 40000,
+              "crash_free_users_rate": 0.9988,
+              "crash_free_sessions_rate": 0.9994,
+              "adoption_rate": 0.32,
+              "fatal_events": 300,
+              "fatal_count": 300,
+              "anr_events": 0,
+              "anr_count": 0,
+              "new_issues_count": 6,
+              "active_issues_count": 6,
+              "sample_sufficient": true,
+              "status": "active",
+              "trend": "improving"
+            },
+            "30d": {
+              "crash_events": 3600,
+              "affected_users": 1180,
+              "sessions_total": 40000,
+              "crash_free_users_rate": 0.9988,
+              "crash_free_sessions_rate": 0.9994,
+              "adoption_rate": 0.32,
+              "fatal_events": 300,
+              "fatal_count": 300,
+              "anr_events": 0,
+              "anr_count": 0,
+              "new_issues_count": 6,
+              "active_issues_count": 6,
+              "sample_sufficient": true,
+              "status": "active",
+              "trend": "improving"
+            },
+            "90": {
+              "crash_events": 9800,
+              "affected_users": 3100,
+              "sessions_total": 104000,
+              "crash_free_users_rate": 0.9986,
+              "crash_free_sessions_rate": 0.9993,
+              "adoption_rate": 0.3,
+              "fatal_events": 810,
+              "fatal_count": 810,
+              "anr_events": 0,
+              "anr_count": 0,
+              "new_issues_count": 13,
+              "active_issues_count": 13,
+              "sample_sufficient": true,
+              "status": "active",
+              "trend": "stable"
+            },
+            "90d": {
+              "crash_events": 9800,
+              "affected_users": 3100,
+              "sessions_total": 104000,
+              "crash_free_users_rate": 0.9986,
+              "crash_free_sessions_rate": 0.9993,
+              "adoption_rate": 0.3,
+              "fatal_events": 810,
+              "fatal_count": 810,
+              "anr_events": 0,
+              "anr_count": 0,
+              "new_issues_count": 13,
+              "active_issues_count": 13,
+              "sample_sufficient": true,
+              "status": "active",
+              "trend": "stable"
+            }
+          },
+          "stability_status": "improving",
+          "issue_lifecycle": {
+            "introduced_count": 2,
+            "persistent_count": 7,
+            "regressed_count": 0,
+            "resolved_count": 7,
+            "introduced": [
+              "3b2e9d1a",
+              "9f4a2c60"
+            ],
+            "persistent": [
+              "0c7b5e18",
+              "4a8d1f52",
+              "6b2f8c31",
+              "8d5e1a74",
+              "2c9f4b60",
+              "7e3a0d15",
+              "5f8b6c29"
+            ],
+            "regressed": [],
+            "resolved": [
+              "1a2b3c4d",
+              "9e8d7c6b",
+              "3f5a1e88",
+              "6c4b2a70",
+              "8b1d5f93",
+              "0a7e3c46",
+              "4d9f2b51"
+            ],
+            "introduced_issues": [
+              "3b2e9d1a",
+              "9f4a2c60"
+            ],
+            "persistent_issues": [
+              "0c7b5e18",
+              "4a8d1f52",
+              "6b2f8c31",
+              "8d5e1a74",
+              "2c9f4b60",
+              "7e3a0d15",
+              "5f8b6c29"
+            ],
+            "regressed_issues": [],
+            "resolved_issues": [
+              "1a2b3c4d",
+              "9e8d7c6b",
+              "3f5a1e88",
+              "6c4b2a70",
+              "8b1d5f93",
+              "0a7e3c46",
+              "4d9f2b51"
+            ]
+          },
+          "vs_previous": {
+            "previous_version": "3.1.0",
+            "crash_rate_change_pct": -0.1692,
+            "crash_free_users_diff": 0.0003,
+            "fatal_change_pct": -0.1818,
+            "fatal_rate_change_pct": -0.1818,
+            "anr_change_pct": -1.0,
+            "anr_rate_change_pct": -1.0,
+            "new_issues_diff": -1,
+            "new_issues_count": -1,
+            "stability": "improving",
+            "stability_status": "improved",
+            "comparison_window": "30d",
+            "previous_sample_sufficient": true,
+            "previous_sessions_total": 12000,
+            "zero_baseline_crash": false,
+            "zero_baseline_fatal": false,
+            "zero_baseline_anr": false
+          },
+          "release_gate": {
+            "status": "pass",
+            "should_alert": false,
+            "alert_severity": "none",
+            "alert_summary": "版本 3.1.2 (android) 品質閘門通過，所有正規化指標均在安全閾值內",
+            "rules_triggered": [],
+            "sample_sufficient": true,
+            "rule_results": [
+              {
+                "rule_name": "crash_rate_regression",
+                "metric_name": "crash_rate_change_pct",
+                "current_value": -0.1692,
+                "previous_value": 0.0,
+                "warn_threshold": 0.1,
+                "fail_threshold": 0.25,
+                "status": "pass",
+                "reason": "崩潰率變動 -16.92% 於正常範圍"
+              },
+              {
+                "rule_name": "crash_free_users_drop",
+                "metric_name": "crash_free_users_diff",
+                "current_value": 0.0003,
+                "previous_value": 0.0,
+                "warn_threshold": -0.005,
+                "fail_threshold": -0.015,
+                "status": "pass",
+                "reason": "無崩潰用戶率變動 +0.03% 於正常範圍"
+              },
+              {
+                "rule_name": "fatal_rate_regression",
+                "metric_name": "fatal_rate_change_pct",
+                "current_value": -0.1818,
+                "previous_value": 0.0,
+                "warn_threshold": 0.1,
+                "fail_threshold": 0.25,
+                "status": "pass",
+                "reason": "Fatal 崩潰率變動 -18.18% 於正常範圍"
+              },
+              {
+                "rule_name": "anr_rate_regression",
+                "metric_name": "anr_rate_change_pct",
+                "current_value": -1.0,
+                "previous_value": 0.0,
+                "warn_threshold": 0.1,
+                "fail_threshold": 0.25,
+                "status": "pass",
+                "reason": "ANR 率變動 -100.00% 於正常範圍"
+              },
+              {
+                "rule_name": "regressed_issues_count",
+                "metric_name": "regressed_issues_count",
+                "current_value": 0,
+                "previous_value": 0,
+                "warn_threshold": 1,
+                "fail_threshold": 3,
+                "status": "pass",
+                "reason": "復發問題數 0 個於正常範圍"
+              },
+              {
+                "rule_name": "introduced_issues_count",
+                "metric_name": "introduced_issues_count",
+                "current_value": 2,
+                "previous_value": 0,
+                "warn_threshold": 5,
+                "fail_threshold": 10,
+                "status": "pass",
+                "reason": "新引入問題數 2 個於正常範圍"
+              }
+            ],
+            "comparison_window": "30d",
+            "evaluated_at": "2026-09-02T14:15:00Z",
+            "decision": {
+              "status": "pass",
+              "action": "proceed",
+              "recommendation": "指標均在安全閾值內，可以繼續發布",
+              "reasons": []
+            }
+          }
+        },
+        {
+          "version": "3.1.0",
+          "platform": "android",
+          "first_seen": "2026-07-05T07:30:00Z",
+          "last_seen": "2026-09-02T10:05:00Z",
+          "release_date": "2026-07-05",
+          "status": "legacy",
+          "lifetime_crashes": 4200,
+          "lifetime_issues": 9,
+          "lifetime_affected_users": 1400,
+          "lifetime_fatal": 360,
+          "lifetime_anr": 210,
+          "recent_health": {
+            "7": {
+              "crash_events": 290,
+              "affected_users": 95,
+              "sessions_total": 2800,
+              "crash_free_users_rate": 0.9986,
+              "crash_free_sessions_rate": 0.9993,
+              "adoption_rate": 0.1,
+              "fatal_events": 24,
+              "fatal_count": 24,
+              "anr_events": 15,
+              "anr_count": 15,
+              "new_issues_count": 1,
+              "active_issues_count": 1,
+              "sample_sufficient": true,
+              "status": "legacy",
+              "trend": "improving"
+            },
+            "7d": {
+              "crash_events": 290,
+              "affected_users": 95,
+              "sessions_total": 2800,
+              "crash_free_users_rate": 0.9986,
+              "crash_free_sessions_rate": 0.9993,
+              "adoption_rate": 0.1,
+              "fatal_events": 24,
+              "fatal_count": 24,
+              "anr_events": 15,
+              "anr_count": 15,
+              "new_issues_count": 1,
+              "active_issues_count": 1,
+              "sample_sufficient": true,
+              "status": "legacy",
+              "trend": "improving"
+            },
+            "30": {
+              "crash_events": 1300,
+              "affected_users": 430,
+              "sessions_total": 12000,
+              "crash_free_users_rate": 0.9985,
+              "crash_free_sessions_rate": 0.9992,
+              "adoption_rate": 0.1,
+              "fatal_events": 110,
+              "fatal_count": 110,
+              "anr_events": 70,
+              "anr_count": 70,
+              "new_issues_count": 4,
+              "active_issues_count": 4,
+              "sample_sufficient": true,
+              "status": "legacy",
+              "trend": "improving"
+            },
+            "30d": {
+              "crash_events": 1300,
+              "affected_users": 430,
+              "sessions_total": 12000,
+              "crash_free_users_rate": 0.9985,
+              "crash_free_sessions_rate": 0.9992,
+              "adoption_rate": 0.1,
+              "fatal_events": 110,
+              "fatal_count": 110,
+              "anr_events": 70,
+              "anr_count": 70,
+              "new_issues_count": 4,
+              "active_issues_count": 4,
+              "sample_sufficient": true,
+              "status": "legacy",
+              "trend": "improving"
+            },
+            "90": {
+              "crash_events": 4200,
+              "affected_users": 1400,
+              "sessions_total": 36000,
+              "crash_free_users_rate": 0.9983,
+              "crash_free_sessions_rate": 0.9991,
+              "adoption_rate": 0.12,
+              "fatal_events": 360,
+              "fatal_count": 360,
+              "anr_events": 210,
+              "anr_count": 210,
+              "new_issues_count": 9,
+              "active_issues_count": 9,
+              "sample_sufficient": true,
+              "status": "legacy",
+              "trend": "improving"
+            },
+            "90d": {
+              "crash_events": 4200,
+              "affected_users": 1400,
+              "sessions_total": 36000,
+              "crash_free_users_rate": 0.9983,
+              "crash_free_sessions_rate": 0.9991,
+              "adoption_rate": 0.12,
+              "fatal_events": 360,
+              "fatal_count": 360,
+              "anr_events": 210,
+              "anr_count": 210,
+              "new_issues_count": 9,
+              "active_issues_count": 9,
+              "sample_sufficient": true,
+              "status": "legacy",
+              "trend": "improving"
+            }
+          },
+          "stability_status": "improving",
+          "issue_lifecycle": {
+            "introduced_count": 3,
+            "persistent_count": 2,
+            "regressed_count": 0,
+            "resolved_count": 2,
+            "introduced": [
+              "6b2f8c31",
+              "8d5e1a74",
+              "2c9f4b60"
+            ],
+            "persistent": [
+              "7e3a0d15",
+              "5f8b6c29"
+            ],
+            "regressed": [],
+            "resolved": [
+              "1c3e7a29",
+              "9b6d4f80"
+            ],
+            "introduced_issues": [
+              "6b2f8c31",
+              "8d5e1a74",
+              "2c9f4b60"
+            ],
+            "persistent_issues": [
+              "7e3a0d15",
+              "5f8b6c29"
+            ],
+            "regressed_issues": [],
+            "resolved_issues": [
+              "1c3e7a29",
+              "9b6d4f80"
+            ]
+          },
+          "vs_previous": {
+            "previous_version": "3.0.5",
+            "crash_rate_change_pct": -0.2073,
+            "crash_free_users_diff": 0.0043,
+            "fatal_change_pct": -0.45,
+            "fatal_rate_change_pct": -0.45,
+            "anr_change_pct": -0.4167,
+            "anr_rate_change_pct": -0.4167,
+            "new_issues_diff": 2,
+            "new_issues_count": 2,
+            "stability": "improving",
+            "stability_status": "improved",
+            "comparison_window": "30d",
+            "previous_sample_sufficient": false,
+            "previous_sessions_total": 300,
+            "zero_baseline_crash": false,
+            "zero_baseline_fatal": false,
+            "zero_baseline_anr": false
+          },
+          "release_gate": {
+            "status": "insufficient_data",
+            "should_alert": false,
+            "alert_severity": "none",
+            "alert_summary": "版本 3.1.0 (android) 之前版基準 3.0.5 數據樣本不足 (300 sessions)，暫停退化判定",
+            "rules_triggered": [],
+            "sample_sufficient": false,
+            "rule_results": [
+              {
+                "rule_name": "previous_sample_sufficiency",
+                "metric_name": "previous_sessions_total",
+                "current_value": 12000,
+                "previous_value": 300,
+                "warn_threshold": 1000,
+                "fail_threshold": 1000,
+                "status": "insufficient_data",
+                "reason": "前版基準 3.0.5 樣本數未達充足門檻 (300 sessions < 1000 sessions)，暫停退化判定"
+              }
+            ],
+            "comparison_window": "30d",
+            "evaluated_at": "2026-09-02T14:15:00Z",
+            "decision": {
+              "status": "insufficient_data",
+              "action": "await_data",
+              "recommendation": "樣本不足尚無法判定品質，請等待資料累積後再決定是否擴大發布",
+              "reasons": [
+                "前版基準 3.0.5 樣本數未達充足門檻 (300 sessions < 1000 sessions)，暫停退化判定"
+              ]
+            }
+          }
+        },
+        {
+          "version": "3.3.0",
+          "platform": "ios",
+          "first_seen": "2026-09-02T03:00:00Z",
+          "last_seen": "2026-09-02T13:55:00Z",
+          "release_date": "2026-09-02",
+          "status": "latest",
+          "lifetime_crashes": 4,
+          "lifetime_issues": 1,
+          "lifetime_affected_users": 3,
+          "lifetime_fatal": 1,
+          "lifetime_anr": 0,
+          "recent_health": {
+            "7": {
+              "crash_events": 4,
+              "affected_users": 3,
+              "sessions_total": 320,
+              "crash_free_users_rate": 0.9991,
+              "crash_free_sessions_rate": 0.9996,
+              "adoption_rate": 0.008,
+              "fatal_events": 1,
+              "fatal_count": 1,
+              "anr_events": 0,
+              "anr_count": 0,
+              "new_issues_count": 1,
+              "active_issues_count": 1,
+              "sample_sufficient": false,
+              "status": "latest",
+              "trend": "stable"
+            },
+            "7d": {
+              "crash_events": 4,
+              "affected_users": 3,
+              "sessions_total": 320,
+              "crash_free_users_rate": 0.9991,
+              "crash_free_sessions_rate": 0.9996,
+              "adoption_rate": 0.008,
+              "fatal_events": 1,
+              "fatal_count": 1,
+              "anr_events": 0,
+              "anr_count": 0,
+              "new_issues_count": 1,
+              "active_issues_count": 1,
+              "sample_sufficient": false,
+              "status": "latest",
+              "trend": "stable"
+            },
+            "30": {
+              "crash_events": 4,
+              "affected_users": 3,
+              "sessions_total": 320,
+              "crash_free_users_rate": 0.9991,
+              "crash_free_sessions_rate": 0.9996,
+              "adoption_rate": 0.008,
+              "fatal_events": 1,
+              "fatal_count": 1,
+              "anr_events": 0,
+              "anr_count": 0,
+              "new_issues_count": 1,
+              "active_issues_count": 1,
+              "sample_sufficient": false,
+              "status": "latest",
+              "trend": "stable"
+            },
+            "30d": {
+              "crash_events": 4,
+              "affected_users": 3,
+              "sessions_total": 320,
+              "crash_free_users_rate": 0.9991,
+              "crash_free_sessions_rate": 0.9996,
+              "adoption_rate": 0.008,
+              "fatal_events": 1,
+              "fatal_count": 1,
+              "anr_events": 0,
+              "anr_count": 0,
+              "new_issues_count": 1,
+              "active_issues_count": 1,
+              "sample_sufficient": false,
+              "status": "latest",
+              "trend": "stable"
+            },
+            "90": {
+              "crash_events": 4,
+              "affected_users": 3,
+              "sessions_total": 320,
+              "crash_free_users_rate": 0.9991,
+              "crash_free_sessions_rate": 0.9996,
+              "adoption_rate": 0.008,
+              "fatal_events": 1,
+              "fatal_count": 1,
+              "anr_events": 0,
+              "anr_count": 0,
+              "new_issues_count": 1,
+              "active_issues_count": 1,
+              "sample_sufficient": false,
+              "status": "latest",
+              "trend": "stable"
+            },
+            "90d": {
+              "crash_events": 4,
+              "affected_users": 3,
+              "sessions_total": 320,
+              "crash_free_users_rate": 0.9991,
+              "crash_free_sessions_rate": 0.9996,
+              "adoption_rate": 0.008,
+              "fatal_events": 1,
+              "fatal_count": 1,
+              "anr_events": 0,
+              "anr_count": 0,
+              "new_issues_count": 1,
+              "active_issues_count": 1,
+              "sample_sufficient": false,
+              "status": "latest",
+              "trend": "stable"
+            }
+          },
+          "stability_status": "improving",
+          "issue_lifecycle": {
+            "introduced_count": 1,
+            "persistent_count": 0,
+            "regressed_count": 0,
+            "resolved_count": 0,
+            "introduced": [
+              "c1a4e8b2"
+            ],
+            "persistent": [],
+            "regressed": [],
+            "resolved": [],
+            "introduced_issues": [
+              "c1a4e8b2"
+            ],
+            "persistent_issues": [],
+            "regressed_issues": [],
+            "resolved_issues": []
+          },
+          "vs_previous": {
+            "previous_version": "3.2.0",
+            "crash_rate_change_pct": -0.8796,
+            "crash_free_users_diff": 0.0016,
+            "fatal_change_pct": -0.5486,
+            "fatal_rate_change_pct": -0.5486,
+            "anr_change_pct": 0.0,
+            "anr_rate_change_pct": 0.0,
+            "new_issues_diff": -2,
+            "new_issues_count": -2,
+            "stability": "improving",
+            "stability_status": "improved",
+            "comparison_window": "30d",
+            "previous_sample_sufficient": true,
+            "previous_sessions_total": 26000,
+            "zero_baseline_crash": false,
+            "zero_baseline_fatal": false,
+            "zero_baseline_anr": false
+          },
+          "release_gate": {
+            "status": "insufficient_data",
+            "should_alert": false,
+            "alert_severity": "none",
+            "alert_summary": "版本 3.3.0 (ios) 數據樣本不足 (數據未達充足門檻（未滿足採用率 5.0%、工作階段 1000 或事件數 20 標準）)，暫停退化判定",
+            "rules_triggered": [],
+            "sample_sufficient": false,
+            "rule_results": [
+              {
+                "rule_name": "sample_sufficiency",
+                "metric_name": "sessions_total",
+                "current_value": 320,
+                "previous_value": null,
+                "warn_threshold": 1000,
+                "fail_threshold": 1000,
+                "status": "insufficient_data",
+                "reason": "樣本數不足：數據未達充足門檻（未滿足採用率 5.0%、工作階段 1000 或事件數 20 標準），未達最小門檻 (1000 sessions)"
+              }
+            ],
+            "comparison_window": null,
+            "evaluated_at": "2026-09-02T14:15:00Z",
+            "decision": {
+              "status": "insufficient_data",
+              "action": "await_data",
+              "recommendation": "樣本不足尚無法判定品質，請等待資料累積後再決定是否擴大發布",
+              "reasons": [
+                "樣本數不足：數據未達充足門檻（未滿足採用率 5.0%、工作階段 1000 或事件數 20 標準），未達最小門檻 (1000 sessions)"
+              ]
+            }
+          }
+        },
+        {
+          "version": "3.2.0",
+          "platform": "ios",
+          "first_seen": "2026-08-20T09:10:00Z",
+          "last_seen": "2026-09-02T13:30:00Z",
+          "release_date": "2026-08-20",
+          "status": "active",
+          "lifetime_crashes": 2700,
+          "lifetime_issues": 4,
+          "lifetime_affected_users": 910,
+          "lifetime_fatal": 180,
+          "lifetime_anr": 0,
+          "recent_health": {
+            "7": {
+              "crash_events": 680,
+              "affected_users": 230,
+              "sessions_total": 6400,
+              "crash_free_users_rate": 0.9974,
+              "crash_free_sessions_rate": 0.9986,
+              "adoption_rate": 0.44,
+              "fatal_events": 45,
+              "fatal_count": 45,
+              "anr_events": 0,
+              "anr_count": 0,
+              "new_issues_count": 1,
+              "active_issues_count": 1,
+              "sample_sufficient": true,
+              "status": "active",
+              "trend": "degrading"
+            },
+            "7d": {
+              "crash_events": 680,
+              "affected_users": 230,
+              "sessions_total": 6400,
+              "crash_free_users_rate": 0.9974,
+              "crash_free_sessions_rate": 0.9986,
+              "adoption_rate": 0.44,
+              "fatal_events": 45,
+              "fatal_count": 45,
+              "anr_events": 0,
+              "anr_count": 0,
+              "new_issues_count": 1,
+              "active_issues_count": 1,
+              "sample_sufficient": true,
+              "status": "active",
+              "trend": "degrading"
+            },
+            "30": {
+              "crash_events": 2700,
+              "affected_users": 910,
+              "sessions_total": 26000,
+              "crash_free_users_rate": 0.9975,
+              "crash_free_sessions_rate": 0.9987,
+              "adoption_rate": 0.44,
+              "fatal_events": 180,
+              "fatal_count": 180,
+              "anr_events": 0,
+              "anr_count": 0,
+              "new_issues_count": 4,
+              "active_issues_count": 4,
+              "sample_sufficient": true,
+              "status": "active",
+              "trend": "degrading"
+            },
+            "30d": {
+              "crash_events": 2700,
+              "affected_users": 910,
+              "sessions_total": 26000,
+              "crash_free_users_rate": 0.9975,
+              "crash_free_sessions_rate": 0.9987,
+              "adoption_rate": 0.44,
+              "fatal_events": 180,
+              "fatal_count": 180,
+              "anr_events": 0,
+              "anr_count": 0,
+              "new_issues_count": 4,
+              "active_issues_count": 4,
+              "sample_sufficient": true,
+              "status": "active",
+              "trend": "degrading"
+            },
+            "90": {
+              "crash_events": 2700,
+              "affected_users": 910,
+              "sessions_total": 26000,
+              "crash_free_users_rate": 0.9975,
+              "crash_free_sessions_rate": 0.9987,
+              "adoption_rate": 0.44,
+              "fatal_events": 180,
+              "fatal_count": 180,
+              "anr_events": 0,
+              "anr_count": 0,
+              "new_issues_count": 4,
+              "active_issues_count": 4,
+              "sample_sufficient": true,
+              "status": "active",
+              "trend": "degrading"
+            },
+            "90d": {
+              "crash_events": 2700,
+              "affected_users": 910,
+              "sessions_total": 26000,
+              "crash_free_users_rate": 0.9975,
+              "crash_free_sessions_rate": 0.9987,
+              "adoption_rate": 0.44,
+              "fatal_events": 180,
+              "fatal_count": 180,
+              "anr_events": 0,
+              "anr_count": 0,
+              "new_issues_count": 4,
+              "active_issues_count": 4,
+              "sample_sufficient": true,
+              "status": "active",
+              "trend": "degrading"
+            }
+          },
+          "stability_status": "degrading",
+          "issue_lifecycle": {
+            "introduced_count": 3,
+            "persistent_count": 2,
+            "regressed_count": 1,
+            "resolved_count": 2,
+            "introduced": [
+              "a3f7c1d9",
+              "b8e2d4a6",
+              "c5b9f307"
+            ],
+            "persistent": [
+              "4c9e8d7a",
+              "d2a6b8e4"
+            ],
+            "regressed": [
+              "e7f3a9c1"
+            ],
+            "resolved": [
+              "f1b5d8a3",
+              "0e9c2f76"
+            ],
+            "introduced_issues": [
+              "a3f7c1d9",
+              "b8e2d4a6",
+              "c5b9f307"
+            ],
+            "persistent_issues": [
+              "4c9e8d7a",
+              "d2a6b8e4"
+            ],
+            "regressed_issues": [
+              "e7f3a9c1"
+            ],
+            "resolved_issues": [
+              "f1b5d8a3",
+              "0e9c2f76"
+            ]
+          },
+          "vs_previous": {
+            "previous_version": "3.1.2",
+            "crash_rate_change_pct": 0.1801,
+            "crash_free_users_diff": -0.0006,
+            "fatal_change_pct": 0.0181,
+            "fatal_rate_change_pct": 0.0181,
+            "anr_change_pct": 0.0,
+            "anr_rate_change_pct": 0.0,
+            "new_issues_diff": 2,
+            "new_issues_count": 2,
+            "stability": "degrading",
+            "stability_status": "regressed",
+            "comparison_window": "30d",
+            "previous_sample_sufficient": true,
+            "previous_sessions_total": 25000,
+            "zero_baseline_crash": false,
+            "zero_baseline_fatal": false,
+            "zero_baseline_anr": false
+          },
+          "release_gate": {
+            "status": "warn",
+            "should_alert": true,
+            "alert_severity": "warning",
+            "alert_summary": "版本 3.2.0 (ios) 品質閘門觸發警告（2 項預警）：崩潰率上升 +18.01%，達到警告門檻 (+10.0%)；復發問題數 1 個，達到警告門檻 (1 個)",
+            "rules_triggered": [
+              "crash_rate_regression",
+              "regressed_issues_count"
+            ],
+            "sample_sufficient": true,
+            "rule_results": [
+              {
+                "rule_name": "crash_rate_regression",
+                "metric_name": "crash_rate_change_pct",
+                "current_value": 0.1801,
+                "previous_value": 0.0,
+                "warn_threshold": 0.1,
+                "fail_threshold": 0.25,
+                "status": "warn",
+                "reason": "崩潰率上升 +18.01%，達到警告門檻 (+10.0%)"
+              },
+              {
+                "rule_name": "crash_free_users_drop",
+                "metric_name": "crash_free_users_diff",
+                "current_value": -0.0006,
+                "previous_value": 0.0,
+                "warn_threshold": -0.005,
+                "fail_threshold": -0.015,
+                "status": "pass",
+                "reason": "無崩潰用戶率變動 -0.06% 於正常範圍"
+              },
+              {
+                "rule_name": "fatal_rate_regression",
+                "metric_name": "fatal_rate_change_pct",
+                "current_value": 0.0181,
+                "previous_value": 0.0,
+                "warn_threshold": 0.1,
+                "fail_threshold": 0.25,
+                "status": "pass",
+                "reason": "Fatal 崩潰率變動 +1.81% 於正常範圍"
+              },
+              {
+                "rule_name": "anr_rate_regression",
+                "metric_name": "anr_rate_change_pct",
+                "current_value": 0.0,
+                "previous_value": 0.0,
+                "warn_threshold": 0.1,
+                "fail_threshold": 0.25,
+                "status": "pass",
+                "reason": "ANR 率變動 +0.00% 於正常範圍"
+              },
+              {
+                "rule_name": "regressed_issues_count",
+                "metric_name": "regressed_issues_count",
+                "current_value": 1,
+                "previous_value": 0,
+                "warn_threshold": 1,
+                "fail_threshold": 3,
+                "status": "warn",
+                "reason": "復發問題數 1 個，達到警告門檻 (1 個)"
+              },
+              {
+                "rule_name": "introduced_issues_count",
+                "metric_name": "introduced_issues_count",
+                "current_value": 3,
+                "previous_value": 0,
+                "warn_threshold": 5,
+                "fail_threshold": 10,
+                "status": "pass",
+                "reason": "新引入問題數 3 個於正常範圍"
+              }
+            ],
+            "comparison_window": "30d",
+            "evaluated_at": "2026-09-02T14:15:00Z",
+            "decision": {
+              "status": "warn",
+              "action": "investigate",
+              "recommendation": "建議先觀察並調查退化指標，暫緩擴大發布",
+              "reasons": [
+                "崩潰率上升 +18.01%，達到警告門檻 (+10.0%)",
+                "復發問題數 1 個，達到警告門檻 (1 個)"
+              ]
+            }
+          },
+          "gate_history": [
+            {
+              "evaluated_at": "2026-08-28T02:00:00Z",
+              "gate_status": "pass",
+              "sample_sufficient": true,
+              "summary": "版本 3.2.0 (ios) 品質閘門通過，所有正規化指標均在安全閾值內",
+              "rules_triggered": [],
+              "transition": {
+                "previous_status": null,
+                "current_status": "pass",
+                "status_changed": false,
+                "is_recovery": false,
+                "is_regression": false,
+                "transition_type": "initial"
+              },
+              "evaluation_key": "7574f1aa555f5d7a74d499d5c2211c4cb682ab52426ca69047250d3f001d5b66",
+              "policy_version": "1.0",
+              "policy_identity": "3775854fd1b7aca0",
+              "comparison_window": "30d",
+              "rule_results": [
+                {
+                  "rule_name": "crash_rate_regression",
+                  "metric_name": "crash_rate_change_pct",
+                  "current_value": 0.0653,
+                  "previous_value": 0.0,
+                  "warn_threshold": 0.1,
+                  "fail_threshold": 0.25,
+                  "status": "pass",
+                  "reason": "崩潰率變動 +6.53% 於正常範圍"
+                },
+                {
+                  "rule_name": "crash_free_users_drop",
+                  "metric_name": "crash_free_users_diff",
+                  "current_value": -0.0001,
+                  "previous_value": 0.0,
+                  "warn_threshold": -0.005,
+                  "fail_threshold": -0.015,
+                  "status": "pass",
+                  "reason": "無崩潰用戶率變動 -0.01% 於正常範圍"
+                },
+                {
+                  "rule_name": "fatal_rate_regression",
+                  "metric_name": "fatal_rate_change_pct",
+                  "current_value": -0.0809,
+                  "previous_value": 0.0,
+                  "warn_threshold": 0.1,
+                  "fail_threshold": 0.25,
+                  "status": "pass",
+                  "reason": "Fatal 崩潰率變動 -8.09% 於正常範圍"
+                },
+                {
+                  "rule_name": "anr_rate_regression",
+                  "metric_name": "anr_rate_change_pct",
+                  "current_value": 0.0,
+                  "previous_value": 0.0,
+                  "warn_threshold": 0.1,
+                  "fail_threshold": 0.25,
+                  "status": "pass",
+                  "reason": "ANR 率變動 +0.00% 於正常範圍"
+                },
+                {
+                  "rule_name": "regressed_issues_count",
+                  "metric_name": "regressed_issues_count",
+                  "current_value": 0,
+                  "previous_value": 0,
+                  "warn_threshold": 1,
+                  "fail_threshold": 3,
+                  "status": "pass",
+                  "reason": "復發問題數 0 個於正常範圍"
+                },
+                {
+                  "rule_name": "introduced_issues_count",
+                  "metric_name": "introduced_issues_count",
+                  "current_value": 2,
+                  "previous_value": 0,
+                  "warn_threshold": 5,
+                  "fail_threshold": 10,
+                  "status": "pass",
+                  "reason": "新引入問題數 2 個於正常範圍"
+                }
+              ]
+            },
+            {
+              "evaluated_at": "2026-09-02T14:15:00Z",
+              "gate_status": "warn",
+              "sample_sufficient": true,
+              "summary": "版本 3.2.0 (ios) 品質閘門觸發警告（2 項預警）：崩潰率上升 +18.01%，達到警告門檻 (+10.0%)；復發問題數 1 個，達到警告門檻 (1 個)",
+              "rules_triggered": [
+                "crash_rate_regression",
+                "regressed_issues_count"
+              ],
+              "transition": {
+                "previous_status": "pass",
+                "current_status": "warn",
+                "status_changed": true,
+                "is_recovery": false,
+                "is_regression": true,
+                "transition_type": "regression"
+              },
+              "evaluation_key": "d73be132e4d06aec2f4b0520f018bd49d97878bf7927f3443653349ef2e5f7cd",
+              "policy_version": "1.0",
+              "policy_identity": "3775854fd1b7aca0",
+              "comparison_window": "30d",
+              "rule_results": [
+                {
+                  "rule_name": "crash_rate_regression",
+                  "metric_name": "crash_rate_change_pct",
+                  "current_value": 0.1801,
+                  "previous_value": 0.0,
+                  "warn_threshold": 0.1,
+                  "fail_threshold": 0.25,
+                  "status": "warn",
+                  "reason": "崩潰率上升 +18.01%，達到警告門檻 (+10.0%)"
+                },
+                {
+                  "rule_name": "crash_free_users_drop",
+                  "metric_name": "crash_free_users_diff",
+                  "current_value": -0.0006,
+                  "previous_value": 0.0,
+                  "warn_threshold": -0.005,
+                  "fail_threshold": -0.015,
+                  "status": "pass",
+                  "reason": "無崩潰用戶率變動 -0.06% 於正常範圍"
+                },
+                {
+                  "rule_name": "fatal_rate_regression",
+                  "metric_name": "fatal_rate_change_pct",
+                  "current_value": 0.0181,
+                  "previous_value": 0.0,
+                  "warn_threshold": 0.1,
+                  "fail_threshold": 0.25,
+                  "status": "pass",
+                  "reason": "Fatal 崩潰率變動 +1.81% 於正常範圍"
+                },
+                {
+                  "rule_name": "anr_rate_regression",
+                  "metric_name": "anr_rate_change_pct",
+                  "current_value": 0.0,
+                  "previous_value": 0.0,
+                  "warn_threshold": 0.1,
+                  "fail_threshold": 0.25,
+                  "status": "pass",
+                  "reason": "ANR 率變動 +0.00% 於正常範圍"
+                },
+                {
+                  "rule_name": "regressed_issues_count",
+                  "metric_name": "regressed_issues_count",
+                  "current_value": 1,
+                  "previous_value": 0,
+                  "warn_threshold": 1,
+                  "fail_threshold": 3,
+                  "status": "warn",
+                  "reason": "復發問題數 1 個，達到警告門檻 (1 個)"
+                },
+                {
+                  "rule_name": "introduced_issues_count",
+                  "metric_name": "introduced_issues_count",
+                  "current_value": 3,
+                  "previous_value": 0,
+                  "warn_threshold": 5,
+                  "fail_threshold": 10,
+                  "status": "pass",
+                  "reason": "新引入問題數 3 個於正常範圍"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "version": "3.1.2",
+          "platform": "ios",
+          "first_seen": "2026-07-28T08:20:00Z",
+          "last_seen": "2026-09-02T08:45:00Z",
+          "release_date": "2026-07-28",
+          "status": "active",
+          "lifetime_crashes": 5900,
+          "lifetime_issues": 11,
+          "lifetime_affected_users": 2000,
+          "lifetime_fatal": 460,
+          "lifetime_anr": 0,
+          "recent_health": {
+            "7": {
+              "crash_events": 520,
+              "affected_users": 180,
+              "sessions_total": 6000,
+              "crash_free_users_rate": 0.9982,
+              "crash_free_sessions_rate": 0.9991,
+              "adoption_rate": 0.28,
+              "fatal_events": 40,
+              "fatal_count": 40,
+              "anr_events": 0,
+              "anr_count": 0,
+              "new_issues_count": 1,
+              "active_issues_count": 1,
+              "sample_sufficient": true,
+              "status": "active",
+              "trend": "stable"
+            },
+            "7d": {
+              "crash_events": 520,
+              "affected_users": 180,
+              "sessions_total": 6000,
+              "crash_free_users_rate": 0.9982,
+              "crash_free_sessions_rate": 0.9991,
+              "adoption_rate": 0.28,
+              "fatal_events": 40,
+              "fatal_count": 40,
+              "anr_events": 0,
+              "anr_count": 0,
+              "new_issues_count": 1,
+              "active_issues_count": 1,
+              "sample_sufficient": true,
+              "status": "active",
+              "trend": "stable"
+            },
+            "30": {
+              "crash_events": 2200,
+              "affected_users": 760,
+              "sessions_total": 25000,
+              "crash_free_users_rate": 0.9981,
+              "crash_free_sessions_rate": 0.999,
+              "adoption_rate": 0.28,
+              "fatal_events": 170,
+              "fatal_count": 170,
+              "anr_events": 0,
+              "anr_count": 0,
+              "new_issues_count": 5,
+              "active_issues_count": 5,
+              "sample_sufficient": true,
+              "status": "active",
+              "trend": "stable"
+            },
+            "30d": {
+              "crash_events": 2200,
+              "affected_users": 760,
+              "sessions_total": 25000,
+              "crash_free_users_rate": 0.9981,
+              "crash_free_sessions_rate": 0.999,
+              "adoption_rate": 0.28,
+              "fatal_events": 170,
+              "fatal_count": 170,
+              "anr_events": 0,
+              "anr_count": 0,
+              "new_issues_count": 5,
+              "active_issues_count": 5,
+              "sample_sufficient": true,
+              "status": "active",
+              "trend": "stable"
+            },
+            "90": {
+              "crash_events": 5900,
+              "affected_users": 2000,
+              "sessions_total": 64000,
+              "crash_free_users_rate": 0.9979,
+              "crash_free_sessions_rate": 0.9989,
+              "adoption_rate": 0.26,
+              "fatal_events": 460,
+              "fatal_count": 460,
+              "anr_events": 0,
+              "anr_count": 0,
+              "new_issues_count": 11,
+              "active_issues_count": 11,
+              "sample_sufficient": true,
+              "status": "active",
+              "trend": "stable"
+            },
+            "90d": {
+              "crash_events": 5900,
+              "affected_users": 2000,
+              "sessions_total": 64000,
+              "crash_free_users_rate": 0.9979,
+              "crash_free_sessions_rate": 0.9989,
+              "adoption_rate": 0.26,
+              "fatal_events": 460,
+              "fatal_count": 460,
+              "anr_events": 0,
+              "anr_count": 0,
+              "new_issues_count": 11,
+              "active_issues_count": 11,
+              "sample_sufficient": true,
+              "status": "active",
+              "trend": "stable"
+            }
+          },
+          "stability_status": "baseline",
+          "issue_lifecycle": {
+            "introduced_count": 1,
+            "persistent_count": 3,
+            "regressed_count": 0,
+            "resolved_count": 2,
+            "introduced": [
+              "4c9e8d7a"
+            ],
+            "persistent": [
+              "d2a6b8e4",
+              "e7f3a9c1",
+              "a9c4f2b7"
+            ],
+            "regressed": [],
+            "resolved": [
+              "b3d7e1a5",
+              "c8f2a6d0"
+            ],
+            "introduced_issues": [
+              "4c9e8d7a"
+            ],
+            "persistent_issues": [
+              "d2a6b8e4",
+              "e7f3a9c1",
+              "a9c4f2b7"
+            ],
+            "regressed_issues": [],
+            "resolved_issues": [
+              "b3d7e1a5",
+              "c8f2a6d0"
+            ]
+          },
+          "vs_previous": null,
+          "release_gate": {
+            "status": "baseline",
+            "should_alert": false,
+            "alert_severity": "none",
+            "alert_summary": "版本 3.1.2 (ios) 為該平台首個記錄版本，作為基準版",
+            "rules_triggered": [],
+            "sample_sufficient": true,
+            "rule_results": [
+              {
+                "rule_name": "baseline_version",
+                "metric_name": "previous_version",
+                "current_value": null,
+                "previous_value": null,
+                "warn_threshold": 0,
+                "fail_threshold": 0,
+                "status": "pass",
+                "reason": "無前版基準資料，作為初始基準版本"
+              }
+            ],
+            "comparison_window": null,
+            "evaluated_at": "2026-09-02T14:15:00Z",
+            "decision": {
+              "status": "baseline",
+              "action": "establish_baseline",
+              "recommendation": "無前版可比較，本版作為基準；請持續觀察後再決定是否擴大發布",
+              "reasons": [
+                "無前版基準資料，作為初始基準版本"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "rider_app": {
+      "metadata": {
+        "app_id": "rider_app",
+        "display_name": "Delivery Rider App",
+        "firebase_project_id": "rider-app-prod-9988",
+        "platforms": [
+          "android"
+        ],
+        "source_repo": "~/projects/rider_app",
+        "custom_keys_monitored": [
+          "city_id",
+          "battery_level"
+        ]
+      },
+      "period": {
+        "days": 30,
+        "start_time": "2026-08-03T14:00:00Z",
+        "end_time": "2026-09-02T14:00:00Z",
+        "comparison_period": null
+      },
+      "sources": {
+        "crashlytics_bq": {
+          "status": "available",
+          "tables_queried": [
+            "com_example_rider_ANDROID"
+          ],
+          "last_sync_timestamp": "2026-09-02T14:00:00Z",
+          "error_message": null
+        },
+        "firebase_sessions": {
+          "status": "available",
+          "last_sync_timestamp": "2026-09-02T14:00:00Z",
+          "error_message": null
+        },
+        "mcp_crashlytics": {
+          "status": "available",
+          "last_sync_timestamp": "2026-09-02T14:05:00Z",
+          "error_message": null
+        },
+        "gemini_ai": {
+          "status": "available",
+          "model": "gemini-flash-latest",
+          "last_sync_timestamp": "2026-09-02T14:10:00Z",
+          "error_message": null
+        }
+      },
+      "kpi": {
+        "crash_events": {
+          "value": 1820,
+          "previous_value": null,
+          "change_pct": null,
+          "status": "available"
+        },
+        "affected_users": {
+          "value": 310,
+          "previous_value": null,
+          "change_pct": null,
+          "status": "available"
+        },
+        "crash_free_users": {
+          "rate": 0.9965,
+          "total": 88000,
+          "crashed": 310,
+          "previous_rate": null,
+          "change_pct_points": null,
+          "status": "available",
+          "unavailable_reason": null
+        },
+        "crash_free_sessions": {
+          "rate": 0.9989,
+          "total": 920000,
+          "crashed": 1010,
+          "previous_rate": null,
+          "change_pct_points": null,
+          "status": "available",
+          "unavailable_reason": null
+        },
+        "new_issues_count": {
+          "value": 1,
+          "previous_value": null,
+          "change_pct": null,
+          "status": "available"
+        },
+        "events_by_error_type": {
+          "fatal": 1400,
+          "anr": 120,
+          "non_fatal": 300
+        }
+      },
+      "daily_trend": [
+        {
+          "date": "2026-08-04",
+          "crash_events": 56,
+          "affected_users": 14,
+          "fatal_events": 44,
+          "anr_events": 3,
+          "non_fatal_events": 9,
+          "sessions_total": 31920,
+          "crashed_sessions": 30,
+          "crash_free_sessions_rate": 0.9991,
+          "by_platform": {
+            "android": {
+              "events": 56,
+              "users": 14
+            }
+          }
+        },
+        {
+          "date": "2026-08-05",
+          "crash_events": 56,
+          "affected_users": 14,
+          "fatal_events": 44,
+          "anr_events": 3,
+          "non_fatal_events": 9,
+          "sessions_total": 31920,
+          "crashed_sessions": 30,
+          "crash_free_sessions_rate": 0.9991,
+          "by_platform": {
+            "android": {
+              "events": 56,
+              "users": 14
+            }
+          }
+        },
+        {
+          "date": "2026-08-06",
+          "crash_events": 56,
+          "affected_users": 14,
+          "fatal_events": 44,
+          "anr_events": 3,
+          "non_fatal_events": 9,
+          "sessions_total": 31920,
+          "crashed_sessions": 30,
+          "crash_free_sessions_rate": 0.9991,
+          "by_platform": {
+            "android": {
+              "events": 56,
+              "users": 14
+            }
+          }
+        },
+        {
+          "date": "2026-08-07",
+          "crash_events": 56,
+          "affected_users": 14,
+          "fatal_events": 44,
+          "anr_events": 3,
+          "non_fatal_events": 9,
+          "sessions_total": 31920,
+          "crashed_sessions": 30,
+          "crash_free_sessions_rate": 0.9991,
+          "by_platform": {
+            "android": {
+              "events": 56,
+              "users": 14
+            }
+          }
+        },
+        {
+          "date": "2026-08-08",
+          "crash_events": 66,
+          "affected_users": 16,
+          "fatal_events": 51,
+          "anr_events": 4,
+          "non_fatal_events": 11,
+          "sessions_total": 32200,
+          "crashed_sessions": 36,
+          "crash_free_sessions_rate": 0.9989,
+          "by_platform": {
+            "android": {
+              "events": 66,
+              "users": 16
+            }
+          }
+        },
+        {
+          "date": "2026-08-09",
+          "crash_events": 66,
+          "affected_users": 16,
+          "fatal_events": 51,
+          "anr_events": 4,
+          "non_fatal_events": 11,
+          "sessions_total": 32200,
+          "crashed_sessions": 36,
+          "crash_free_sessions_rate": 0.9989,
+          "by_platform": {
+            "android": {
+              "events": 66,
+              "users": 16
+            }
+          }
+        },
+        {
+          "date": "2026-08-10",
+          "crash_events": 56,
+          "affected_users": 14,
+          "fatal_events": 44,
+          "anr_events": 3,
+          "non_fatal_events": 9,
+          "sessions_total": 31920,
+          "crashed_sessions": 30,
+          "crash_free_sessions_rate": 0.9991,
+          "by_platform": {
+            "android": {
+              "events": 56,
+              "users": 14
+            }
+          }
+        },
+        {
+          "date": "2026-08-11",
+          "crash_events": 56,
+          "affected_users": 14,
+          "fatal_events": 44,
+          "anr_events": 3,
+          "non_fatal_events": 9,
+          "sessions_total": 31920,
+          "crashed_sessions": 30,
+          "crash_free_sessions_rate": 0.9991,
+          "by_platform": {
+            "android": {
+              "events": 56,
+              "users": 14
+            }
+          }
+        },
+        {
+          "date": "2026-08-12",
+          "crash_events": 56,
+          "affected_users": 14,
+          "fatal_events": 44,
+          "anr_events": 3,
+          "non_fatal_events": 9,
+          "sessions_total": 31920,
+          "crashed_sessions": 30,
+          "crash_free_sessions_rate": 0.9991,
+          "by_platform": {
+            "android": {
+              "events": 56,
+              "users": 14
+            }
+          }
+        },
+        {
+          "date": "2026-08-13",
+          "crash_events": 56,
+          "affected_users": 14,
+          "fatal_events": 44,
+          "anr_events": 3,
+          "non_fatal_events": 9,
+          "sessions_total": 31920,
+          "crashed_sessions": 30,
+          "crash_free_sessions_rate": 0.9991,
+          "by_platform": {
+            "android": {
+              "events": 56,
+              "users": 14
+            }
+          }
+        },
+        {
+          "date": "2026-08-14",
+          "crash_events": 56,
+          "affected_users": 14,
+          "fatal_events": 44,
+          "anr_events": 3,
+          "non_fatal_events": 9,
+          "sessions_total": 31920,
+          "crashed_sessions": 30,
+          "crash_free_sessions_rate": 0.9991,
+          "by_platform": {
+            "android": {
+              "events": 56,
+              "users": 14
+            }
+          }
+        },
+        {
+          "date": "2026-08-15",
+          "crash_events": 66,
+          "affected_users": 16,
+          "fatal_events": 51,
+          "anr_events": 4,
+          "non_fatal_events": 11,
+          "sessions_total": 32200,
+          "crashed_sessions": 36,
+          "crash_free_sessions_rate": 0.9989,
+          "by_platform": {
+            "android": {
+              "events": 66,
+              "users": 16
+            }
+          }
+        },
+        {
+          "date": "2026-08-16",
+          "crash_events": 66,
+          "affected_users": 16,
+          "fatal_events": 51,
+          "anr_events": 4,
+          "non_fatal_events": 11,
+          "sessions_total": 32200,
+          "crashed_sessions": 36,
+          "crash_free_sessions_rate": 0.9989,
+          "by_platform": {
+            "android": {
+              "events": 66,
+              "users": 16
+            }
+          }
+        },
+        {
+          "date": "2026-08-17",
+          "crash_events": 56,
+          "affected_users": 14,
+          "fatal_events": 44,
+          "anr_events": 3,
+          "non_fatal_events": 9,
+          "sessions_total": 31920,
+          "crashed_sessions": 30,
+          "crash_free_sessions_rate": 0.9991,
+          "by_platform": {
+            "android": {
+              "events": 56,
+              "users": 14
+            }
+          }
+        },
+        {
+          "date": "2026-08-18",
+          "crash_events": 56,
+          "affected_users": 14,
+          "fatal_events": 44,
+          "anr_events": 3,
+          "non_fatal_events": 9,
+          "sessions_total": 31920,
+          "crashed_sessions": 30,
+          "crash_free_sessions_rate": 0.9991,
+          "by_platform": {
+            "android": {
+              "events": 56,
+              "users": 14
+            }
+          }
+        },
+        {
+          "date": "2026-08-19",
+          "crash_events": 56,
+          "affected_users": 14,
+          "fatal_events": 44,
+          "anr_events": 3,
+          "non_fatal_events": 9,
+          "sessions_total": 31920,
+          "crashed_sessions": 30,
+          "crash_free_sessions_rate": 0.9991,
+          "by_platform": {
+            "android": {
+              "events": 56,
+              "users": 14
+            }
+          }
+        },
+        {
+          "date": "2026-08-20",
+          "crash_events": 56,
+          "affected_users": 14,
+          "fatal_events": 44,
+          "anr_events": 3,
+          "non_fatal_events": 9,
+          "sessions_total": 31920,
+          "crashed_sessions": 30,
+          "crash_free_sessions_rate": 0.9991,
+          "by_platform": {
+            "android": {
+              "events": 56,
+              "users": 14
+            }
+          }
+        },
+        {
+          "date": "2026-08-21",
+          "crash_events": 56,
+          "affected_users": 14,
+          "fatal_events": 44,
+          "anr_events": 3,
+          "non_fatal_events": 9,
+          "sessions_total": 31920,
+          "crashed_sessions": 30,
+          "crash_free_sessions_rate": 0.9991,
+          "by_platform": {
+            "android": {
+              "events": 56,
+              "users": 14
+            }
+          }
+        },
+        {
+          "date": "2026-08-22",
+          "crash_events": 66,
+          "affected_users": 16,
+          "fatal_events": 51,
+          "anr_events": 4,
+          "non_fatal_events": 11,
+          "sessions_total": 32200,
+          "crashed_sessions": 36,
+          "crash_free_sessions_rate": 0.9989,
+          "by_platform": {
+            "android": {
+              "events": 66,
+              "users": 16
+            }
+          }
+        },
+        {
+          "date": "2026-08-23",
+          "crash_events": 66,
+          "affected_users": 16,
+          "fatal_events": 51,
+          "anr_events": 4,
+          "non_fatal_events": 11,
+          "sessions_total": 32200,
+          "crashed_sessions": 36,
+          "crash_free_sessions_rate": 0.9989,
+          "by_platform": {
+            "android": {
+              "events": 66,
+              "users": 16
+            }
+          }
+        },
+        {
+          "date": "2026-08-24",
+          "crash_events": 56,
+          "affected_users": 14,
+          "fatal_events": 44,
+          "anr_events": 3,
+          "non_fatal_events": 9,
+          "sessions_total": 31920,
+          "crashed_sessions": 30,
+          "crash_free_sessions_rate": 0.9991,
+          "by_platform": {
+            "android": {
+              "events": 56,
+              "users": 14
+            }
+          }
+        },
+        {
+          "date": "2026-08-25",
+          "crash_events": 56,
+          "affected_users": 14,
+          "fatal_events": 44,
+          "anr_events": 3,
+          "non_fatal_events": 9,
+          "sessions_total": 31920,
+          "crashed_sessions": 30,
+          "crash_free_sessions_rate": 0.9991,
+          "by_platform": {
+            "android": {
+              "events": 56,
+              "users": 14
+            }
+          }
+        },
+        {
+          "date": "2026-08-26",
+          "crash_events": 56,
+          "affected_users": 14,
+          "fatal_events": 44,
+          "anr_events": 3,
+          "non_fatal_events": 9,
+          "sessions_total": 31920,
+          "crashed_sessions": 30,
+          "crash_free_sessions_rate": 0.9991,
+          "by_platform": {
+            "android": {
+              "events": 56,
+              "users": 14
+            }
+          }
+        },
+        {
+          "date": "2026-08-27",
+          "crash_events": 56,
+          "affected_users": 14,
+          "fatal_events": 44,
+          "anr_events": 3,
+          "non_fatal_events": 9,
+          "sessions_total": 31920,
+          "crashed_sessions": 30,
+          "crash_free_sessions_rate": 0.9991,
+          "by_platform": {
+            "android": {
+              "events": 56,
+              "users": 14
+            }
+          }
+        },
+        {
+          "date": "2026-08-28",
+          "crash_events": 56,
+          "affected_users": 14,
+          "fatal_events": 44,
+          "anr_events": 3,
+          "non_fatal_events": 9,
+          "sessions_total": 31920,
+          "crashed_sessions": 30,
+          "crash_free_sessions_rate": 0.9991,
+          "by_platform": {
+            "android": {
+              "events": 56,
+              "users": 14
+            }
+          }
+        },
+        {
+          "date": "2026-08-29",
+          "crash_events": 66,
+          "affected_users": 16,
+          "fatal_events": 51,
+          "anr_events": 4,
+          "non_fatal_events": 11,
+          "sessions_total": 32200,
+          "crashed_sessions": 36,
+          "crash_free_sessions_rate": 0.9989,
+          "by_platform": {
+            "android": {
+              "events": 66,
+              "users": 16
+            }
+          }
+        },
+        {
+          "date": "2026-08-30",
+          "crash_events": 66,
+          "affected_users": 16,
+          "fatal_events": 51,
+          "anr_events": 4,
+          "non_fatal_events": 11,
+          "sessions_total": 32200,
+          "crashed_sessions": 36,
+          "crash_free_sessions_rate": 0.9989,
+          "by_platform": {
+            "android": {
+              "events": 66,
+              "users": 16
+            }
+          }
+        },
+        {
+          "date": "2026-08-31",
+          "crash_events": 56,
+          "affected_users": 14,
+          "fatal_events": 44,
+          "anr_events": 3,
+          "non_fatal_events": 9,
+          "sessions_total": 31920,
+          "crashed_sessions": 30,
+          "crash_free_sessions_rate": 0.9991,
+          "by_platform": {
+            "android": {
+              "events": 56,
+              "users": 14
+            }
+          }
+        },
+        {
+          "date": "2026-09-01",
+          "crash_events": 56,
+          "affected_users": 14,
+          "fatal_events": 44,
+          "anr_events": 3,
+          "non_fatal_events": 9,
+          "sessions_total": 31920,
+          "crashed_sessions": 30,
+          "crash_free_sessions_rate": 0.9991,
+          "by_platform": {
+            "android": {
+              "events": 56,
+              "users": 14
+            }
+          }
+        },
+        {
+          "date": "2026-09-02",
+          "crash_events": 116,
+          "affected_users": 29,
+          "fatal_events": 68,
+          "anr_events": 25,
+          "non_fatal_events": 23,
+          "sessions_total": 31920,
+          "crashed_sessions": 63,
+          "crash_free_sessions_rate": 0.998,
+          "by_platform": {
+            "android": {
+              "events": 116,
+              "users": 29
+            }
+          }
+        }
+      ],
+      "version_health": [
+        {
+          "version": "1.8.0",
+          "platform": "android",
+          "release_date": "2026-08-15",
+          "crash_events": 1820,
+          "affected_users": 310,
+          "crash_free_users_rate": 0.9965,
+          "crash_free_sessions_rate": 0.9989,
+          "adoption_rate": 0.95,
+          "status": "latest",
+          "trend": "stable"
+        }
+      ],
+      "distributions": {
+        "platform": [
+          {
+            "name": "android",
+            "events": 1820,
+            "users": 310,
+            "share": 1.0
+          }
+        ],
+        "device_models": [
+          {
+            "model": "Redmi Note 12",
+            "platform": "android",
+            "events": 900,
+            "users": 150,
+            "share": 0.495
+          }
+        ],
+        "os_versions": [
+          {
+            "os_version": "Android 13",
+            "platform": "android",
+            "events": 1200,
+            "users": 200,
+            "share": 0.659
+          }
+        ],
+        "app_versions": [
+          {
+            "app_version": "1.8.0",
+            "platform": "android",
+            "events": 1820,
+            "users": 310,
+            "share": 1.0
+          }
+        ],
+        "custom_keys": [
+          {
+            "key": "city_id",
+            "value": "TPE",
+            "platform": "android",
+            "events": 1100
+          }
+        ]
+      },
+      "top_issues": [
+        {
+          "issue_id": "99a1b2c3",
+          "platform": "android",
+          "title": "LocationTimeoutException: GPS fix timeout",
+          "subtitle": "LocationTracker.kt:89",
+          "error_type": "FATAL",
+          "priority": {
+            "score": 80,
+            "level": "P1",
+            "trend": "stable",
+            "score_breakdown": {
+              "users_normalized": 8.0,
+              "events_normalized": 8.0,
+              "fatal_anr_boost": 2,
+              "worsening_boost": 0,
+              "latest_version_boost": 2,
+              "core_path_boost": 3
+            }
+          },
+          "events": 1400,
+          "affected_users": 250,
+          "first_seen_timestamp": "2026-08-15T08:00:00Z",
+          "last_seen_timestamp": "2026-09-02T13:00:00Z",
+          "first_seen_version": "1.8.0",
+          "last_seen_version": "1.8.0",
+          "version_distribution": [
+            {
+              "version": "1.8.0",
+              "events": 1400,
+              "users": 250
+            }
+          ],
+          "blame_frame": {
+            "file": "app/src/main/java/com/example/rider/LocationTracker.kt",
+            "line": 89,
+            "symbol": "com.example.rider.LocationTracker.requestHighAccuracyLocation",
+            "class_name": "com.example.rider.LocationTracker",
+            "method_name": "requestHighAccuracyLocation",
+            "is_blame": true,
+            "source_available": true
+          },
+          "ai_analysis": {
+            "status": "available",
+            "root_cause": "騎手進入地下室或隧道時 GPS 訊號遺失，LocationTracker 未處理超時直接拋出未捕捉異常。",
+            "suggested_fix": "於 LocationTracker 增加 try-catch 並降級使用基地台最後已知位置。",
+            "effort": "S",
+            "confidence": "high",
+            "reasoning_sources": [
+              "stack_trace",
+              "blame_frame"
+            ]
+          },
+          "detail": null
+        }
+      ],
+      "ai_summary": {
+        "status": "available",
+        "model": "gemini-flash-latest",
+        "generated_at": "2026-09-02T14:10:00Z",
+        "overview": "外送騎手 App 整體 Crash-free rate 為 99.65%，主要問題為 GPS 定位超時引發的崩潰。",
+        "key_takeaways": [
+          "GPS 定位超時佔據 77% 的閃退量，修復後可立即將穩定度拉升至 99.9%+"
+        ],
+        "distribution_insights": "崩潰主要集中在 Redmi Note 12 等平價機型。",
+        "recommended_actions": [
+          {
+            "priority": "P1",
+            "issue_id": "99a1b2c3",
+            "action": "實作 GPS 逾時降級與防禦性錯誤捕捉",
+            "effort": "S"
+          }
+        ],
+        "data_limitations": null
+      },
+      "limitations": [],
+      "release_catalog": [
+        {
+          "version": "1.8.0",
+          "platform": "android",
+          "first_seen": "2026-08-22T10:00:00Z",
+          "last_seen": "2026-09-02T13:20:00Z",
+          "release_date": "2026-08-22",
+          "status": "latest",
+          "lifetime_crashes": 980,
+          "lifetime_issues": 3,
+          "lifetime_affected_users": 340,
+          "lifetime_fatal": 120,
+          "lifetime_anr": 60,
+          "recent_health": {
+            "7": {
+              "crash_events": 250,
+              "affected_users": 88,
+              "sessions_total": 4300,
+              "crash_free_users_rate": 0.998,
+              "crash_free_sessions_rate": 0.999,
+              "adoption_rate": 0.61,
+              "fatal_events": 30,
+              "fatal_count": 30,
+              "anr_events": 15,
+              "anr_count": 15,
+              "new_issues_count": 1,
+              "active_issues_count": 1,
+              "sample_sufficient": true,
+              "status": "latest",
+              "trend": "degrading"
+            },
+            "7d": {
+              "crash_events": 250,
+              "affected_users": 88,
+              "sessions_total": 4300,
+              "crash_free_users_rate": 0.998,
+              "crash_free_sessions_rate": 0.999,
+              "adoption_rate": 0.61,
+              "fatal_events": 30,
+              "fatal_count": 30,
+              "anr_events": 15,
+              "anr_count": 15,
+              "new_issues_count": 1,
+              "active_issues_count": 1,
+              "sample_sufficient": true,
+              "status": "latest",
+              "trend": "degrading"
+            },
+            "30": {
+              "crash_events": 980,
+              "affected_users": 340,
+              "sessions_total": 18000,
+              "crash_free_users_rate": 0.9981,
+              "crash_free_sessions_rate": 0.9991,
+              "adoption_rate": 0.61,
+              "fatal_events": 120,
+              "fatal_count": 120,
+              "anr_events": 60,
+              "anr_count": 60,
+              "new_issues_count": 3,
+              "active_issues_count": 3,
+              "sample_sufficient": true,
+              "status": "latest",
+              "trend": "degrading"
+            },
+            "30d": {
+              "crash_events": 980,
+              "affected_users": 340,
+              "sessions_total": 18000,
+              "crash_free_users_rate": 0.9981,
+              "crash_free_sessions_rate": 0.9991,
+              "adoption_rate": 0.61,
+              "fatal_events": 120,
+              "fatal_count": 120,
+              "anr_events": 60,
+              "anr_count": 60,
+              "new_issues_count": 3,
+              "active_issues_count": 3,
+              "sample_sufficient": true,
+              "status": "latest",
+              "trend": "degrading"
+            },
+            "90": {
+              "crash_events": 980,
+              "affected_users": 340,
+              "sessions_total": 18000,
+              "crash_free_users_rate": 0.9981,
+              "crash_free_sessions_rate": 0.9991,
+              "adoption_rate": 0.61,
+              "fatal_events": 120,
+              "fatal_count": 120,
+              "anr_events": 60,
+              "anr_count": 60,
+              "new_issues_count": 3,
+              "active_issues_count": 3,
+              "sample_sufficient": true,
+              "status": "latest",
+              "trend": "degrading"
+            },
+            "90d": {
+              "crash_events": 980,
+              "affected_users": 340,
+              "sessions_total": 18000,
+              "crash_free_users_rate": 0.9981,
+              "crash_free_sessions_rate": 0.9991,
+              "adoption_rate": 0.61,
+              "fatal_events": 120,
+              "fatal_count": 120,
+              "anr_events": 60,
+              "anr_count": 60,
+              "new_issues_count": 3,
+              "active_issues_count": 3,
+              "sample_sufficient": true,
+              "status": "latest",
+              "trend": "degrading"
+            }
+          },
+          "stability_status": "degrading",
+          "issue_lifecycle": {
+            "introduced_count": 1,
+            "persistent_count": 1,
+            "regressed_count": 1,
+            "resolved_count": 1,
+            "introduced": [
+              "99a1b2c3"
+            ],
+            "persistent": [
+              "7d2f5b91"
+            ],
+            "regressed": [
+              "3e8a6c04"
+            ],
+            "resolved": [
+              "5b1d9f72"
+            ],
+            "introduced_issues": [
+              "99a1b2c3"
+            ],
+            "persistent_issues": [
+              "7d2f5b91"
+            ],
+            "regressed_issues": [
+              "3e8a6c04"
+            ],
+            "resolved_issues": [
+              "5b1d9f72"
+            ]
+          },
+          "vs_previous": {
+            "previous_version": "1.7.4",
+            "crash_rate_change_pct": -0.0321,
+            "crash_free_users_diff": -0.0003,
+            "fatal_change_pct": 0.0159,
+            "fatal_rate_change_pct": 0.0159,
+            "anr_change_pct": 1.0,
+            "anr_rate_change_pct": 1.0,
+            "new_issues_diff": 0,
+            "new_issues_count": 0,
+            "stability": "degrading",
+            "stability_status": "regressed",
+            "comparison_window": "30d",
+            "previous_sample_sufficient": true,
+            "previous_sessions_total": 16000,
+            "zero_baseline_crash": false,
+            "zero_baseline_fatal": false,
+            "zero_baseline_anr": true
+          },
+          "release_gate": {
+            "status": "pass",
+            "should_alert": false,
+            "alert_severity": "none",
+            "alert_summary": "版本 1.8.0 (android) 品質閘門未啟用 (enabled: false)",
+            "rules_triggered": [],
+            "sample_sufficient": true,
+            "rule_results": [],
+            "comparison_window": null,
+            "evaluated_at": "2026-09-02T14:15:00Z"
+          }
+        },
+        {
+          "version": "1.7.4",
+          "platform": "android",
+          "first_seen": "2026-07-15T09:00:00Z",
+          "last_seen": "2026-09-01T18:30:00Z",
+          "release_date": "2026-07-15",
+          "status": "active",
+          "lifetime_crashes": 900,
+          "lifetime_issues": 2,
+          "lifetime_affected_users": 300,
+          "lifetime_fatal": 105,
+          "lifetime_anr": 0,
+          "recent_health": {
+            "7": {
+              "crash_events": 900,
+              "affected_users": 300,
+              "sessions_total": 16000,
+              "crash_free_users_rate": 0.9984,
+              "crash_free_sessions_rate": 0.9992,
+              "adoption_rate": 0.3,
+              "fatal_events": 105,
+              "fatal_count": 105,
+              "anr_events": 0,
+              "anr_count": 0,
+              "new_issues_count": 2,
+              "active_issues_count": 2,
+              "sample_sufficient": true,
+              "status": "active",
+              "trend": "stable"
+            },
+            "7d": {
+              "crash_events": 900,
+              "affected_users": 300,
+              "sessions_total": 16000,
+              "crash_free_users_rate": 0.9984,
+              "crash_free_sessions_rate": 0.9992,
+              "adoption_rate": 0.3,
+              "fatal_events": 105,
+              "fatal_count": 105,
+              "anr_events": 0,
+              "anr_count": 0,
+              "new_issues_count": 2,
+              "active_issues_count": 2,
+              "sample_sufficient": true,
+              "status": "active",
+              "trend": "stable"
+            },
+            "30": {
+              "crash_events": 900,
+              "affected_users": 300,
+              "sessions_total": 16000,
+              "crash_free_users_rate": 0.9984,
+              "crash_free_sessions_rate": 0.9992,
+              "adoption_rate": 0.3,
+              "fatal_events": 105,
+              "fatal_count": 105,
+              "anr_events": 0,
+              "anr_count": 0,
+              "new_issues_count": 2,
+              "active_issues_count": 2,
+              "sample_sufficient": true,
+              "status": "active",
+              "trend": "stable"
+            },
+            "30d": {
+              "crash_events": 900,
+              "affected_users": 300,
+              "sessions_total": 16000,
+              "crash_free_users_rate": 0.9984,
+              "crash_free_sessions_rate": 0.9992,
+              "adoption_rate": 0.3,
+              "fatal_events": 105,
+              "fatal_count": 105,
+              "anr_events": 0,
+              "anr_count": 0,
+              "new_issues_count": 2,
+              "active_issues_count": 2,
+              "sample_sufficient": true,
+              "status": "active",
+              "trend": "stable"
+            },
+            "90": {
+              "crash_events": 900,
+              "affected_users": 300,
+              "sessions_total": 16000,
+              "crash_free_users_rate": 0.9984,
+              "crash_free_sessions_rate": 0.9992,
+              "adoption_rate": 0.3,
+              "fatal_events": 105,
+              "fatal_count": 105,
+              "anr_events": 0,
+              "anr_count": 0,
+              "new_issues_count": 2,
+              "active_issues_count": 2,
+              "sample_sufficient": true,
+              "status": "active",
+              "trend": "stable"
+            },
+            "90d": {
+              "crash_events": 900,
+              "affected_users": 300,
+              "sessions_total": 16000,
+              "crash_free_users_rate": 0.9984,
+              "crash_free_sessions_rate": 0.9992,
+              "adoption_rate": 0.3,
+              "fatal_events": 105,
+              "fatal_count": 105,
+              "anr_events": 0,
+              "anr_count": 0,
+              "new_issues_count": 2,
+              "active_issues_count": 2,
+              "sample_sufficient": true,
+              "status": "active",
+              "trend": "stable"
+            }
+          },
+          "stability_status": "baseline",
+          "issue_lifecycle": {
+            "introduced_count": 1,
+            "persistent_count": 1,
+            "regressed_count": 0,
+            "resolved_count": 0,
+            "introduced": [
+              "7d2f5b91"
+            ],
+            "persistent": [
+              "a4c8e2b6"
+            ],
+            "regressed": [],
+            "resolved": [],
+            "introduced_issues": [
+              "7d2f5b91"
+            ],
+            "persistent_issues": [
+              "a4c8e2b6"
+            ],
+            "regressed_issues": [],
+            "resolved_issues": []
+          },
+          "vs_previous": null,
+          "release_gate": null
+        }
+      ]
+    }
+  }
+}
