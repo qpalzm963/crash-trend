@@ -31,6 +31,13 @@ from crash_trend.alerts.providers.google_chat import GoogleChatWebhookProvider
 from crash_trend.alerts.state import AlertDeliveryStore
 from crash_trend.config import get_app, load_config, out_dir
 from crash_trend.gate.artifact import ReleaseGateArtifact, load_release_gate_artifact
+from crash_trend.gate.decision import decision_from_gate_result, derive_decision
+from crash_trend.schema_v2 import ReleaseDecision
+
+# Presentation-only icon keyed on the gate's canonical alert_severity. This is
+# deliberately NOT a gate_status -> wording/action mapping: recommendation,
+# action and reasons come exclusively from the Release Decision contract.
+_SEVERITY_ICONS: dict[str, str] = {"critical": "🚨", "warning": "⚠️", "none": "ℹ️"}
 
 
 def build_alert_message(
@@ -45,10 +52,24 @@ def build_alert_message(
     evaluated_at: str,
     dashboard_url: str | None = None,
     use_threads: bool = True,
+    decision: ReleaseDecision | Mapping[str, Any] | None = None,
+    alert_severity: str = "none",
 ) -> AlertMessage:
-    """Formats a human-readable AlertMessage and deterministic thread key."""
+    """Formats a human-readable AlertMessage from the canonical Release Decision.
+
+    `decision` is the canonical contract carried by the gate artifact (Issue #72).
+    When absent (pre-V3.2 artifacts or direct callers) it is derived through the
+    same `crash_trend.gate.decision` domain function, never re-implemented here.
+    """
     status_lower = gate_status.strip().lower()
     pf_disp = "Android" if platform.lower() == "android" else ("iOS" if platform.lower() == "ios" else platform.capitalize())
+
+    eff_decision: ReleaseDecision | Mapping[str, Any] = (
+        decision if decision else derive_decision(status_lower, rule_results)
+    )
+    recommendation = str(eff_decision.get("recommendation", ""))
+    action = str(eff_decision.get("action", ""))
+    decision_status = str(eff_decision.get("status", status_lower))
 
     # Deterministic threadKey: crash-trend:{app_id}:{platform}:{version}
     thread_key = f"crash-trend:{app_id}:{platform.lower()}:{target_version}" if use_threads else None
@@ -57,20 +78,11 @@ def build_alert_message(
         title = "✅ Release Gate Recovered"
         summary = f"版本 {target_version} ({pf_disp}) 品質閘門已復原，指標回到安全範圍"
         regression_reasons: list[str] = []
-    elif status_lower == "fail":
-        title = "🚨 Release Gate FAIL"
-        reasons = [r["reason"] for r in rule_results if r.get("status") in ("fail", "warn")]
-        summary = f"版本 {target_version} ({pf_disp}) 品質閘門判定失敗"
-        regression_reasons = reasons
-    elif status_lower == "warn":
-        title = "⚠️ Release Gate WARN"
-        reasons = [r["reason"] for r in rule_results if r.get("status") in ("fail", "warn")]
-        summary = f"版本 {target_version} ({pf_disp}) 品質閘門觸發警告"
-        regression_reasons = reasons
     else:
-        title = f"ℹ️ Release Gate {gate_status.upper()}"
-        summary = f"版本 {target_version} ({pf_disp}) 品質閘門狀態：{gate_status}"
-        regression_reasons = []
+        icon = _SEVERITY_ICONS.get(str(alert_severity).strip().lower(), "ℹ️")
+        title = f"{icon} Release Gate {decision_status.upper()}"
+        summary = f"版本 {target_version} ({pf_disp}) 品質閘門 {decision_status.upper()}：{recommendation}"
+        regression_reasons = [str(r) for r in (eff_decision.get("reasons") or [])]
 
     # Build text lines
     lines: list[str] = [
@@ -96,6 +108,9 @@ def build_alert_message(
             lines.append(f"• {r}")
 
     lines.extend([
+        "",
+        f"Action: {action}",
+        f"Recommendation: {recommendation}",
         "",
         f"Policy: release-gate-v{policy_version}",
         f"Evaluated: {evaluated_at}",
@@ -124,6 +139,8 @@ def build_alert_message(
         dashboard_url=dashboard_url,
         thread_key=thread_key,
         text=text,
+        decision_action=action,
+        recommendation=recommendation,
     )
 
 
@@ -420,6 +437,8 @@ class AlertDispatcher:
                 evaluated_at=eval_at,
                 dashboard_url=policy.dashboard_url,
                 use_threads=policy.use_threads,
+                decision=pf_res.get("decision") or decision_from_gate_result(pf_res),
+                alert_severity=str((pf_res.get("alert") or {}).get("alert_severity", "none")),
             )
 
             if dry_run:
@@ -617,6 +636,8 @@ def dispatch_alerts_for_app(
                     evaluated_at=str(effective_artifact.get("generated_at", "")),
                     dashboard_url=effective_policy.dashboard_url,
                     use_threads=effective_policy.use_threads,
+                    decision=pf_data.get("decision") or decision_from_gate_result(pf_data),
+                    alert_severity=str((pf_data.get("alert") or {}).get("alert_severity", "none")),
                 )
                 print("\n      --- [Payload Preview] ---")
                 for line in preview_msg.text.splitlines():
