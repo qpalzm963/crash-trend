@@ -714,7 +714,14 @@ class TestStoreResilience(unittest.TestCase):
 
         try:
             # Observability layer should succeed in read-only mode without error
-            bundle = get_alert_observability_bundle("legacy-app", custom_path=legacy_db_path)
+            # 注入參考時間：本測試寫入的紀錄為硬編的 2026-09-08T10:00Z，
+            # 若改用系統時鐘，滾動 24 小時視窗會在 2026-09-09T10:00Z 後過期，
+            # 使斷言變成掛在時鐘上的定時炸彈（Issue #85）。
+            bundle = get_alert_observability_bundle(
+                "legacy-app",
+                custom_path=legacy_db_path,
+                now=dt.datetime(2026, 9, 8, 12, 0, 0, tzinfo=dt.UTC),
+            )
             self.assertEqual(bundle["health"]["status"], "healthy")
             self.assertEqual(bundle["health"]["sent_24h"], 1)
             self.assertEqual(len(bundle["recent"]), 1)
