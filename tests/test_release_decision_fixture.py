@@ -21,6 +21,7 @@ V3 Release Decision 首屏（#73）與其後續單子。它的內容不是任意
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import sys
 import unittest
@@ -33,6 +34,7 @@ sys.path.insert(0, str(ROOT))
 from crash_trend.build_dashboard import build_html
 from crash_trend.catalog.comparison import compute_previous_release_comparison
 from crash_trend.gate.decision import derive_decision
+from crash_trend.gate.history import compute_evaluation_key
 from crash_trend.gate.policy import GatePolicy
 from crash_trend.schema_v2 import (
     CANONICAL_DECISION_ACTIONS,
@@ -261,6 +263,267 @@ class TestComparisonMatchesObservations(unittest.TestCase):
                 )
                 checked += 1
         self.assertGreater(checked, 0, "no comparable release pairs found to verify")
+
+
+class TestTemporalConsistency(unittest.TestCase):
+    """時間一致性：fixture 描述的世界必須是 pipeline 真的能產生的世界。
+
+    這裡刻意把時間戳分成兩類，因為它們的約束不同 —— 用一條「任何時間戳都不得晚於
+    ``generated_at``」的通則會同時誤判 base fixture，那代表通則本身錯了：
+
+    * **觀測值**（``release_catalog[].first_seen`` / ``last_seen``、
+      ``top_issues[].first_seen_timestamp`` / ``last_seen_timestamp``、
+      breadcrumb / log 的 ``timestamp``）是「在觀測窗內看到了什麼」，
+      因此**不得晚於 ``period.end_time``**。反方向則不成立：release_catalog 與
+      issue 都是跨期保留的（#47），``first_seen`` 早於 ``period.start_time``
+      是正常的（base fixture 自己就有 2026-07-05 的 ``first_seen_timestamp``），
+      所以這裡**不**斷言 ``first_seen >= period.start_time``。
+    * **派生值**（``ai_summary.generated_at``、``sources[].last_sync_timestamp``、
+      ``release_gate.evaluated_at``）是「收完資料之後才算出來的」，本來就會晚於
+      ``generated_at``。base fixture 已經定義了這條慣例：14:00 收 BQ / sessions、
+      14:05 MCP 補件、14:10 AI 分析，本 fixture 的 gate 評估接在 14:15。
+      因此約束是「不早於 ``generated_at``、且落在一個有界的處理窗內」。
+
+    ``DERIVED_MARGIN`` 是那個有界窗。它不是為了寬鬆而寬鬆：一旦某個派生時間戳跨到
+    隔天（本單 review 抓到的正是 ``evaluated_at`` 晚了 12 小時），就不再是「處理延遲」
+    而是資料錯亂，必須被擋下來。
+    """
+
+    # 派生資料允許落後 generated_at 的上限；base fixture 用 +5 / +10 分鐘，gate 用 +15
+    DERIVED_MARGIN = dt.timedelta(minutes=30)
+
+    ALL_FIXTURES = (FIXTURE, *LEGACY_FIXTURES)
+
+    @staticmethod
+    def _ts(value: str) -> dt.datetime:
+        return dt.datetime.fromisoformat(value)
+
+    @staticmethod
+    def _observations(app: dict[str, Any]) -> list[tuple[str, str]]:
+        """回傳 (label, timestamp)：所有「被觀測到」的時間戳。"""
+        out: list[tuple[str, str]] = []
+        for item in app.get("release_catalog") or []:
+            label = f"release {item['version']} ({item['platform']})"
+            for field in ("first_seen", "last_seen"):
+                if isinstance(item.get(field), str):
+                    out.append((f"{label}.{field}", item[field]))
+        for issue in app.get("top_issues") or []:
+            label = f"issue {issue.get('issue_id')}"
+            for field in ("first_seen_timestamp", "last_seen_timestamp"):
+                if isinstance(issue.get(field), str):
+                    out.append((f"{label}.{field}", issue[field]))
+            detail = issue.get("detail") or {}
+            for bucket in ("breadcrumbs", "logs"):
+                for idx, entry in enumerate(detail.get(bucket) or []):
+                    if isinstance(entry, dict) and isinstance(entry.get("timestamp"), str):
+                        out.append((f"{label}.detail.{bucket}[{idx}].timestamp", entry["timestamp"]))
+        return out
+
+    @staticmethod
+    def _derived(app: dict[str, Any]) -> list[tuple[str, str]]:
+        """回傳 (label, timestamp)：所有「收完資料後才算出來」的時間戳。"""
+        out: list[tuple[str, str]] = []
+        summary_generated = (app.get("ai_summary") or {}).get("generated_at")
+        if isinstance(summary_generated, str):
+            out.append(("ai_summary.generated_at", summary_generated))
+        for name, source in (app.get("sources") or {}).items():
+            if isinstance(source, dict) and isinstance(source.get("last_sync_timestamp"), str):
+                out.append((f"sources.{name}.last_sync_timestamp", source["last_sync_timestamp"]))
+        for item in app.get("release_catalog") or []:
+            gate = item.get("release_gate")
+            if isinstance(gate, dict) and isinstance(gate.get("evaluated_at"), str):
+                out.append(
+                    (
+                        f"release {item['version']} ({item['platform']}).release_gate.evaluated_at",
+                        gate["evaluated_at"],
+                    )
+                )
+        return out
+
+    def test_no_observation_postdates_the_reporting_window(self) -> None:
+        """觀測值不得晚於觀測窗結束——不可能「看到」窗關掉之後才發生的事。
+
+        這是 review 抓到的核心錯誤：``last_seen`` 落在 9/3 凌晨，但這份 bundle 的觀測窗
+        9/2 14:00 就結束了。consumer 若照此開發，會以為「最新版還在持續回報」這個狀態
+        可以由 bundle 內的資料證明，實際上不行。
+        """
+        for path in self.ALL_FIXTURES:
+            bundle = json.loads(path.read_text(encoding="utf-8"))
+            for app_id, app in bundle.get("apps", {}).items():
+                end_time = app["period"]["end_time"]
+                for label, value in self._observations(app):
+                    with self.subTest(fixture=path.name, app=app_id, field=label):
+                        self.assertLessEqual(
+                            self._ts(value),
+                            self._ts(end_time),
+                            f"{path.name}:{app_id} {label}={value} is observed after the "
+                            f"reporting window closed at {end_time}",
+                        )
+
+    def test_first_seen_never_follows_last_seen(self) -> None:
+        """同一個實體不可能「最後一次出現」早於「第一次出現」。"""
+        for path in self.ALL_FIXTURES:
+            bundle = json.loads(path.read_text(encoding="utf-8"))
+            for app_id, app in bundle.get("apps", {}).items():
+                pairs: list[tuple[str, str | None, str | None]] = [
+                    (f"release {i['version']} ({i['platform']})", i.get("first_seen"), i.get("last_seen"))
+                    for i in app.get("release_catalog") or []
+                ]
+                pairs += [
+                    (
+                        f"issue {i.get('issue_id')}",
+                        i.get("first_seen_timestamp"),
+                        i.get("last_seen_timestamp"),
+                    )
+                    for i in app.get("top_issues") or []
+                ]
+                for label, first_seen, last_seen in pairs:
+                    if not isinstance(first_seen, str) or not isinstance(last_seen, str):
+                        continue
+                    with self.subTest(fixture=path.name, app=app_id, entity=label):
+                        self.assertLessEqual(
+                            self._ts(first_seen),
+                            self._ts(last_seen),
+                            f"{path.name}:{app_id} {label} first_seen={first_seen} "
+                            f"follows last_seen={last_seen}",
+                        )
+
+    def test_derived_timestamps_sit_in_a_bounded_processing_window(self) -> None:
+        """派生值可以晚於 ``generated_at``，但只能晚一小段處理時間。
+
+        上界存在的理由就是本單 review 的那筆錯誤：``evaluated_at`` 晚 12 小時、跨到隔天，
+        已經不是處理延遲而是資料錯亂。下界則擋掉「用還沒收到的資料算出結論」。
+        """
+        for path in self.ALL_FIXTURES:
+            bundle = json.loads(path.read_text(encoding="utf-8"))
+            generated_at = self._ts(bundle["generated_at"])
+            deadline = generated_at + self.DERIVED_MARGIN
+            for app_id, app in bundle.get("apps", {}).items():
+                for label, value in self._derived(app):
+                    with self.subTest(fixture=path.name, app=app_id, field=label):
+                        self.assertGreaterEqual(
+                            self._ts(value),
+                            generated_at,
+                            f"{path.name}:{app_id} {label}={value} precedes the bundle's "
+                            f"generated_at={bundle['generated_at']}",
+                        )
+                        self.assertLessEqual(
+                            self._ts(value),
+                            deadline,
+                            f"{path.name}:{app_id} {label}={value} is more than "
+                            f"{self.DERIVED_MARGIN} after generated_at="
+                            f"{bundle['generated_at']}; that is data corruption, "
+                            "not processing latency",
+                        )
+
+    def test_gate_is_never_evaluated_before_the_data_it_judges(self) -> None:
+        """gate 不可能在最後一次觀測之前就評估完那批觀測。"""
+        bundle = load_fixture()
+        for app_id, item in all_releases(bundle):
+            gate = item.get("release_gate")
+            if not isinstance(gate, dict) or not isinstance(gate.get("evaluated_at"), str):
+                continue
+            with self.subTest(app=app_id, version=item["version"], platform=item["platform"]):
+                self.assertGreaterEqual(
+                    self._ts(gate["evaluated_at"]),
+                    self._ts(item["last_seen"]),
+                    f"{app_id} {item['platform']} {item['version']} gate evaluated at "
+                    f"{gate['evaluated_at']} but its data was still arriving until "
+                    f"{item['last_seen']}",
+                )
+
+    def test_gate_history_is_strictly_chronological(self) -> None:
+        """timeline 要看得出狀態轉移，前提是每筆評估的時間嚴格遞增且互異。
+
+        ``transition.previous_status`` 是照這個順序算出來的；順序一亂，整條
+        pass -> warn -> fail 的敘事就跟資料脫鉤了。
+        """
+        for app_id, item in all_releases(load_fixture()):
+            history = item.get("gate_history") or []
+            if not history:
+                continue
+            stamps = [p["evaluated_at"] for p in history]
+            with self.subTest(app=app_id, version=item["version"], platform=item["platform"]):
+                self.assertEqual(
+                    stamps,
+                    sorted(stamps),
+                    f"{app_id} {item['platform']} {item['version']} gate_history is out of order: {stamps}",
+                )
+                self.assertEqual(
+                    len(set(stamps)),
+                    len(stamps),
+                    f"{app_id} {item['platform']} {item['version']} gate_history has "
+                    f"duplicate evaluated_at: {stamps}",
+                )
+
+    def test_latest_history_point_is_the_current_gate_evaluation(self) -> None:
+        """history 的最後一筆就是當前 gate，兩者若不同步，首屏顯示的狀態會和 timeline 尾端矛盾。"""
+        for app_id, item in all_releases(load_fixture()):
+            history = item.get("gate_history") or []
+            gate = item.get("release_gate")
+            if not history or not isinstance(gate, dict) or "evaluated_at" not in gate:
+                continue
+            with self.subTest(app=app_id, version=item["version"], platform=item["platform"]):
+                self.assertEqual(
+                    history[-1]["evaluated_at"],
+                    gate["evaluated_at"],
+                    f"{app_id} {item['platform']} {item['version']} timeline ends at "
+                    f"{history[-1]['evaluated_at']} but the gate claims {gate['evaluated_at']}",
+                )
+                self.assertEqual(
+                    history[-1]["gate_status"],
+                    gate["status"],
+                    f"{app_id} {item['platform']} {item['version']} timeline ends in "
+                    f"{history[-1]['gate_status']} but the gate reports {gate['status']}",
+                )
+
+    def test_history_evaluation_keys_match_their_timestamps(self) -> None:
+        """``evaluation_key`` 是 (app, platform, version, evaluated_at, policy) 的雜湊。
+
+        所以搬動 ``evaluated_at`` 時它必須一起重算，不能留著舊 key —— 舊 key 會讓
+        history store 的 idempotency 判斷指向一筆不存在的評估。這條斷言就是為了讓
+        「只改時間戳、忘了重算 key」這種修法必然失敗。
+        """
+        checked = 0
+        for app_id, item in all_releases(load_fixture()):
+            for point in item.get("gate_history") or []:
+                expected = compute_evaluation_key(
+                    app_id,
+                    item["platform"],
+                    item["version"],
+                    point["evaluated_at"],
+                    point["policy_version"],
+                    point["policy_identity"],
+                )
+                self.assertEqual(
+                    point["evaluation_key"],
+                    expected,
+                    f"{app_id} {item['platform']} {item['version']} history point "
+                    f"{point['evaluated_at']} carries a stale evaluation_key",
+                )
+                checked += 1
+        self.assertGreater(checked, 0, "no gate_history points found to verify")
+
+    def test_catalog_keeps_a_release_predating_the_reporting_window(self) -> None:
+        """release_catalog 是跨期保留的（#47），因此必須留著一筆 ``first_seen`` 早於
+        ``period.start_time`` 的 release。
+
+        這筆資料同時是上面那條「觀測值只有上界、沒有下界」的理由：若哪天有人把
+        ``first_seen >= period.start_time`` 也加進 invariant，這個案例會立刻告訴他
+        那條規則會誤殺長期存在的 release。
+        """
+        bundle = load_fixture()
+        predating = [
+            (app_id, item["version"], item["platform"])
+            for app_id, app in bundle.get("apps", {}).items()
+            for item in app.get("release_catalog") or []
+            if item["first_seen"] < app["period"]["start_time"]
+        ]
+        self.assertTrue(
+            predating,
+            "fixture must keep at least one release first seen before the reporting window, "
+            "otherwise the persistent-catalog case (#47) loses its coverage",
+        )
 
 
 class TestLegacyFixturesKeepBackwardCompatibilityBaseline(unittest.TestCase):
