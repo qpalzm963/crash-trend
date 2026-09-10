@@ -11,10 +11,14 @@ from crash_trend.dashboard import navigation
 from crash_trend.gate.artifact import validate_release_gate_artifact
 from crash_trend.gate.decision import _DECISION_TABLE
 from crash_trend.gate.history import ReleaseGateHistoryStore, compute_evaluation_key
+from crash_trend.gate.metric_rules import COMPARISON_METRIC_SPECS
 from crash_trend.lifecycle import IssueHistoricalCatalog, is_version_sample_sufficient
 from crash_trend.schema_v2 import (
+    COMPARISON_THRESHOLD_SOURCE,
     SUPPORTED_SCHEMA_VERSIONS,
+    VALID_COMPARISON_CLASSIFICATIONS,
     VALID_DECISION_ACTIONS,
+    validate_comparison_metric_evaluations,
     validate_historical_catalog,
     validate_release_decision,
 )
@@ -260,6 +264,48 @@ class TestDocsContracts(unittest.TestCase):
         self.assertIsNotNone(dec_match, "ReleaseGateArtifact example must embed a decision object")
         assert dec_match is not None
         self.assertEqual(validate_release_decision(json.loads(dec_match.group(1))), [])
+
+    def test_comparison_metric_contract_documented_matches_implementation(self) -> None:
+        """Verifies docs document the gate-aligned comparison metric contract (Issue #74).
+
+        文件是這個契約的對外面：consumer 依它決定「門檻從哪裡來」以及「classification
+        能不能被拿去當 release 結論」。因此除了欄位表，也把「唯一門檻來源」與
+        「唯一判定原語」這兩條規則綁進斷言——它們一旦在實作裡漂移，文件就不再成立。
+        """
+        self.assertIn("#### `ComparisonMetricEvaluation`", self.schema_doc_text)
+
+        # 每個 spec 的三個綁定（metric / rule / policy 欄位）都必須在文件裡出現。
+        for spec in COMPARISON_METRIC_SPECS:
+            with self.subTest(metric=spec.metric_name):
+                self.assertIn(f"`{spec.metric_name}`", self.schema_doc_text)
+                self.assertIn(f"`{spec.rule_name}`", self.schema_doc_text)
+
+        # 文件化的 classification enum 必須與 validator 一致。
+        for classification in sorted(VALID_COMPARISON_CLASSIFICATIONS):
+            with self.subTest(classification=classification):
+                self.assertIn(f'"{classification}"', self.schema_doc_text)
+
+        # 門檻的唯一來源與唯一判定原語都必須被寫明。
+        self.assertIn(COMPARISON_THRESHOLD_SOURCE, self.schema_doc_text)
+        self.assertIn("COMPARISON_THRESHOLD_SOURCE", self.schema_doc_text)
+        self.assertIn("classify_threshold_breach", self.schema_doc_text)
+        self.assertIn("COMPARISON_METRIC_SPECS", self.schema_doc_text)
+        self.assertIn("crash_trend/gate/metric_rules.py", self.schema_doc_text)
+        # V3 不建立統計 baseline（#76）這個定案必須留在文件上。
+        self.assertIn("#76", self.schema_doc_text)
+
+        # 文件裡的範例必須通過真正的 validator。
+        ev_match = re.search(
+            r"#### `ComparisonMetricEvaluation`.*?```json\s+(\{.*?\})\s+```",
+            self.schema_doc_text,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(ev_match, "ComparisonMetricEvaluation 必須附一段 JSON 範例")
+        assert ev_match is not None
+        self.assertNotIn("...", ev_match.group(1))
+        errors: list[str] = []
+        validate_comparison_metric_evaluations([json.loads(ev_match.group(1))], errors)
+        self.assertEqual(errors, [], f"文件範例未通過 validator: {errors}")
 
     def test_gate_history_ddl_and_evaluation_key_contracts(self) -> None:
         """Verifies Gate History SQLite DDL and evaluation_key formula match implementations."""
