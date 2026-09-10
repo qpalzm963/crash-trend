@@ -917,6 +917,82 @@ def validate_issue_occurrence_summary(timeline: Any, errors: list[str], p: str =
         errors.append(f"{p}occurrence_timeline.daily must be a list")
 
 
+def _validate_comparison_metric_semantics(
+    ev: dict[str, Any],
+    errors: list[str],
+    ep: str,
+) -> None:
+    """Rejects a type-valid but semantically self-contradictory evaluation (Issue #74).
+
+    lazy import：canonical 的 metric/rule/direction 綁定與判定原語都只定義於
+    `crash_trend.gate.metric_rules`，而該模組匯入本模組的 TypedDict。把 import 放在
+    函式內即可共用同一份定義而不產生 package 迴圈（與 `catalog/comparison.py` 匯入
+    gate 的既有做法一致）。這裡刻意**不**在 schema 端複製 spec 表或門檻判定——
+    複製出來的那一份就是第二套判定引擎。
+    """
+    from crash_trend.gate.metric_rules import (
+        classification_implied_by_payload,
+        spec_for_metric,
+    )
+
+    classification = ev.get("classification")
+
+    # canonical 配對：自稱門檻來自 release gate policy 的指標，必須真的是 gate 評估的
+    # 那四項，且 rule_name / direction 與 spec 表一致——否則任意指標都能借用這個來源。
+    if ev.get("threshold_source") == COMPARISON_THRESHOLD_SOURCE:
+        spec = spec_for_metric(ev.get("metric_name"))
+        if spec is None:
+            errors.append(
+                f"{ep}metric_name must be one of the canonical comparison metrics "
+                f"when threshold_source is '{COMPARISON_THRESHOLD_SOURCE}'"
+            )
+        else:
+            if ev.get("rule_name") != spec.rule_name:
+                errors.append(
+                    f"{ep}rule_name must be '{spec.rule_name}' for metric '{spec.metric_name}'"
+                )
+            if ev.get("direction") != spec.direction:
+                errors.append(
+                    f"{ep}direction must be '{spec.direction}' for metric '{spec.metric_name}'"
+                )
+            if ev.get("zero_baseline") is True and spec.zero_baseline_field is None:
+                errors.append(
+                    f"{ep}zero_baseline must be false for metric '{spec.metric_name}' "
+                    "which has no zero-baseline concept"
+                )
+
+    # 反推 classification 需要以下欄位都型別合法；否則上面已經報過型別錯誤，
+    # 這裡再報一次只是噪音。
+    change = ev.get("change")
+    warn_t = ev.get("warn_threshold")
+    fail_t = ev.get("fail_threshold")
+    if classification not in VALID_COMPARISON_CLASSIFICATIONS:
+        return
+    if ev.get("direction") not in {"increase", "decrease"}:
+        return
+    if change is None:
+        # 「無資料必為 skip」由呼叫端那條專屬檢查負責，訊息也更明確；在這裡再推一次
+        # 只會讓同一個矛盾報兩行。
+        return
+    if not isinstance(change, (int, float)):
+        return
+    if not isinstance(warn_t, (int, float)) or not isinstance(fail_t, (int, float)):
+        return
+    if not isinstance(ev.get("zero_baseline"), bool):
+        return
+
+    implied = classification_implied_by_payload(
+        ev["direction"], change, warn_t, fail_t, bool(ev["zero_baseline"])
+    )
+    if classification != implied:
+        errors.append(
+            f"{ep}classification '{classification}' contradicts its own "
+            f"change={change}, direction={ev['direction']}, warn_threshold={warn_t}, "
+            f"fail_threshold={fail_t}, zero_baseline={ev['zero_baseline']} "
+            f"(implies '{implied}')"
+        )
+
+
 def validate_comparison_metric_evaluations(
     evaluations: Any,
     errors: list[str],
@@ -926,6 +1002,23 @@ def validate_comparison_metric_evaluations(
 
     `threshold_source` 被限制成單一合法值，因此「comparison 的門檻其實來自別的地方」
     這件事無法悄悄通過 validation——那正是本單要防的矛盾來源。
+
+    型別與 enum 之外，**classification 的語意**也在這裡驗：一筆 evaluation 同時帶著
+    `change` / `direction` / `warn_threshold` / `fail_threshold` / `zero_baseline`，
+    因此它宣稱的 `classification` 是可被反推驗證的。Dashboard 刻意只信任
+    `classification`、不在前端重算，所以型別合法但語意矛盾的 bundle
+    （例如 `change=0.90` 卻宣稱 `pass`）若在此放行，就會被畫成綠色「正常」——
+    與 #72 修過的 `gate_status=fail` + `decision.status=pass` 是同一類失敗。
+    以下四種矛盾一律拒絕：
+
+    1. `change` 為 `null` 卻不是 `skip`（沒有觀測資料不得被當成判定）；
+    2. `change` 有值卻宣稱 `skip`；
+    3. `zero_baseline` 為真卻不是 `fail`，或該指標根本沒有零基準概念；
+    4. classification 與 `change` / `direction` / 兩個門檻推出的結果不一致。
+
+    反推一律呼叫 gate 的同一個判定原語（`classify_threshold_breach`），validator
+    不長出第二套 threshold engine；canonical 的
+    `metric_name -> rule_name -> direction` 配對也只讀 `COMPARISON_METRIC_SPECS`。
     """
     if not isinstance(evaluations, list):
         errors.append(f"{p}metric_evaluations must be a list or null")
@@ -974,6 +1067,8 @@ def validate_comparison_metric_evaluations(
 
         if ev.get("change") is None and ev.get("classification") != "skip":
             errors.append(f"{ep}classification must be 'skip' when change is null")
+
+        _validate_comparison_metric_semantics(ev, errors, ep)
 
 
 def validate_release_catalog(catalog: Any, errors: list[str], p: str = "") -> None:

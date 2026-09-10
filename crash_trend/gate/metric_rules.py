@@ -119,6 +119,47 @@ COMPARISON_METRIC_SPECS: tuple[ComparisonMetricSpec, ...] = (
 )
 
 
+#: `metric_name` -> spec。canonical 的 `metric_name -> rule_name -> direction` 配對
+#: 只有這一份；contract validation 也讀它，因此「某個指標自稱來自 release_gate_policy
+#: 卻不是 gate 評估的指標」在 artifact 邊界就會被拒絕。
+_SPECS_BY_METRIC: dict[str, ComparisonMetricSpec] = {
+    spec.metric_name: spec for spec in COMPARISON_METRIC_SPECS
+}
+
+
+def spec_for_metric(metric_name: Any) -> ComparisonMetricSpec | None:
+    """查 canonical spec；不是 canonical comparison metric 時回 `None`。"""
+    if not isinstance(metric_name, str):
+        return None
+    return _SPECS_BY_METRIC.get(metric_name)
+
+
+def classification_implied_by_payload(
+    direction: Any,
+    change: float | int | None,
+    warn_threshold: float | int,
+    fail_threshold: float | int,
+    zero_baseline: bool,
+) -> MetricClassification:
+    """由一筆 evaluation **自己攜帶的欄位**反推 classification。
+
+    這是給 contract validation 用的：一筆 `ComparisonMetricEvaluation` 同時帶著
+    `change` / `direction` / `warn_threshold` / `fail_threshold` / `zero_baseline`
+    與 `classification`，因此那個 classification 是可被驗證的，不必信任產生它的人。
+    Dashboard 刻意只信任 `classification`、不在前端重算，所以這道驗證必須發生在
+    artifact 邊界——否則型別合法但語意矛盾的 bundle 會被畫成綠色「正常」。
+
+    仍舊呼叫同一個 `classify_threshold_breach()`：validator 不長出第二套判定引擎，
+    它只是把 payload 的欄位餵回同一個原語。`policy` 不參與——bundle 可能帶著
+    app 自訂 policy 的門檻，因此可驗證的是**自我一致性**，而非門檻等於預設值。
+    """
+    if change is None:
+        return "skip"
+    sign = 1 if direction == "increase" else -1
+    rule = ThresholdRule(warn=sign * warn_threshold, fail=sign * fail_threshold)
+    return classify_threshold_breach(sign * change, rule, zero_baseline=zero_baseline)
+
+
 def threshold_rule_for(spec: ComparisonMetricSpec, policy: GatePolicy) -> ThresholdRule:
     """取出 spec 對應的 policy threshold。找不到欄位就是 spec 表寫錯，直接炸。"""
     rule = getattr(policy, spec.policy_field)

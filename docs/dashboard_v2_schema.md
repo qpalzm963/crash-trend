@@ -621,7 +621,7 @@ Previous Release Comparison 之**逐項指標門檻判定**（Issue #74）。涵
   "rule_name": "anr_rate_regression",
   "label": "ANR 率",
   "direction": "increase",
-  "change": 0.34,
+  "change": 0.14,
   "classification": "warn",
   "warn_threshold": 0.1,
   "fail_threshold": 0.25,
@@ -629,7 +629,7 @@ Previous Release Comparison 之**逐項指標門檻判定**（Issue #74）。涵
   "threshold_source": "release_gate_policy",
   "policy_version": "1.0",
   "zero_baseline": false,
-  "reason": "ANR 率變動 +34.00%，達到警告門檻 (+10.00%)"
+  "reason": "ANR 率變動 +14.00%，達到警告門檻 (+10.00%)"
 }
 ```
 
@@ -639,7 +639,7 @@ Previous Release Comparison 之**逐項指標門檻判定**（Issue #74）。涵
 | `rule_name` | string | 是 | 對應的 Gate rule 名，供追溯 | `"anr_rate_regression"` |
 | `label` | string | 是 | 顯示名（繁體中文） | `"ANR 率"` |
 | `direction` | string | 是 | `"increase"`（數值越大越差）或 `"decrease"`（越小越差） | `"increase"` |
-| `change` | number \| null | 是 | 變化量；`null` 代表無比較資料 | `0.34` |
+| `change` | number \| null | 是 | 變化量；`null` 代表無比較資料 | `0.14` |
 | `classification` | string | 是 | `"pass"`, `"warn"`, `"fail"`, `"skip"` | `"warn"` |
 | `warn_threshold` | number | 是 | 警告門檻，與 `change` 同方向（下降型指標為負值） | `0.1` |
 | `fail_threshold` | number | 是 | 失敗門檻，與 `change` 同方向 | `0.25` |
@@ -647,7 +647,7 @@ Previous Release Comparison 之**逐項指標門檻判定**（Issue #74）。涵
 | `threshold_source` | string | 是 | 門檻來源，固定為 `"release_gate_policy"` | `"release_gate_policy"` |
 | `policy_version` | string | 是 | 產生該門檻的 `GatePolicy.policy_version` | `"1.0"` |
 | `zero_baseline` | boolean | 是 | 前版基準為 0 事件而本版出現事件（零基準退化，直接判 `fail`） | `false` |
-| `reason` | string | 是 | 判定原因（繁體中文） | `"ANR 率變動 +34.00%，達到警告門檻 (+10.00%)"` |
+| `reason` | string | 是 | 判定原因（繁體中文） | `"ANR 率變動 +14.00%，達到警告門檻 (+10.00%)"` |
 
 **涵蓋的四項指標，以及其 Gate rule 與 `GatePolicy` 門檻欄位的綁定**（唯一定義於 `crash_trend/gate/metric_rules.py` 之 `COMPARISON_METRIC_SPECS`）：
 
@@ -661,6 +661,7 @@ Previous Release Comparison 之**逐項指標門檻判定**（Issue #74）。涵
 - **門檻唯一來源是 Release Gate policy**：`threshold_source` 只有一個合法值 `release_gate_policy`（定義於 `crash_trend/schema_v2.py` 之 `COMPARISON_THRESHOLD_SOURCE`），值不符者 validation 直接拒絕。V3 **不建立** historical mean/σ、percentile 或 rolling variance baseline（該項屬 backlog #76）；因此同一個指標不可能存在兩套門檻。
 - **判定唯一原語**：`classify_threshold_breach()`（`crash_trend/gate/metric_rules.py`）為 threshold 判定的唯一實作，由 `crash_trend/gate/evaluator.py` 與 `crash_trend/catalog/comparison.py` 共用。`metric_name -> rule_name -> GatePolicy` 欄位的綁定唯一定義於同檔的 `COMPARISON_METRIC_SPECS`。因此「Gate 判 PASS 但 comparison 顯示異常」在結構上不可能發生；`tests/test_overview_comparison.py` 另以逐一比對 `classification == rule_results[].status` 反向把關。
 - **classification 與 release 層級判定分離**：`classification` 是**單一指標**對門檻的判定，刻意不命名為 `status`。Release 層級的建議與行動只有一個來源 `release_gate.decision`（Issue #72），consumer 不得由 `metric_evaluations` 反推 release 結論。
+- **classification 必須自我一致（validation 強制）**：每筆 evaluation 同時帶著 `change` / `direction` / `warn_threshold` / `fail_threshold` / `zero_baseline`，因此它宣稱的 `classification` 是可被反推驗證的。Validation 會用**同一個** `classify_threshold_breach()` 把這些欄位餵回去反推，並拒絕以下矛盾：`change` 為 `null` 卻不是 `skip`、`change` 有值卻宣稱 `skip`、`zero_baseline` 為真卻不是 `fail`（或該指標本無零基準概念）、以及 classification 與 `change`／`direction`／門檻推出的結果不一致（例如 `change=0.90` 搭 `warn=0.10`／`fail=0.25` 卻宣稱 `pass`）。`metric_name -> rule_name -> direction` 的配對亦須與 `COMPARISON_METRIC_SPECS` 相符，任意指標不得自稱門檻來自 `release_gate_policy`。呈現端只信任 `classification`、不在前端重算，因此這道保證必須在 artifact 邊界成立。
 - **`skip` 不等於正常**：`change` 為 `null` 時 `classification` 必為 `"skip"`（validation 強制），呈現端亦不得與 `pass` 同色——沒有觀測資料不是綠燈。
 - **前端不得硬編門檻數字**：門檻的數值與其排版字串均來自本契約；Dashboard 比較面 JS 不含任何門檻數值、也不做任何門檻比較。`tests/test_overview_comparison.py` 以機械式掃描產出的 JS 字面值把關該保證。
 - **Crash-free 指標為 users 而非 sessions**：Gate policy 只提供 `crash_free_users_drop` 一組門檻，`vs_previous` 亦只提供 `crash_free_users_diff`。為避免新增第二個門檻設定面，本契約的 Crash-free 項採用 crash-free **users**。

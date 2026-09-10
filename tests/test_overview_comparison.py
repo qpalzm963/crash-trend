@@ -46,6 +46,7 @@ from crash_trend.gate.policy import GatePolicy, ThresholdRule
 from crash_trend.schema_v2 import (
     COMPARISON_THRESHOLD_SOURCE,
     validate_dashboard_v2,
+    validate_release_catalog,
 )
 from tests.test_dashboard_deep_link import NODE_RUNNER
 
@@ -93,6 +94,53 @@ def make_release_item(vs_previous: dict[str, Any]) -> dict[str, Any]:
             **vs_previous,
         },
     }
+
+
+#: 讓 `validate_release_catalog()` 除了 metric_evaluations 之外零錯誤的最小 catalog item。
+#: 與 `make_release_item()` 分開：那個是給 gate evaluator 走完六條 rule 用的，
+#: 這個是給 contract validation 用的，兩者的必填欄位不同。
+def make_catalog_item_for_validation(
+    evaluations: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "version": "9.9.9",
+        "platform": "android",
+        "status": "latest",
+        "lifetime_crashes": 0,
+        "lifetime_issues": 0,
+        "lifetime_affected_users": 0,
+        "lifetime_fatal": 0,
+        "lifetime_anr": 0,
+        "recent_health": {
+            "30d": {"crash_events": 0, "affected_users": 0, "sample_sufficient": True}
+        },
+        "vs_previous": {
+            "previous_version": "9.9.8",
+            "stability": "stable",
+            "metric_evaluations": evaluations,
+        },
+    }
+
+
+def make_evaluation(metric_name: str, /, **overrides: Any) -> dict[str, Any]:
+    """從 production producer 的輸出出發，再覆寫成要測的形狀。
+
+    刻意不手寫整個 payload：negative 測試的基底必須是「真的合法」的那一份，
+    否則斷言到的可能是自己手寫錯的欄位，而不是要驗的那個矛盾。
+    """
+    evals = build_comparison_metric_evaluations(
+        {
+            "crash_rate_change_pct": 0.0,
+            "fatal_rate_change_pct": 0.0,
+            "anr_rate_change_pct": 0.0,
+            "crash_free_users_diff": 0.0,
+        },
+        GatePolicy(),
+    )
+    base = next(dict(ev) for ev in evals if ev["metric_name"] == metric_name)
+    # positional-only：`metric_name` 也可以被覆寫掉（用來測「自創指標」）。
+    base.update(overrides)
+    return base
 
 
 class TestSpecTableBindsEveryRequiredMetricToAGateRule(unittest.TestCase):
@@ -315,6 +363,192 @@ class TestClassificationAgreesWithTheGateVerdict(unittest.TestCase):
                         self.assertEqual(ev["classification"], gate_status)
                     checked += 1
         self.assertGreater(checked, 0, "fixture 中沒有可比對的 metric，覆蓋面已消失")
+
+
+class TestValidationRejectsAContradictoryClassification(unittest.TestCase):
+    """classification 的語意保證必須在 **artifact 邊界**成立（#95 review）。
+
+    產生端與 gate 共用判定原語，只保證「我們產出的 bundle」自我一致；但契約的消費端
+    看到的是一份檔案，而 Dashboard 刻意只信任 `classification`、不在前端重算。因此
+    一筆型別完全合法、語意互相矛盾的 evaluation（`change=0.90` 卻宣稱 `pass`）若能
+    通過 validation，就會被畫成綠色「正常」——失敗模式與 #72 修過的
+    `gate_status=fail` + `decision.status=pass` 同一類。這個類別把那道邊界釘住。
+    """
+
+    def _errors(self, evaluations: list[dict[str, Any]]) -> list[str]:
+        errors: list[str] = []
+        validate_release_catalog([make_catalog_item_for_validation(evaluations)], errors)
+        return errors
+
+    def test_the_validation_harness_itself_reports_nothing_on_valid_data(self) -> None:
+        """前提測試：producer 的輸出在這個 harness 上零錯誤。
+
+        沒有這條，下面每一條 negative 斷言都可能只是抓到 harness 自己的雜訊。
+        """
+        evals = build_comparison_metric_evaluations(
+            {
+                "crash_rate_change_pct": 0.15,
+                "fatal_rate_change_pct": 0.0,
+                "anr_rate_change_pct": None,
+                "crash_free_users_diff": -0.05,
+            },
+            GatePolicy(),
+        )
+        self.assertEqual(self._errors([dict(ev) for ev in evals]), [])
+
+    def test_a_type_valid_but_contradictory_classification_is_rejected(self) -> None:
+        """review 提出的那筆 payload：欄位型別全合法，判定卻與自己的門檻矛盾。"""
+        errors = self._errors([
+            make_evaluation(
+                "anr_rate_change_pct",
+                change=0.90,
+                classification="pass",
+                reason="ANR 率變動 +90.00% 於正常範圍",
+            )
+        ])
+        self.assertTrue(errors, "change=0.90 搭 fail_threshold=0.25 卻宣稱 pass 必須被拒絕")
+        self.assertTrue(
+            any("classification 'pass' contradicts" in e for e in errors),
+            f"錯誤訊息未指出 classification 矛盾：{errors}",
+        )
+
+    def test_a_present_change_cannot_claim_skip(self) -> None:
+        """`skip` 的語意是「沒有比較資料」，不是「不想判定」。"""
+        errors = self._errors([
+            make_evaluation("crash_rate_change_pct", change=0.5, classification="skip")
+        ])
+        self.assertTrue(any("skip" in e and "contradicts" in e for e in errors), errors)
+
+    def test_a_null_change_must_be_skip(self) -> None:
+        errors = self._errors([
+            make_evaluation("crash_rate_change_pct", change=None, classification="pass")
+        ])
+        self.assertTrue(
+            any("must be 'skip' when change is null" in e for e in errors), errors
+        )
+
+    def test_zero_baseline_must_be_fail(self) -> None:
+        """零基準退化在 gate 是直接 fail；bundle 不得把它降級成 warn。"""
+        errors = self._errors([
+            make_evaluation(
+                "anr_rate_change_pct", change=1.0, zero_baseline=True, classification="warn"
+            )
+        ])
+        self.assertTrue(any("implies 'fail'" in e for e in errors), errors)
+
+    def test_zero_baseline_is_rejected_for_a_metric_that_has_no_such_concept(self) -> None:
+        """無崩潰用戶率沒有「前版基準 0 事件」這回事（spec 的 zero_baseline_field 為 None）。"""
+        errors = self._errors([
+            make_evaluation(
+                "crash_free_users_diff",
+                change=-0.05,
+                zero_baseline=True,
+                classification="fail",
+            )
+        ])
+        self.assertTrue(
+            any("zero_baseline must be false" in e for e in errors),
+            f"crash_free_users_diff 不該能宣稱零基準退化：{errors}",
+        )
+
+    def test_a_decrease_metric_contradiction_is_rejected(self) -> None:
+        """下降型指標的門檻存負值，方向搞錯就會把 -5% 的下降說成正常。"""
+        errors = self._errors([
+            make_evaluation(
+                "crash_free_users_diff", change=-0.05, classification="pass"
+            )
+        ])
+        self.assertTrue(any("implies 'fail'" in e for e in errors), errors)
+
+    def test_a_decrease_metric_that_is_genuinely_consistent_is_accepted(self) -> None:
+        """正向對照：同一個下降型指標判對了就必須放行，validator 不是一律拒絕。"""
+        self.assertEqual(
+            self._errors([
+                make_evaluation(
+                    "crash_free_users_diff", change=-0.05, classification="fail"
+                )
+            ]),
+            [],
+        )
+        self.assertEqual(
+            self._errors([
+                make_evaluation(
+                    "crash_free_users_diff", change=-0.001, classification="pass"
+                )
+            ]),
+            [],
+        )
+
+    def test_rule_name_must_match_the_canonical_metric_binding(self) -> None:
+        errors = self._errors([
+            make_evaluation("anr_rate_change_pct", rule_name="crash_rate_regression")
+        ])
+        self.assertTrue(
+            any("rule_name must be 'anr_rate_regression'" in e for e in errors), errors
+        )
+
+    def test_direction_must_match_the_canonical_metric_binding(self) -> None:
+        errors = self._errors([
+            make_evaluation("anr_rate_change_pct", direction="decrease")
+        ])
+        self.assertTrue(
+            any("direction must be 'increase'" in e for e in errors), errors
+        )
+
+    def test_an_unknown_metric_cannot_claim_the_gate_policy_as_its_source(self) -> None:
+        """否則任何自創指標都能借用 `release_gate_policy` 的權威。"""
+        errors = self._errors([
+            make_evaluation("anr_rate_change_pct", metric_name="made_up_metric")
+        ])
+        self.assertTrue(
+            any("canonical comparison metrics" in e for e in errors), errors
+        )
+
+    def test_a_contradiction_inside_a_real_bundle_is_rejected(self) -> None:
+        """同一條保證要在 `validate_dashboard_v2()` 這一層也成立。"""
+        bundle = json.loads(FIXTURE.read_text(encoding="utf-8"))
+        self.assertEqual(validate_dashboard_v2(bundle), [], "fixture 前提：未被破壞前是乾淨的")
+
+        corrupted = copy.deepcopy(bundle)
+        patched = False
+        for app in corrupted.get("apps", {}).values():
+            for item in app.get("release_catalog") or []:
+                vp = item.get("vs_previous")
+                if not isinstance(vp, dict):
+                    continue
+                for ev in vp.get("metric_evaluations") or []:
+                    if ev["classification"] in ("warn", "fail"):
+                        ev["classification"] = "pass"
+                        patched = True
+                        break
+                if patched:
+                    break
+            if patched:
+                break
+        self.assertTrue(patched, "fixture 裡沒有 warn/fail 指標，這個測試已失去覆蓋面")
+
+        errors = validate_dashboard_v2(corrupted)
+        self.assertTrue(errors, "被降級成 pass 的指標必須被 validate_dashboard_v2 拒絕")
+        self.assertTrue(any("metric_evaluations" in e for e in errors), errors)
+
+    def test_every_producer_output_passes_the_semantic_validator(self) -> None:
+        """反向把關：validator 不得拒絕產生端的合法輸出。
+
+        共用 `TestClassificationAgreesWithTheGateVerdict` 的案例與 policy 組合
+        （含自訂門檻、邊界值、零基準、完全無資料），因此一旦 validator 的反推與
+        producer 的判定漂移成兩套規則，這裡就會紅——它是「不要長出第二套判定引擎」
+        這件事的哨兵。
+        """
+        agreement = TestClassificationAgreesWithTheGateVerdict
+        checked = 0
+        for policy_name, policy in agreement.POLICIES:
+            for case_name, vs_previous in agreement.CASES:
+                item = make_release_item(vs_previous)
+                evals = build_comparison_metric_evaluations(item["vs_previous"], policy)
+                with self.subTest(policy=policy_name, case=case_name):
+                    self.assertEqual(self._errors([dict(ev) for ev in evals]), [])
+                checked += 1
+        self.assertGreater(checked, 0, "沒有任何案例被驗證，這個測試沒有鑑別力")
 
 
 class TestNoThresholdNumberIsHardcodedInTheEmittedJs(unittest.TestCase):

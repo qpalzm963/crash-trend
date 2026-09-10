@@ -36,9 +36,11 @@ from crash_trend.gate.metric_rules import (
     ComparisonMetricSpec,
     MetricClassification,
     build_comparison_metric_evaluations,
+    classification_implied_by_payload,
     classify_threshold_breach,
     evaluate_comparison_metric,
     format_threshold_display,
+    spec_for_metric,
     threshold_rule_for,
 )
 from crash_trend.gate.policy import (
@@ -68,6 +70,7 @@ __all__ = [
     "ThresholdRule",
     "build_comparison_metric_evaluations",
     "classify_gate_transition",
+    "classification_implied_by_payload",
     "classify_threshold_breach",
     "decision_from_gate_result",
     "derive_decision",
@@ -80,6 +83,7 @@ __all__ = [
     "load_gate_policy_from_file",
     "load_release_gate_artifact",
     "save_release_gate_artifact",
+    "spec_for_metric",
     "threshold_rule_for",
     "validate_release_gate_artifact",
 ]

@@ -289,6 +289,8 @@ class TestDocsContracts(unittest.TestCase):
         self.assertIn(COMPARISON_THRESHOLD_SOURCE, self.schema_doc_text)
         self.assertIn("COMPARISON_THRESHOLD_SOURCE", self.schema_doc_text)
         self.assertIn("classify_threshold_breach", self.schema_doc_text)
+        # classification 的語意由 validation 強制（而非僅型別）這件事必須在文件上。
+        self.assertIn("classification 必須自我一致", self.schema_doc_text)
         self.assertIn("COMPARISON_METRIC_SPECS", self.schema_doc_text)
         self.assertIn("crash_trend/gate/metric_rules.py", self.schema_doc_text)
         # V3 不建立統計 baseline（#76）這個定案必須留在文件上。
@@ -303,9 +305,24 @@ class TestDocsContracts(unittest.TestCase):
         self.assertIsNotNone(ev_match, "ComparisonMetricEvaluation 必須附一段 JSON 範例")
         assert ev_match is not None
         self.assertNotIn("...", ev_match.group(1))
+        example = json.loads(ev_match.group(1))
         errors: list[str] = []
-        validate_comparison_metric_evaluations([json.loads(ev_match.group(1))], errors)
+        validate_comparison_metric_evaluations([example], errors)
         self.assertEqual(errors, [], f"文件範例未通過 validator: {errors}")
+
+        # 文件範例的 classification 不是裝飾：改成任何其他值都必須被 validator 拒絕。
+        # 這同時把「classification 的語意由 validation 強制」這條文件敘述釘在行為上，
+        # 而不只是釘在字串上。
+        for other in sorted(VALID_COMPARISON_CLASSIFICATIONS - {example["classification"]}):
+            with self.subTest(classification=other):
+                contradicted = {**example, "classification": other}
+                errs: list[str] = []
+                validate_comparison_metric_evaluations([contradicted], errs)
+                self.assertTrue(
+                    errs,
+                    f"把文件範例的 classification 改成 {other} 仍通過 validation，"
+                    "文件宣稱的語意保證並不存在",
+                )
 
     def test_gate_history_ddl_and_evaluation_key_contracts(self) -> None:
         """Verifies Gate History SQLite DDL and evaluation_key formula match implementations."""
