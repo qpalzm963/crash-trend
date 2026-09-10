@@ -376,6 +376,8 @@ function openReleaseDetail(ver, pf) {
 
   curDetailVersion = ver;
   curDetailPlatform = pf || item.platform;
+  // 回報 route context，讓 URL 保持可分享 / 可 deep link 還原 (#78)；URL 讀寫仍只在 navigation 模組內。
+  setRouteContext({ platform: curDetailPlatform || null, version: curDetailVersion || null });
   const winKeys = Object.keys(item.recent_health || {});
   curDetailWindow = (item.recent_health && item.recent_health[curPeriodDays + "d"]) ? (curPeriodDays + "d") : (winKeys.includes("30d") ? "30d" : (winKeys[0] || "30d"));
 
@@ -409,6 +411,8 @@ function openReleaseDetail(ver, pf) {
 function closeReleaseDetail() {
   const modal = $("releaseDetailModal");
   if (modal) modal.classList.remove("active");
+  // 關閉詳情後 URL 不應繼續指向該版本，否則分享出去會開到已關閉的畫面 (#78)。
+  setRouteContext({ version: null });
 }
 
 function switchReleaseRecentHealthTab(winKey) {

@@ -1,7 +1,9 @@
-"""Dashboard 一級導覽與 view routing 的單一集中來源 (Issue #71).
+"""Dashboard 一級導覽、view routing 與 deep-link 契約的單一集中來源 (Issue #71, #78).
 
-V3.1 為純機械式重構：本模組僅把原先散落在 `assets.py` 與各 section module
-的導覽定義與 routing 字串集中管理，產出之 HTML/JS 與重構前逐位元相同。
+V3.1 (#71) 為純機械式重構：把原先散落在 `assets.py` 與各 section module
+的導覽定義與 routing 字串集中管理。
+V3.1.1 (#78) 在同一個集中點上加入 URL/hash deep-link routing，
+不另建第二份 routing registry。
 
 集中管理的內容：
 - ``NAV_ITEMS``：一級導覽項目的順序、view 名稱、標籤與圖示。
@@ -11,16 +13,55 @@ V3.1 為純機械式重構：本模組僅把原先散落在 `assets.py` 與各 s
 - ``get_view_container_open_tag``：供各 section module 產生 view container 開頭標籤，
   避免 module 內硬寫 ``id="view-xxx"``。
 - ``get_switch_view_call``：供 section module 產生 ``onclick`` routing 呼叫。
-- ``get_navigation_js``：產生 client 端 ``switchView()``（維持既有 DOM-class routing，
-  不引入 URL/hash state）。
+- ``get_navigation_js``：產生 client 端 ``switchView()`` 與 deep-link routing。
+- ``build_deep_link`` / ``build_release_decision_link``：canonical deep link 的唯一產生器，
+  供 Google Chat alert 等 consumer 使用，避免各自拼 URL。
+
+Deep-link URL 契約 (#78)::
+
+    <base_url>#<view>?app=<app>&platform=<platform>&version=<version>
+
+只使用 URL fragment：dashboard 是自包含靜態 HTML，經常以 ``file://`` 或純靜態
+空間開啟，query string 需要 server/reload 配合且可能被剝除，fragment 則保證
+純 client 端可讀且不觸發 reload。同理，本模組刻意不使用 History API
+（``pushState`` / ``replaceState`` 在 ``file://`` 下會被瀏覽器擋成 SecurityError），
+history 進出完全靠 ``location.hash`` 賦值 + ``hashchange``。
+
+已定案的行為決策 (#78)：
+- **支援 browser back/forward**：每次 view / context 變更都以 ``location.hash``
+  賦值產生一個 history entry，``hashchange`` 再把該 entry 套回畫面。
+  自己寫進去的 hash 由 ``curRouteHash`` 濾掉，只有真正的 back/forward 會重新套用。
+- **無效 context 一律降級而非改寫 URL**：不存在的 app / platform / version 會被丟棄
+  （以 toast 告知），畫面退回可顯示的狀態，但 URL 保持原樣。若在載入時把 URL
+  正規化成一個新的 history entry，使用者按 back 會回到原始壞連結並再次被正規化，
+  形成回不去的 history 迴圈；URL 會在使用者下一次主動導覽時自然被寫成正規形式。
+- **version context 的還原方式是開啟該 release 的詳情**，不去改動 ``filterVersion``
+  下拉選單（其選項由 ``updateVersionFilterOptions`` 動態產生，寫入不存在的值會讓
+  篩選器變成空白）。Decision-first Overview 對 version context 的呈現屬 #73。
+- 本模組只提供 ``build_release_decision_link``；把它接進 Google Chat 訊息是
+  刻意留給後續 ticket 的動作，#78 不改 ``crash_trend/alerts``。
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from urllib.parse import quote, unquote
 
 NAV_BUTTON_ID_PREFIX = "nav-"
 VIEW_CONTAINER_ID_PREFIX = "view-"
+
+#: deep link 的 fragment query 參數名（Python 端與 client 端共用同一組字面值）。
+ROUTE_PARAM_APP = "app"
+ROUTE_PARAM_PLATFORM = "platform"
+ROUTE_PARAM_VERSION = "version"
+
+#: canonical release decision link 所指向的 view；#73 的 Decision-first Overview 在此。
+DECISION_VIEW = "overview"
+
+#: deep link 還原 platform context 時要同步的既有 filter select id。
+#: 這些 id 定義在 `releases.py` / `issues.py` 的 HTML 內，
+#: 由 ``tests/test_dashboard_deep_link.py`` 反向驗證其仍存在於 render 結果，避免漂移。
+ROUTE_PLATFORM_SELECT_IDS = ("filterReleasePlatform", "filterPlatform")
 
 
 @dataclass(frozen=True)
@@ -127,12 +168,132 @@ def get_nav_menu_html() -> str:
     )
 
 
-def get_navigation_js() -> str:
-    """回傳 client 端 view routing 邏輯。
+@dataclass(frozen=True)
+class DeepLinkRoute:
+    """一條 canonical deep link 所描述的 routing 意圖。
 
-    維持既有 DOM-class routing（移除所有 ``active`` 後為目標 nav/view 加上），
-    不使用 URL/hash/pushState state；deep-link routing 屬 Issue #78 範圍。
+    ``view`` 保證是註冊過的 view；未知 view 於 parse 時降級為 ``DEFAULT_VIEW``。
+    ``app`` / ``platform`` / ``version`` 為選填 context；此處僅代表「連結要求的內容」，
+    是否真的存在於 bundle 由 client 端 resolve 時判定。
     """
+
+    view: str
+    app: str | None = None
+    platform: str | None = None
+    version: str | None = None
+
+
+def build_deep_link_fragment(
+    view: str = DEFAULT_VIEW,
+    *,
+    app: str | None = None,
+    platform: str | None = None,
+    version: str | None = None,
+) -> str:
+    """回傳 canonical deep link 的 fragment（含開頭 ``#``）。
+
+    未註冊的 view 直接 raise：deep link 是對外契約，寧可在產生端炸掉，
+    也不要送出一條只會 fallback 到 Overview 的假連結。
+    """
+    if view not in view_names():
+        raise ValueError(f"未註冊的 dashboard view: {view!r}；可用值：{view_names()}")
+    params = (
+        (ROUTE_PARAM_APP, app),
+        (ROUTE_PARAM_PLATFORM, platform.lower() if platform else platform),
+        (ROUTE_PARAM_VERSION, version),
+    )
+    query = "&".join(f"{key}={quote(str(value), safe='')}" for key, value in params if value)
+    return f"#{view}?{query}" if query else f"#{view}"
+
+
+def build_deep_link(
+    view: str = DEFAULT_VIEW,
+    *,
+    app: str | None = None,
+    platform: str | None = None,
+    version: str | None = None,
+    base_url: str | None = None,
+) -> str:
+    """回傳 canonical deep link；``base_url`` 省略時回傳純 fragment。
+
+    ``base_url`` 既有的 fragment 會被丟棄，避免疊出 ``...#a#b``。
+    """
+    fragment = build_deep_link_fragment(view, app=app, platform=platform, version=version)
+    if not base_url:
+        return fragment
+    return f"{base_url.split('#', 1)[0]}{fragment}"
+
+
+def build_release_decision_link(
+    app: str,
+    platform: str,
+    version: str,
+    *,
+    base_url: str | None = None,
+) -> str:
+    """回傳指向某 release decision context 的 canonical link (#78 對外契約)。
+
+    Google Chat alert 等 consumer 一律呼叫本函式，不自行拼 URL；
+    三個 context 皆為必填，避免送出只有一半 context 的半殘連結。
+    """
+    if not app or not platform or not version:
+        raise ValueError(
+            f"release decision link 需要完整 context：app={app!r} platform={platform!r} version={version!r}"
+        )
+    return build_deep_link(
+        DECISION_VIEW,
+        app=app,
+        platform=platform,
+        version=version,
+        base_url=base_url,
+    )
+
+
+def parse_deep_link(link: str) -> DeepLinkRoute:
+    """解析 canonical deep link（可為完整 URL 或純 fragment）。
+
+    與 client 端 ``parseRouteHash`` 對稱：未知 view 降級為 ``DEFAULT_VIEW``、
+    未知參數忽略、空值視為未提供，因此壞連結不會產生例外。
+    """
+    fragment = link.split("#", 1)[1] if "#" in link else link
+    view_token, _, query = fragment.partition("?")
+    view = unquote(view_token)
+    parsed: dict[str, str] = {}
+    for pair in query.split("&"):
+        if not pair:
+            continue
+        key, _, raw_value = pair.partition("=")
+        value = unquote(raw_value)
+        if value:
+            parsed[unquote(key)] = value
+    platform = parsed.get(ROUTE_PARAM_PLATFORM)
+    return DeepLinkRoute(
+        view=view if view in view_names() else DEFAULT_VIEW,
+        app=parsed.get(ROUTE_PARAM_APP),
+        platform=platform.lower() if platform else None,
+        version=parsed.get(ROUTE_PARAM_VERSION),
+    )
+
+
+def get_routing_init_call() -> str:
+    """回傳 deep-link routing 的初始化呼叫；由 shell bootstrap 在首次 render 後呼叫。"""
+    return "initDeepLinkRouting();\n"
+
+
+def get_route_revalidate_call() -> str:
+    """回傳「重新驗證 context 並寫回 URL」的呼叫，供既有 app 切換點 (``switchApp``) 使用。"""
+    return "revalidateRouteContext();\n"
+
+
+def get_navigation_js() -> str:
+    """回傳 client 端 view routing 與 deep-link routing 邏輯。
+
+    view 切換維持既有 DOM-class routing（移除所有 ``active`` 後為目標 nav/view 加上），
+    並在其後把目前 route 寫回 ``location.hash``。所有 URL state 讀寫都只在本區塊內，
+    section module 不得自行操作 URL（由 deep-link 契約測試反向把關）。
+    """
+    view_list = ", ".join(f'"{view}"' for view in view_names())
+    platform_select_ids = ", ".join(f'"{sid}"' for sid in ROUTE_PLATFORM_SELECT_IDS)
     return (
         "// Navigation between views\n"
         "function switchView(viewName) {\n"
@@ -147,6 +308,242 @@ def get_navigation_js() -> str:
         "  if (window.innerWidth <= 768) {\n"
         '    $("sidebar").classList.remove("mobile-open");\n'
         "  }\n"
+        "\n"
+        "  curRouteView = viewName;\n"
+        "  syncRouteHash();\n"
+        "}\n"
+        "\n"
+        "// ── Deep-link routing (Issue #78) ─────────────────────────────\n"
+        "// URL 契約：#<view>?app=<app>&platform=<platform>&version=<version>\n"
+        "// 只用 fragment，不用 History API（pushState/replaceState 在 file:// 會被擋）。\n"
+        f"const ROUTE_VIEWS = [{view_list}];\n"
+        f'const ROUTE_DEFAULT_VIEW = "{DEFAULT_VIEW}";\n'
+        f'const ROUTE_PARAM_APP = "{ROUTE_PARAM_APP}";\n'
+        f'const ROUTE_PARAM_PLATFORM = "{ROUTE_PARAM_PLATFORM}";\n'
+        f'const ROUTE_PARAM_VERSION = "{ROUTE_PARAM_VERSION}";\n'
+        f"const ROUTE_PLATFORM_SELECT_IDS = [{platform_select_ids}];\n"
+        "\n"
+        "let curRouteView = ROUTE_DEFAULT_VIEW;\n"
+        "let curRouteContext = { platform: null, version: null };\n"
+        "// 目前畫面所反映的 hash；自己寫進去的 hash 不需要再套用一次，\n"
+        "// 只有真正的 back/forward（hash 與此值不同）才會觸發 applyRoute。\n"
+        "let curRouteHash = null;\n"
+        "// > 0 表示正在「由 URL 套用 route」，此時一律不寫回 URL，避免迴圈與多餘 history entry。\n"
+        "let routeApplyDepth = 0;\n"
+        "let routeListenerBound = false;\n"
+        "\n"
+        "function decodeRoutePart(raw) {\n"
+        '  try { return decodeURIComponent(String(raw == null ? "" : raw)); }\n'
+        '  catch (e) { return String(raw == null ? "" : raw); }\n'
+        "}\n"
+        "\n"
+        "function parseRouteHash(rawHash) {\n"
+        '  let raw = String(rawHash == null ? "" : rawHash);\n'
+        '  if (raw.charAt(0) === "#") raw = raw.slice(1);\n'
+        '  const qi = raw.indexOf("?");\n'
+        "  const viewToken = decodeRoutePart(qi >= 0 ? raw.slice(0, qi) : raw);\n"
+        '  const query = qi >= 0 ? raw.slice(qi + 1) : "";\n'
+        "  const route = {\n"
+        "    view: ROUTE_VIEWS.indexOf(viewToken) >= 0 ? viewToken : ROUTE_DEFAULT_VIEW,\n"
+        "    app: null, platform: null, version: null\n"
+        "  };\n"
+        '  query.split("&").forEach(pair => {\n'
+        "    if (!pair) return;\n"
+        '    const eq = pair.indexOf("=");\n'
+        "    const key = decodeRoutePart(eq >= 0 ? pair.slice(0, eq) : pair);\n"
+        '    const val = eq >= 0 ? decodeRoutePart(pair.slice(eq + 1)) : "";\n'
+        "    if (!val) return;\n"
+        "    if (key === ROUTE_PARAM_APP) route.app = val;\n"
+        "    else if (key === ROUTE_PARAM_PLATFORM) route.platform = val.toLowerCase();\n"
+        "    else if (key === ROUTE_PARAM_VERSION) route.version = val;\n"
+        "  });\n"
+        "  return route;\n"
+        "}\n"
+        "\n"
+        "function buildRouteHash(route) {\n"
+        "  const r = route || {};\n"
+        "  const view = ROUTE_VIEWS.indexOf(r.view) >= 0 ? r.view : ROUTE_DEFAULT_VIEW;\n"
+        "  const parts = [];\n"
+        "  if (r.app) parts.push(ROUTE_PARAM_APP + \"=\" + encodeURIComponent(r.app));\n"
+        "  if (r.platform) parts.push(ROUTE_PARAM_PLATFORM + \"=\" + encodeURIComponent(r.platform));\n"
+        "  if (r.version) parts.push(ROUTE_PARAM_VERSION + \"=\" + encodeURIComponent(r.version));\n"
+        '  return "#" + view + (parts.length ? "?" + parts.join("&") : "");\n'
+        "}\n"
+        "\n"
+        "// curAppId 由 assets.py 的 shell state 宣告；此處集中做一次存在性防護，\n"
+        "// 讓 routing 即使在 shell state 之外被載入也不會拋 ReferenceError。\n"
+        "function routeCurAppId() {\n"
+        '  return typeof curAppId !== "undefined" ? curAppId : null;\n'
+        "}\n"
+        "\n"
+        "function routeAppsData() {\n"
+        '  return (typeof DATA !== "undefined" && DATA && DATA.apps) ? DATA.apps : {};\n'
+        "}\n"
+        "\n"
+        "function routeKnownVersions(appData) {\n"
+        "  if (!appData) return [];\n"
+        "  const out = [];\n"
+        "  const collect = arr => {\n"
+        "    if (!Array.isArray(arr)) return;\n"
+        "    arr.forEach(v => {\n"
+        "      if (v && v.version) {\n"
+        '        out.push({ version: String(v.version), platform: String(v.platform || "").toLowerCase() });\n'
+        "      }\n"
+        "    });\n"
+        "  };\n"
+        "  collect(appData.release_catalog);\n"
+        "  collect(appData.version_health);\n"
+        "  const periods = appData.periods || {};\n"
+        "  Object.keys(periods).forEach(k => {\n"
+        "    collect(periods[k] && periods[k].release_catalog);\n"
+        "    collect(periods[k] && periods[k].version_health);\n"
+        "  });\n"
+        "  return out;\n"
+        "}\n"
+        "\n"
+        "function routeKnownPlatforms(appData) {\n"
+        "  const out = [];\n"
+        "  const md = appData && appData.metadata;\n"
+        "  if (md && Array.isArray(md.platforms)) {\n"
+        "    md.platforms.forEach(p => out.push(String(p).toLowerCase()));\n"
+        "  }\n"
+        "  routeKnownVersions(appData).forEach(v => {\n"
+        '    if (v.platform && v.platform !== "all") out.push(v.platform);\n'
+        "  });\n"
+        "  return out;\n"
+        "}\n"
+        "\n"
+        "// 把連結要求的 context 對 bundle 實際資料做驗證；不存在者一律降級並記在 dropped。\n"
+        "function resolveRoute(route) {\n"
+        "  const r = route || {};\n"
+        "  const resolved = {\n"
+        "    view: ROUTE_VIEWS.indexOf(r.view) >= 0 ? r.view : ROUTE_DEFAULT_VIEW,\n"
+        "    app: null, platform: null, version: null, dropped: []\n"
+        "  };\n"
+        "  const apps = routeAppsData();\n"
+        "  if (r.app) {\n"
+        "    if (apps[r.app]) resolved.app = r.app;\n"
+        '    else resolved.dropped.push(ROUTE_PARAM_APP + "=" + r.app);\n'
+        "  }\n"
+        "  const appId = resolved.app || routeCurAppId();\n"
+        "  const appData = (appId && apps[appId]) ? apps[appId] : null;\n"
+        "  if (r.platform) {\n"
+        "    if (routeKnownPlatforms(appData).indexOf(r.platform) >= 0) resolved.platform = r.platform;\n"
+        '    else resolved.dropped.push(ROUTE_PARAM_PLATFORM + "=" + r.platform);\n'
+        "  }\n"
+        "  if (r.version) {\n"
+        "    const match = routeKnownVersions(appData).some(v =>\n"
+        "      v.version === r.version &&\n"
+        '      (!resolved.platform || !v.platform || v.platform === "all" || v.platform === resolved.platform)\n'
+        "    );\n"
+        "    if (match) resolved.version = r.version;\n"
+        '    else resolved.dropped.push(ROUTE_PARAM_VERSION + "=" + r.version);\n'
+        "  }\n"
+        "  return resolved;\n"
+        "}\n"
+        "\n"
+        "function applyRoutePlatform(platform) {\n"
+        "  ROUTE_PLATFORM_SELECT_IDS.forEach(id => {\n"
+        "    const sel = $(id);\n"
+        "    if (sel) sel.value = platform;\n"
+        "  });\n"
+        '  if (typeof handlePlatformFilterChange === "function") handlePlatformFilterChange();\n'
+        '  if (typeof renderReleasesTable === "function") renderReleasesTable();\n'
+        "}\n"
+        "\n"
+        "function applyRoute(route) {\n"
+        "  const resolved = resolveRoute(route);\n"
+        "  routeApplyDepth++;\n"
+        "  try {\n"
+        '    if (resolved.app && typeof switchApp === "function" && resolved.app !== routeCurAppId()) {\n'
+        "      switchApp(resolved.app);\n"
+        "    }\n"
+        "    curRouteContext = { platform: resolved.platform, version: resolved.version };\n"
+        "    if (resolved.platform) applyRoutePlatform(resolved.platform);\n"
+        "    switchView(resolved.view);\n"
+        '    if (resolved.version && typeof openReleaseDetail === "function") {\n'
+        "      openReleaseDetail(resolved.version, resolved.platform || null);\n"
+        "    }\n"
+        '    if (resolved.dropped.length && typeof showToast === "function") {\n'
+        '      showToast("連結中的部分內容在此資料中不存在，已忽略：" + resolved.dropped.join(", "));\n'
+        "    }\n"
+        "  } finally {\n"
+        "    routeApplyDepth--;\n"
+        "  }\n"
+        "  return resolved;\n"
+        "}\n"
+        "\n"
+        "function getLocationHash() {\n"
+        '  try { return (window.location && window.location.hash) || ""; }\n'
+        '  catch (e) { return ""; }\n'
+        "}\n"
+        "\n"
+        "// 把目前 view + app/platform/version context 寫回 URL；\n"
+        "// 相同時不寫，避免產生無意義的 history entry 與 hashchange 迴圈。\n"
+        "function syncRouteHash() {\n"
+        "  if (routeApplyDepth > 0) return;\n"
+        "  const target = buildRouteHash({\n"
+        "    view: curRouteView,\n"
+        "    app: routeCurAppId(),\n"
+        "    platform: curRouteContext.platform,\n"
+        "    version: curRouteContext.version\n"
+        "  });\n"
+        "  curRouteHash = target;\n"
+        "  if (target === getLocationHash()) return;\n"
+        "  try { window.location.hash = target; } catch (e) {}\n"
+        "}\n"
+        "\n"
+        "// 供既有互動（如開啟 release 詳情）回報 context，使 URL 保持可分享。\n"
+        "function setRouteContext(patch) {\n"
+        "  if (!patch) return;\n"
+        '  if ("platform" in patch) curRouteContext.platform = patch.platform || null;\n'
+        '  if ("version" in patch) curRouteContext.version = patch.version || null;\n'
+        "  syncRouteHash();\n"
+        "}\n"
+        "\n"
+        "// 切換 app 後重新驗證既有 context：舊 app 的 platform/version 未必存在於新 app，\n"
+        "// 不重驗會讓 URL 帶出一條開起來只會被降級的連結。\n"
+        "function revalidateRouteContext() {\n"
+        "  const resolved = resolveRoute({\n"
+        "    view: curRouteView,\n"
+        "    app: routeCurAppId(),\n"
+        "    platform: curRouteContext.platform,\n"
+        "    version: curRouteContext.version\n"
+        "  });\n"
+        "  curRouteContext = { platform: resolved.platform, version: resolved.version };\n"
+        "  syncRouteHash();\n"
+        "}\n"
+        "\n"
+        "// #73 等 consumer 讀取「已驗證過的」目前 route context，不自行 parse URL。\n"
+        "function getRouteContext() {\n"
+        "  return {\n"
+        "    view: curRouteView,\n"
+        "    app: routeCurAppId(),\n"
+        "    platform: curRouteContext.platform,\n"
+        "    version: curRouteContext.version\n"
+        "  };\n"
+        "}\n"
+        "\n"
+        "// back/forward 專用：hash 與畫面現況不同才重新套用。\n"
+        "function handleRouteHashChange() {\n"
+        "  const raw = getLocationHash();\n"
+        "  if (raw === curRouteHash) return null;\n"
+        "  curRouteHash = raw;\n"
+        "  return applyRoute(parseRouteHash(raw));\n"
+        "}\n"
+        "\n"
+        "function initDeepLinkRouting() {\n"
+        "  if (!routeListenerBound) {\n"
+        "    routeListenerBound = true;\n"
+        "    try {\n"
+        '      window.addEventListener("hashchange", handleRouteHashChange);\n'
+        "    } catch (e) {}\n"
+        "  }\n"
+        "  // 無 hash 時 parseRouteHash 回傳預設 view，等同既有初始畫面；\n"
+        "  // 此處刻意不寫回 URL：舊的無 hash 連結行為完全不變，\n"
+        "  // 被降級的 context 也不會被改寫成另一個 history entry（否則 back 會卡在原地）。\n"
+        "  curRouteHash = getLocationHash();\n"
+        "  return applyRoute(parseRouteHash(curRouteHash));\n"
         "}\n"
         "\n"
     )
