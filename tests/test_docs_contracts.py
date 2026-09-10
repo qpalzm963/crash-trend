@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 
 from crash_trend.alerts.state import AlertDeliveryStore
+from crash_trend.dashboard import navigation
 from crash_trend.gate.artifact import validate_release_gate_artifact
 from crash_trend.gate.decision import _DECISION_TABLE
 from crash_trend.gate.history import ReleaseGateHistoryStore, compute_evaluation_key
@@ -162,6 +163,44 @@ class TestDocsContracts(unittest.TestCase):
         self.assertTrue(any("installation_ids is forbidden" in e for e in errs))
         self.assertTrue(any("recent_health.30d.nested_payload.user_ids" in e for e in errs))
         self.assertTrue(any("recent_health.30d.nested_payload.device_list[0].installation_ids" in e for e in errs))
+
+    def test_readme_navigation_ia_matches_the_navigation_registry(self) -> None:
+        """Verifies README's documented IA is derived from NAV_ITEMS (Issue #75).
+
+        README previously advertised "8 大功能區", which silently became wrong the
+        moment V3.5 consolidated the top level into four workspaces. Binding the doc
+        to the registry means the next IA change cannot land with a stale README.
+        """
+        for item in navigation.NAV_ITEMS:
+            with self.subTest(workspace=item.workspace):
+                self.assertIn(
+                    item.label,
+                    self.readme_text,
+                    f"README must document top-level workspace '{item.label}'",
+                )
+                for panel in item.panels:
+                    self.assertIn(
+                        panel.label,
+                        self.readme_text,
+                        f"README must document panel '{panel.label}' of '{item.label}'",
+                    )
+        # The stale V2 claim must be gone, not merely supplemented.
+        self.assertNotIn("8 大功能區", self.readme_text)
+
+    def test_readme_documents_the_deep_link_fragment_contract(self) -> None:
+        """Verifies README states the actual deep-link contract shipped by #78/#75.
+
+        The old `#<app>` claim stopped being true when #78 replaced it with a
+        `#<view>?...` fragment router; #75 additionally guarantees the V2 view names
+        keep working, which is exactly the promise readers need in writing.
+        """
+        self.assertIn(
+            "#<view>?app=<app>&platform=<platform>&version=<version>", self.readme_text
+        )
+        self.assertNotIn("`#<app>` URL hash", self.readme_text)
+        for view in ("version_health", "devices", "notifications", "ai_insights", "settings"):
+            with self.subTest(view=view):
+                self.assertIn(f"`#{view}`", self.readme_text)
 
     def test_schema_spec_release_gate_artifact_passes_validator(self) -> None:
         """Verifies that ReleaseGateArtifact JSON in docs parses and passes validate_release_gate_artifact."""
