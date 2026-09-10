@@ -728,6 +728,8 @@ def get_navigation_js() -> str:
         "    // #73 的首屏決策面要反映連結指定的 release，而不是永遠只顯示各平台最新版；\n"
         "    // 因此在 context 已解析、view 已切換之後重畫一次。\n"
         '    if (typeof renderReleaseDecisions === "function") renderReleaseDecisions();\n'
+        '    // #74 的比較面與決策面共用同一個 pinned release，必須一起重畫。\n'
+        '    if (typeof renderReleaseComparison === "function") renderReleaseComparison();\n'
         '    if (resolved.version && typeof openReleaseDetail === "function") {\n'
         "      openReleaseDetail(resolved.version, resolved.platform || null);\n"
         '    } else if (!resolved.version && typeof closeReleaseDetail === "function") {\n'
