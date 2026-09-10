@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from crash_trend.dashboard.navigation import get_view_container_open_tag
+
 
 def get_releases_html() -> str:
     """Returns HTML markup for version health, device distributions, and release catalog views."""
     return """    <!-- VIEW: VERSION HEALTH (版本健康度) -->
-    <section class="view-container" id="view-version_health">
+    """ + get_view_container_open_tag("version_health") + """
       <div class="section-header">
         <div>
           <h2 class="section-title">版本健康度 (Version Health)</h2>
@@ -37,7 +39,7 @@ def get_releases_html() -> str:
 
 
     <!-- VIEW: DEVICES (裝置分析) -->
-    <section class="view-container" id="view-devices">
+    """ + get_view_container_open_tag("devices") + """
       <div class="section-header">
         <div>
           <h2 class="section-title">裝置與系統分析 (Devices & OS)</h2>
@@ -92,7 +94,7 @@ def get_releases_html() -> str:
 
 
     <!-- VIEW: RELEASES (發佈版本) -->
-    <section class="view-container" id="view-releases">
+    """ + get_view_container_open_tag("releases") + """
       <div class="section-header">
         <div>
           <h2 class="section-title">發佈版本 (Release Catalog & Lifecycle)</h2>
@@ -374,6 +376,8 @@ function openReleaseDetail(ver, pf) {
 
   curDetailVersion = ver;
   curDetailPlatform = pf || item.platform;
+  // 回報 route context，讓 URL 保持可分享 / 可 deep link 還原 (#78)；URL 讀寫仍只在 navigation 模組內。
+  setRouteContext({ platform: curDetailPlatform || null, version: curDetailVersion || null });
   const winKeys = Object.keys(item.recent_health || {});
   curDetailWindow = (item.recent_health && item.recent_health[curPeriodDays + "d"]) ? (curPeriodDays + "d") : (winKeys.includes("30d") ? "30d" : (winKeys[0] || "30d"));
 
@@ -407,6 +411,8 @@ function openReleaseDetail(ver, pf) {
 function closeReleaseDetail() {
   const modal = $("releaseDetailModal");
   if (modal) modal.classList.remove("active");
+  // 關閉詳情後 URL 不應繼續指向該版本，否則分享出去會開到已關閉的畫面 (#78)。
+  setRouteContext({ version: null });
 }
 
 function switchReleaseRecentHealthTab(winKey) {

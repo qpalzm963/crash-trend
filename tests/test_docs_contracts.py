@@ -8,9 +8,15 @@ from pathlib import Path
 
 from crash_trend.alerts.state import AlertDeliveryStore
 from crash_trend.gate.artifact import validate_release_gate_artifact
+from crash_trend.gate.decision import _DECISION_TABLE
 from crash_trend.gate.history import ReleaseGateHistoryStore, compute_evaluation_key
 from crash_trend.lifecycle import IssueHistoricalCatalog, is_version_sample_sufficient
-from crash_trend.schema_v2 import SUPPORTED_SCHEMA_VERSIONS, validate_historical_catalog
+from crash_trend.schema_v2 import (
+    SUPPORTED_SCHEMA_VERSIONS,
+    VALID_DECISION_ACTIONS,
+    validate_historical_catalog,
+    validate_release_decision,
+)
 
 
 class TestDocsContracts(unittest.TestCase):
@@ -179,6 +185,42 @@ class TestDocsContracts(unittest.TestCase):
         )
         self.assertIn("android", gate_data.get("platforms", {}))
         self.assertEqual(gate_data.get("schema_version"), "1.0")
+
+    def test_release_decision_contract_documented_matches_implementation(self) -> None:
+        """Verifies docs document the canonical Release Decision contract (Issue #72)."""
+        self.assertIn("#### `ReleaseDecision`", self.schema_doc_text)
+
+        # Every documented row must bind status -> action -> recommendation exactly
+        # as _DECISION_TABLE derives it.
+        for status, (action, recommendation) in _DECISION_TABLE.items():
+            expected_row = f"| `{status}` | `{action}` | {recommendation} |"
+            self.assertIn(
+                expected_row,
+                self.schema_doc_text,
+                f"Documented decision row for '{status}' drifted from _DECISION_TABLE "
+                f"(expected: {expected_row})",
+            )
+
+        # Documented enums must match the schema validators.
+        for action in sorted(VALID_DECISION_ACTIONS):
+            self.assertIn(f'"{action}"', self.schema_doc_text)
+
+        # The single-source-of-truth rule must be stated for consumers.
+        self.assertIn("derive_decision", self.schema_doc_text)
+        self.assertIn("crash_trend/gate/decision.py", self.schema_doc_text)
+
+        # Semantic consistency validation and the gate-disabled rule are part of
+        # the contract consumers rely on, so they must be documented too.
+        self.assertIn("canonical_decision_status", self.schema_doc_text)
+        self.assertIn("CANONICAL_DECISION_ACTIONS", self.schema_doc_text)
+        self.assertIn("gate_evaluated_quality", self.schema_doc_text)
+        self.assertIn("enabled: false", self.schema_doc_text)
+
+        # The documented ReleaseDecision example must pass the real validator.
+        dec_match = re.search(r'"decision": (\{.*?\n      \})', self.schema_doc_text, re.DOTALL)
+        self.assertIsNotNone(dec_match, "ReleaseGateArtifact example must embed a decision object")
+        assert dec_match is not None
+        self.assertEqual(validate_release_decision(json.loads(dec_match.group(1))), [])
 
     def test_gate_history_ddl_and_evaluation_key_contracts(self) -> None:
         """Verifies Gate History SQLite DDL and evaluation_key formula match implementations."""

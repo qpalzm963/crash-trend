@@ -36,7 +36,8 @@ except ImportError:
             pass
 
 try:
-    from crash_trend.config import app_argparser, get_app, load_config, out_dir, write_json
+    from crash_trend.bq_credentials import BQCredentialsError, make_bq_client
+    from crash_trend.config import app_argparser, get_app, out_dir, write_json
     from crash_trend.schema_v2 import (
         AppDashboardV2Data,
         AppMetadata,
@@ -63,7 +64,8 @@ try:
     )
     from crash_trend.versions import max_version, min_version, version_key
 except ImportError:
-    from config import app_argparser, get_app, load_config, out_dir, write_json
+    from bq_credentials import BQCredentialsError, make_bq_client
+    from config import app_argparser, get_app, out_dir, write_json
     from schema_v2 import (
         AppDashboardV2Data,
         AppMetadata,
@@ -445,18 +447,16 @@ def norm_error_type(raw: Any, fatal_hint: bool = False) -> str:
 # BigQuery Client & Execution
 # ---------------------------------------------------------------------------
 
-def make_client(project: str) -> bigquery.Client:
-    creds_cfg = (load_config().get("credentials") or {})
-    sa_path = creds_cfg.get("bq_service_account")
-    if sa_path:
-        sa_file = Path(sa_path).expanduser()
-        if not sa_file.exists():
-            sys.exit(f"[錯誤] credentials.bq_service_account 指定的檔案不存在：{sa_file}")
-        from google.oauth2 import service_account
+def make_client(project: str, app_cfg: dict | None = None) -> bigquery.Client:
+    """建立 Crashlytics BigQuery client。憑證解析共用 bq_credentials.resolve_bq_credentials。
 
-        creds = service_account.Credentials.from_service_account_file(str(sa_file))
-        return bigquery.Client(project=project, credentials=creds)
-    return bigquery.Client(project=project)  # ADC
+    設定了 service account 但檔案不存在時，以 sys.exit 帶明確訊息中止（CLI 的既有行為），
+    不會靜默退回 ADC。
+    """
+    try:
+        return make_bq_client(project, app_cfg)
+    except BQCredentialsError as e:
+        sys.exit(f"[錯誤] {e}")
 
 
 def list_crash_tables(
@@ -1303,7 +1303,7 @@ def main() -> None:
     is_incremental = bool(not is_bootstrap and watermark)
 
     try:
-        client = make_client(project)
+        client = make_client(project, app_cfg=app)
         tables = list_crash_tables(client, project, dataset, app_config={**app, "app_id": args.app})
     except Exception as e:
         write_json(out_dir(args.app) / "crashlytics_bq.json", {**result, "errors": {"dataset": str(e)[:800]}})
@@ -1317,7 +1317,8 @@ def main() -> None:
         sys.exit(
             f"[注意] 無法列出 {project}:{dataset} —— 尚未連結 BigQuery export、無資料，或憑證問題。\n"
             f"  憑證設定：apps.yaml 填 credentials.bq_service_account（SA json 路徑），"
-            f"或本機跑一次 `gcloud auth application-default login`。\n"
+            f"可用 apps.<app_id>.bq_service_account 針對單一 App 覆寫；"
+            f"填 adc 或留空則改用 ADC（本機先跑一次 `gcloud auth application-default login`）。\n"
             f"  {str(e)[:400]}"
         )
 

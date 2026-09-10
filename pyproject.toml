@@ -71,6 +71,7 @@ ignore = [
 [tool.mypy]
 python_version = "3.11"
 files = [
+    "crash_trend/bq_credentials.py",
     "crash_trend/schema_v2.py",
     "crash_trend/authority_store.py",
     "crash_trend/catalog",

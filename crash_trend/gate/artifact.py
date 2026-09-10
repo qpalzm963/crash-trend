@@ -10,7 +10,11 @@ import json
 from pathlib import Path
 from typing import Any, Literal, NotRequired, TypedDict, cast
 
-from crash_trend.schema_v2 import RuleEvaluationResult
+from crash_trend.schema_v2 import (
+    ReleaseDecision,
+    RuleEvaluationResult,
+    validate_release_decision,
+)
 
 GateStatus = Literal["pass", "warn", "fail", "insufficient_data", "baseline"]
 RuleStatus = Literal["pass", "warn", "fail", "skip", "insufficient_data"]
@@ -38,6 +42,9 @@ class PlatformGateResult(TypedDict):
     alert: AlertHookPayload
     evaluated_at: str
     comparison_window: NotRequired[str | None]
+    # Canonical Release Decision contract (Issue #72). NotRequired so artifacts
+    # produced before V3.2 still validate and can be consumed.
+    decision: NotRequired[ReleaseDecision]
 
 
 class ReleaseGateArtifact(TypedDict):
@@ -146,6 +153,16 @@ def validate_release_gate_artifact(data: Any) -> list[str]:
                 errors.append(f"platforms['{pf_name}'].rule_results must be a list")
             if "comparison_window" in pf_res and pf_res["comparison_window"] is not None and not isinstance(pf_res["comparison_window"], str):
                 errors.append(f"platforms['{pf_name}'].comparison_window must be a string or null")
+            if "decision" in pf_res:
+                pf_sample = pf_res.get("sample_sufficient")
+                errors.extend(
+                    validate_release_decision(
+                        pf_res["decision"],
+                        f"platforms['{pf_name}'].decision",
+                        parent_status=pf_res.get("gate_status"),
+                        parent_sample_sufficient=pf_sample if isinstance(pf_sample, bool) else True,
+                    )
+                )
     elif platforms is not None:
         errors.append("platforms must be a dictionary")
 

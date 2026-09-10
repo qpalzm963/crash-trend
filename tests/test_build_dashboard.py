@@ -206,3 +206,29 @@ class TestBuildDashboardV2(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestVendorChartJsPathTypes(unittest.TestCase):
+    """Issue #82: get_vendor_chartjs 必須同時接受 Path 與 str 路徑。
+
+    此測試存在的理由：呼叫端若傳入字串，舊版會在 .is_file() 拋出
+    AttributeError，而該失敗發生在渲染途中、訊息與根因無關，難以追查。
+    """
+
+    def test_accepts_str_and_path_equivalently(self) -> None:
+        from crash_trend.dashboard.assets import get_vendor_chartjs
+
+        vendor = ROOT / "vendor" / "chart.umd.min.js"
+        self.assertTrue(vendor.is_file(), "vendor chart.umd.min.js 應存在於版控中")
+
+        from_path = get_vendor_chartjs(vendor)
+        from_str = get_vendor_chartjs(str(vendor))
+        self.assertEqual(from_path, from_str)
+        self.assertNotIn("not found", from_path)
+
+    def test_missing_str_path_falls_back_without_raising(self) -> None:
+        from crash_trend.dashboard.assets import get_vendor_chartjs
+
+        with tempfile.TemporaryDirectory() as td:
+            missing = str(Path(td) / "absent.js")
+            self.assertIn("not found", get_vendor_chartjs(missing))
