@@ -29,13 +29,18 @@ DEFAULT_TIMEOUT_SEC = 10.0
 
 #: 每一條 file-backed 連線都要套的 pragma。
 #:
-#: `journal_mode` 是 per-database（設一次就持久），其餘兩個是 **per-connection**——
-#: 這正是原本 authority store 只在初始化連線上設定會失效的原因。
-FILE_PRAGMAS: tuple[str, ...] = (
-    "PRAGMA journal_mode = WAL;",
-    "PRAGMA synchronous = NORMAL;",
-    "PRAGMA busy_timeout = 5000;",
-)
+#: 只有 `journal_mode`（per-database，三個 store 原本各自都已設定 WAL）。刻意**不**在
+#: 這裡設另外兩個，各有原因：
+#:
+#: * `busy_timeout`：它與 `sqlite3.connect(timeout=...)` 是**同一個** busy handler，
+#:   後設的會覆蓋前者。原本 authority store 的 `PRAGMA busy_timeout = 5000` 其實是把
+#:   自己 `timeout=10.0` 的等鎖時間砍半（只在初始化那條連線上）。等鎖時間只用
+#:   `DEFAULT_TIMEOUT_SEC` 一個旋鈕表達。
+#: * `synchronous`：預設的 FULL 才是這三個資料庫該有的耐久度。`alert_delivery`
+#:   參與去重、冷卻與復原判定，`release_gate_history` 參與狀態轉換判定——WAL + NORMAL
+#:   在 OS crash / 斷電時可能回滾最近已 commit 的交易，而那會變成「重複發出的告警」
+#:   或「被吞掉的復原通知」。這些不是隨時可重建的顯示快取。
+FILE_PRAGMAS: tuple[str, ...] = ("PRAGMA journal_mode = WAL;",)
 
 
 def connect(
@@ -47,6 +52,9 @@ def connect(
 
     `check_same_thread=False`：pipeline 會在 thread pool 裡讀寫這些 store，而每個
     呼叫點都是「開一條、用完關掉」，不會跨執行緒共用同一條連線。
+
+    等鎖時間由 `timeout` 表達（sqlite3 會把它設成該連線的 busy handler）；本模組
+    **不再**額外下 `PRAGMA busy_timeout`，因為那會覆蓋掉這個參數。
 
     pragma 失敗不視為致命（唯讀連線或掛在不支援 WAL 的檔案系統上都可能失敗）——
     連線本身仍然可用，而真正該大聲失敗的是查詢，不是最佳化設定。

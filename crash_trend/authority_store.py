@@ -76,9 +76,10 @@ class CatalogAuthorityStore:
         """Configures pragmas and creates tables and indexes if not existing."""
         with self._connection() as conn:
             cur = conn.cursor()
-            # pragma 不在這裡設：`synchronous` / `busy_timeout` 是 per-connection 的，
-            # 只在初始化這一條連線上設等於之後每條新連線都回到預設值。現在由
-            # sqlite_store.connect() 對每一條 file-backed 連線統一套用。
+            # pragma 不在這裡設：WAL 由 sqlite_store.connect() 對每條連線統一套用。
+            # 原本這裡的 `PRAGMA busy_timeout = 5000` 已移除——它與 connect(timeout=10)
+            # 是同一個 busy handler，實際效果是把等鎖時間砍半；`synchronous = NORMAL`
+            # 也移除，保留 sqlite 預設的 FULL（見 sqlite_store.FILE_PRAGMAS 的說明）。
 
             cur.execute(
                 """

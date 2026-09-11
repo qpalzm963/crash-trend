@@ -37,11 +37,16 @@ sys.path.insert(0, str(ROOT))
 from crash_trend.alerts.state import AlertDeliveryStore
 from crash_trend.authority_store import CatalogAuthorityStore
 from crash_trend.gate.history import GateSnapshot, ReleaseGateHistoryStore
-from crash_trend.sqlite_store import FILE_PRAGMAS, connect, connection
+from crash_trend.sqlite_store import (
+    DEFAULT_TIMEOUT_SEC,
+    FILE_PRAGMAS,
+    connect,
+    connection,
+)
 
-#: sqlite 的預設值。用來反向證明 pragma 真的被套上了（而不是恰好等於預設）。
-SQLITE_DEFAULT_SYNCHRONOUS = 2  # FULL
-SQLITE_DEFAULT_BUSY_TIMEOUT = 0
+#: sqlite 的 `synchronous = FULL`。這三個資料庫參與去重 / 冷卻 / 狀態轉換判定，
+#: 耐久度不得被降級（#98 review）。
+SQLITE_FULL_SYNCHRONOUS = 2
 
 
 class Tracker:
@@ -161,47 +166,72 @@ class TestNoConnectionIsLeaked(unittest.TestCase):
             self.assertEqual(tracker.leaked, 0)
 
 
-class TestPragmasApplyToEveryConnection(unittest.TestCase):
-    """pragma 是 per-connection，不是 per-database。"""
+class TestEveryConnectionIsConfiguredConsistently(unittest.TestCase):
+    """WAL 套在每條連線上；等鎖時間與耐久度不得被 pragma 悄悄改掉。
+
+    `journal_mode` 是 per-database，但仍對每條連線下一次（成本為零，且新建的資料庫
+    第一條連線就會進 WAL）。另外兩件事是 #98 review 抓到的：`busy_timeout` 與
+    `synchronous` 都**不該**由這裡設定。
+    """
 
     def _read(self, conn: sqlite3.Connection, pragma: str) -> Any:
         return conn.execute(f"PRAGMA {pragma};").fetchone()[0]
 
-    def test_a_fresh_connection_carries_all_pragmas(self) -> None:
+    def test_wal_is_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             with connection(Path(td) / "a.sqlite3") as conn:
                 self.assertEqual(str(self._read(conn, "journal_mode")).lower(), "wal")
-                self.assertNotEqual(
-                    self._read(conn, "synchronous"),
-                    SQLITE_DEFAULT_SYNCHRONOUS,
-                    "synchronous 仍是預設值 → pragma 沒有套到這條連線上",
-                )
-                self.assertNotEqual(
-                    self._read(conn, "busy_timeout"), SQLITE_DEFAULT_BUSY_TIMEOUT
+
+    def test_the_connect_timeout_is_not_overridden_by_a_pragma(self) -> None:
+        """`busy_timeout` 與 `sqlite3.connect(timeout=...)` 是同一個 busy handler。
+
+        後設的會蓋掉前者：原本 `PRAGMA busy_timeout = 5000` 搭 `timeout=10.0` 的實際
+        效果是把等鎖時間砍半。等鎖時間只能有一個旋鈕。
+        """
+        with tempfile.TemporaryDirectory() as td:
+            with connection(Path(td) / "a.sqlite3") as conn:
+                self.assertEqual(
+                    self._read(conn, "busy_timeout"),
+                    int(DEFAULT_TIMEOUT_SEC * 1000),
+                    "等鎖時間與 connect(timeout=) 不一致 → 有 pragma 覆蓋了它",
                 )
 
-    def test_the_authority_store_second_connection_is_configured_too(self) -> None:
-        """原本 pragma 只設在 `_init_db` 的那條連線上，之後每條都回到預設值。"""
+    def test_durability_is_not_downgraded(self) -> None:
+        """這三個資料庫不是可隨時重建的顯示快取。
+
+        `alert_delivery` 參與去重 / 冷卻 / 復原判定，`release_gate_history` 參與狀態
+        轉換判定。WAL + NORMAL 在 OS crash / 斷電時可能回滾最近已 commit 的交易，
+        而那會變成重複發出的告警或被吞掉的復原通知。
+        """
+        with tempfile.TemporaryDirectory() as td:
+            with connection(Path(td) / "a.sqlite3") as conn:
+                self.assertEqual(
+                    self._read(conn, "synchronous"),
+                    SQLITE_FULL_SYNCHRONOUS,
+                    "synchronous 被降級了（FULL=2）",
+                )
+
+    def test_no_pragma_touches_durability_or_lock_waiting(self) -> None:
+        """機械檢查：共用 pragma 清單裡不得再出現這兩個名字。"""
+        joined = " ".join(FILE_PRAGMAS).lower()
+        self.assertIn("journal_mode", joined)
+        self.assertNotIn("synchronous", joined)
+        self.assertNotIn("busy_timeout", joined)
+
+    def test_each_store_gets_the_same_configuration(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             store = CatalogAuthorityStore(Path(td) / "authority.sqlite3")
             with store._connection() as conn:
-                self.assertEqual(self._read(conn, "busy_timeout"), 5000)
-                self.assertNotEqual(
-                    self._read(conn, "synchronous"), SQLITE_DEFAULT_SYNCHRONOUS
-                )
+                self.assertEqual(self._read(conn, "busy_timeout"), int(DEFAULT_TIMEOUT_SEC * 1000))
+                self.assertEqual(self._read(conn, "synchronous"), SQLITE_FULL_SYNCHRONOUS)
 
-    def test_the_gate_history_store_connection_is_configured(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            store = ReleaseGateHistoryStore(Path(td) / "history.sqlite3")
-            conn = store._connect()
+            history = ReleaseGateHistoryStore(Path(td) / "history.sqlite3")
+            conn = history._connect()
             try:
-                self.assertEqual(self._read(conn, "busy_timeout"), 5000)
+                self.assertEqual(self._read(conn, "busy_timeout"), int(DEFAULT_TIMEOUT_SEC * 1000))
+                self.assertEqual(self._read(conn, "synchronous"), SQLITE_FULL_SYNCHRONOUS)
             finally:
                 conn.close()
-
-    def test_the_pragma_list_is_not_empty(self) -> None:
-        """前提測試：pragma 清單空掉的話，上面那幾條就只是在驗 sqlite 預設值。"""
-        self.assertTrue(FILE_PRAGMAS)
 
 
 class TestConnectionSemantics(unittest.TestCase):
