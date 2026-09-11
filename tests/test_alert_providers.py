@@ -161,8 +161,43 @@ class TestRegistryAndFactory(unittest.TestCase):
     def test_factory_builds_the_class_the_name_points_at(self) -> None:
         for name, cls in PROVIDER_CLASSES.items():
             with self.subTest(provider=name):
-                built = build_provider(AlertPolicy(provider=name, webhook_env=""))
+                built = build_provider(AlertPolicy(provider=name))
                 self.assertIsInstance(built, cls)
+
+    def test_a_programmatic_policy_gets_its_own_channel_env(self) -> None:
+        """`AlertPolicy(provider="slack")` 必須讀 SLACK_WEBHOOK_URL（#100 review）。
+
+        `dispatch_alerts_for_app(policy=...)` 明確支援直接注入 policy，因此這不只是
+        測試 API。環境裡同時有 Google Chat 與 Slack 的 webhook 時，拿錯環境變數會把
+        Slack 的 payload 送到 Google Chat 的端點。
+        """
+        for name, expected in (
+            ("google_chat", "GOOGLE_CHAT_WEBHOOK_URL"),
+            ("slack", "SLACK_WEBHOOK_URL"),
+            ("microsoft_teams", "MS_TEAMS_WEBHOOK_URL"),
+            ("webhook", "ALERT_WEBHOOK_URL"),
+        ):
+            with self.subTest(provider=name):
+                built = build_provider(AlertPolicy(provider=name))
+                assert built is not None
+                self.assertEqual(built.webhook_env, expected)
+
+    def test_unset_and_explicitly_google_chat_are_distinguishable(self) -> None:
+        """「沒指定」不能與「明確指定 Google Chat 的變數」撞在一起。
+
+        用值比對推論「有沒有明確指定」正是上一版的缺陷：`AlertPolicy(provider="slack")`
+        的 dataclass 預設值會被當成使用者的明確選擇。
+        """
+        self.assertIsNone(AlertPolicy().webhook_env, "dataclass 預設不得是某個 provider 的變數名")
+        explicit = build_provider(
+            AlertPolicy(provider="slack", webhook_env="GOOGLE_CHAT_WEBHOOK_URL")
+        )
+        assert explicit is not None
+        self.assertEqual(
+            explicit.webhook_env,
+            "GOOGLE_CHAT_WEBHOOK_URL",
+            "明確寫下的變數名必須勝出，即使它剛好是別的 provider 的預設值",
+        )
 
     def test_an_unknown_provider_yields_none_instead_of_raising(self) -> None:
         """#59 的設計：投遞問題不得讓整支 pipeline 掛掉，要走稽核紀錄。"""
@@ -170,9 +205,11 @@ class TestRegistryAndFactory(unittest.TestCase):
         self.assertIsNone(provider_class("carrier_pigeon"))
 
     def test_an_explicit_webhook_env_overrides_the_default(self) -> None:
-        built = build_provider(AlertPolicy(provider="slack", webhook_env="MY_OWN_VAR"))
-        assert built is not None
-        self.assertEqual(built.webhook_env, "MY_OWN_VAR")
+        for name in supported_providers():
+            with self.subTest(provider=name):
+                built = build_provider(AlertPolicy(provider=name, webhook_env="MY_OWN_VAR"))
+                assert built is not None
+                self.assertEqual(built.webhook_env, "MY_OWN_VAR")
 
     def test_google_chat_still_receives_its_thread_setting(self) -> None:
         built = build_provider(AlertPolicy(provider="google_chat", use_threads=False))

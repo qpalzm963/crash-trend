@@ -25,14 +25,18 @@ def build_provider(
 ) -> WebhookDeliveryProvider | None:
     """依 policy 建立 provider；名稱不認識時回 `None`。
 
-    `webhook_env` 只有在與該 provider 的預設值不同時才傳進去——否則把 Google Chat 的
-    環境變數名帶到 Slack 上，會在「設定看起來沒錯」的情況下永遠讀不到 URL。
+    `webhook_env` 只在 policy 真的指定時才傳進去（`None` / 空字串 = 沒指定），其餘情況
+    由 provider 套自己的 `default_webhook_env`。
+
+    刻意**不**用「值是否等於某個預設」來推論「有沒有明確指定」：那會把
+    `AlertPolicy(provider="slack")`（dataclass 預設）與「使用者真的寫了 Google Chat 的
+    變數」混為一談，結果是 Slack provider 讀 Google Chat 的 webhook URL。
     """
     cls = provider_class(policy.provider)
     if cls is None:
         return None
     kwargs: dict[str, object] = {"session": session}
-    if policy.webhook_env and policy.webhook_env != cls.default_webhook_env:
+    if policy.webhook_env:
         kwargs["webhook_env"] = policy.webhook_env
     if cls is GoogleChatWebhookProvider:
         kwargs["use_threads"] = policy.use_threads

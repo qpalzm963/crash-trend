@@ -30,7 +30,13 @@ class AlertPolicy:
     resend_on_status_change: bool = True
     resend_on_new_reason: bool = True
     notify_recovery: bool = True
-    webhook_env: str = "GOOGLE_CHAT_WEBHOOK_URL"
+    #: 讀 webhook URL 的環境變數名。`None` = **沒有指定**，由 provider 套自己的預設。
+    #:
+    #: 刻意不給 `"GOOGLE_CHAT_WEBHOOK_URL"` 當預設值：那會讓「沒指定」與「明確指定
+    #: Google Chat 的變數」在型別上無法區分，於是 `AlertPolicy(provider="slack")` 這種
+    #: 程式化建立的 policy 會拿著 Google Chat 的變數去跑 Slack——兩個 webhook 同時存在
+    #: 於環境時，Slack 的 payload 會被送到 Google Chat 的端點。
+    webhook_env: str | None = None
     use_threads: bool = True
     policy_version: str = "1.0"
     dashboard_url: str | None = None
