@@ -2,7 +2,39 @@
 
 from __future__ import annotations
 
+import json
+
 from crash_trend.dashboard.navigation import get_view_container_open_tag
+from crash_trend.gate.metric_rules import COMPARISON_METRIC_SPECS
+
+#: Release 詳情裡指標演進圖的 canvas id 與最少資料點數（#66 項目 6）。
+#: 一次評估不構成趨勢：單點折線圖會被讀成「很平穩」，比沒有圖更糟。
+RELEASE_TREND_CANVAS_ID = "chartReleaseGateTrend"
+RELEASE_TREND_MIN_POINTS = 2
+
+#: 圖上的兩條線（#66 項目 6 明列：Normalized Crash Rate vs. Crash-free Users）。
+#: 只寫 metric 名與要掛哪個軸；**顯示名取自 gate 的 spec 表**，因此同一個指標在
+#: Gate、比較面與這張圖上是同一個詞，不需要第二份詞彙表。
+RELEASE_TREND_SERIES: tuple[tuple[str, str], ...] = (
+    ("crash_rate_change_pct", "y"),
+    ("crash_free_users_diff", "y1"),
+)
+
+
+def _release_trend_series_js() -> str:
+    """把 (metric, 軸, 顯示名) 三元組序列化給前端。
+
+    顯示名從 `COMPARISON_METRIC_SPECS` 查；spec 表裡沒有的 metric 直接炸，
+    因為那代表這張圖畫的是 gate 沒有評估的指標。
+    """
+    labels = {spec.metric_name: spec.label for spec in COMPARISON_METRIC_SPECS}
+    series = []
+    for metric_name, axis in RELEASE_TREND_SERIES:
+        if metric_name not in labels:
+            raise KeyError(f"{metric_name} 不在 COMPARISON_METRIC_SPECS 中")
+        series.append({"metric_name": metric_name, "axis": axis, "label": labels[metric_name]})
+    return json.dumps(series, ensure_ascii=False)
+
 
 
 def get_releases_html() -> str:
@@ -411,6 +443,8 @@ function openReleaseDetail(ver, pf) {
 function closeReleaseDetail() {
   const modal = $("releaseDetailModal");
   if (modal) modal.classList.remove("active");
+  // 圖表實例必須跟著關閉銷毀，否則下次開啟會疊在同一個 canvas 上。
+  destroyReleaseTrendChart();
   // 關閉詳情後 URL 不應繼續指向該版本，否則分享出去會開到已關閉的畫面 (#78)。
   setRouteContext({ version: null });
 }
@@ -629,6 +663,43 @@ function renderReleaseModalBody(item) {
       `;
     }
 
+    // Metrics evolution chart over the same evaluations (Issue #66 項目 6)
+    //
+    // 只讀 `gate_history[].rule_results[].current_value` 與同一筆裡的門檻欄位——
+    // 圖上的每一個數字（含兩條門檻線）都來自資料，這段程式不知道任何門檻值。
+    // 單一次評估不構成趨勢，因此 < 2 筆時給一句說明而不是畫一個單點折線圖：
+    // 一個只有一點的「趨勢圖」比沒有圖更容易被讀成「很平穩」。
+    let trendChartHtml = "";
+    if (hasPlottableTrendSeries(item)) {
+      trendChartHtml = `
+        <div style="margin-top:12px;padding-top:10px;border-top:1px dashed var(--border)">
+          <div style="font-size:12px;font-weight:600;color:var(--text-main);margin-bottom:6px">
+            指標演進 (Metrics Evolution)
+          </div>
+          <div style="background:var(--bg-surface);border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px 10px">
+            <div style="position:relative;height:200px"><canvas id="${RELEASE_TREND_CANVAS_ID}"></canvas></div>
+            <div style="margin-top:6px;font-size:10.5px;color:var(--text-subtle);line-height:1.5">
+              橫軸為此版本的歷次品質閘門評估；門檻線直接取自各次評估所記錄的門檻值。
+            </div>
+          </div>
+        </div>
+      `;
+    } else if (gateHistory.length === 1) {
+      trendChartHtml = `
+        <div style="margin-top:12px;padding-top:10px;border-top:1px dashed var(--border);font-size:11.5px;color:var(--text-muted)">
+          指標演進：此版本只有一次品質閘門評估，尚無法構成趨勢。
+        </div>
+      `;
+    } else if (gateHistory.length >= RELEASE_TREND_MIN_POINTS) {
+      // 有多次評估、但這兩個指標都沒有觀測值（舊快照可能只記了 gate_status）。
+      // 插入一個永遠是空的圖框比不畫更糟，因此說明原因。
+      trendChartHtml = `
+        <div style="margin-top:12px;padding-top:10px;border-top:1px dashed var(--border);font-size:11.5px;color:var(--text-muted)">
+          指標演進：此版本的評估紀錄未包含崩潰率與無崩潰用戶率的觀測值，無法繪製趨勢。
+        </div>
+      `;
+    }
+
     // Alert Delivery Timeline (Issue #63)
     let alertDeliveryTimelineHtml = "";
     const alertDeliveries = item.alert_deliveries || [];
@@ -721,6 +792,7 @@ function renderReleaseModalBody(item) {
           ${triggeredPills}
           ${metaBar}
           ${rulesTableHtml}
+          ${trendChartHtml}
           ${timelineHtml}
           ${alertDeliveryTimelineHtml}
         </div>
@@ -983,10 +1055,158 @@ function renderReleaseModalBody(item) {
       </div>
     </div>
   `;
+
+  // canvas 必須先進 DOM 才能掛圖。
+  renderReleaseTrendChart(item);
+}
+
+// ── 指標演進圖（#66 項目 6）──────────────────────────────────────
+// 橫軸是此版本的歷次品質閘門評估，兩條線是 gate 已經記錄下來的 current_value。
+// **這段程式不知道任何門檻值**：門檻線也讀同一筆 rule_results 裡的
+// warn_threshold / fail_threshold（與 #74 的「前端不硬編門檻」同一條規則）。
+const RELEASE_TREND_CANVAS_ID = "__TREND_CANVAS_ID__";
+const RELEASE_TREND_MIN_POINTS = __TREND_MIN_POINTS__;
+const RELEASE_TREND_SERIES = __TREND_SERIES__;
+
+// 比例 → 百分比只在這裡做一次（資料是比例，圖上是 %）。
+const RELEASE_TREND_PERCENT_SCALE = 100;
+
+function readGateHistoryMetric(point, metricName) {
+  const rules = (point && Array.isArray(point.rule_results)) ? point.rule_results : [];
+  return rules.find(r => r && r.metric_name === metricName) || null;
+}
+
+function toTrendPercent(value) {
+  // 缺觀測值一律回 null（搭配 spanGaps:false 畫成斷線）。補 0 會讓「沒量到」
+  // 看起來像「沒有變化」，那是兩件不同的事。
+  return (typeof value === "number") ? value * RELEASE_TREND_PERCENT_SCALE : null;
+}
+
+// 門檻**逐點**取該次評估自己記錄的值。
+//
+// 這張圖畫的是歷史，因此門檻也必須是歷史的：把最後一筆門檻平鋪到整條線，會在 policy
+// 中途調整過時產生自我矛盾的畫面——舊門檻 10%、當時 12% 判 WARN，之後門檻改成 20%，
+// 那個點就會落在警告線「下方」卻帶著 WARN 的 tooltip。缺門檻的點留 null（斷線），
+// 而不是拿隔壁那次的門檻頂替。
+function thresholdSeries(history, metricName, field) {
+  return history.map(point => {
+    const rule = readGateHistoryMetric(point, metricName);
+    return rule ? toTrendPercent(rule[field]) : null;
+  });
+}
+
+// 至少要有一個目標 metric 真的有觀測值，才值得畫這張圖。
+// 呈現層（是否插入 canvas）與渲染層共用這一個判斷，否則兩邊條件一旦分歧就會留下
+// 一個空的圖框——舊快照只有 gate_status、沒有這兩個 rule_results 時正是如此。
+function hasPlottableTrendSeries(item) {
+  const history = (item && Array.isArray(item.gate_history)) ? item.gate_history : [];
+  if (history.length < RELEASE_TREND_MIN_POINTS) return false;
+  return RELEASE_TREND_SERIES.some(sp =>
+    history.some(h => typeof (readGateHistoryMetric(h, sp.metric_name) || {}).current_value === "number")
+  );
+}
+
+function destroyReleaseTrendChart() {
+  if (typeof destroyChart === "function") destroyChart(RELEASE_TREND_CANVAS_ID);
+}
+
+function renderReleaseTrendChart(item) {
+  destroyReleaseTrendChart();
+  if (typeof Chart === "undefined") return;
+  const canvas = $(RELEASE_TREND_CANVAS_ID);
+  if (!canvas) return;
+  if (!hasPlottableTrendSeries(item)) return;
+  const history = item.gate_history;
+
+  const colors = getChartColors();
+  const seriesColors = [colors.danger, colors.accent];
+  const labels = history.map(h =>
+    String(h.evaluated_at || "").replace("T", " ").replace("Z", "").slice(0, 16)
+  );
+
+  const datasets = [];
+  RELEASE_TREND_SERIES.forEach((sp, idx) => {
+    const values = history.map(h => toTrendPercent((readGateHistoryMetric(h, sp.metric_name) || {}).current_value));
+    if (values.every(v => v === null)) return;
+
+    datasets.push({
+      label: `${sp.label} 變化 (%)`,
+      data: values,
+      yAxisID: sp.axis,
+      borderColor: seriesColors[idx % seriesColors.length],
+      backgroundColor: "transparent",
+      borderWidth: 2,
+      pointRadius: 3,
+      tension: 0.3,
+      spanGaps: false,
+    });
+
+    [["warn_threshold", "警告門檻", colors.warning], ["fail_threshold", "失敗門檻", colors.danger]].forEach(
+      ([field, name, color]) => {
+        const levels = thresholdSeries(history, sp.metric_name, field);
+        if (levels.every(v => v === null)) return;
+        datasets.push({
+          label: `${sp.label} ${name}`,
+          data: levels,
+          yAxisID: sp.axis,
+          borderColor: color,
+          backgroundColor: "transparent",
+          borderWidth: 1,
+          borderDash: [4, 4],
+          pointRadius: 0,
+          // 階梯線：門檻在兩次評估之間是固定的，用斜線連接會畫出一個從未存在過的門檻值。
+          stepped: "before",
+          spanGaps: false,
+        });
+      }
+    );
+  });
+
+  if (!datasets.length) return;
+
+  chartInstances[RELEASE_TREND_CANVAS_ID] = new Chart(canvas, {
+    type: "line",
+    data: { labels: labels, datasets: datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: { position: "top", labels: { color: colors.text, boxWidth: 12, font: { size: 10 } } },
+        tooltip: {
+          callbacks: {
+            afterBody: (ctx) => {
+              const point = history[ctx[0].dataIndex];
+              if (!point) return "";
+              const status = String(point.gate_status || "").toUpperCase();
+              return point.sample_sufficient === false
+                ? `閘門：${status}（樣本不足）`
+                : `閘門：${status}`;
+            },
+          },
+        },
+      },
+      scales: {
+        x: { ticks: { color: colors.text, font: { size: 10 } }, grid: { color: colors.grid } },
+        y: {
+          position: "left",
+          ticks: { color: colors.text, font: { size: 10 } },
+          grid: { color: colors.grid },
+        },
+        y1: {
+          position: "right",
+          ticks: { color: colors.text, font: { size: 10 } },
+          grid: { display: false },
+        },
+      },
+    },
+  });
 }
 
 // Global Escape listener for modals
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") closeReleaseDetail();
 });
-"""
+""".replace("__TREND_CANVAS_ID__", RELEASE_TREND_CANVAS_ID).replace(
+        "__TREND_MIN_POINTS__", str(RELEASE_TREND_MIN_POINTS)
+    ).replace("__TREND_SERIES__", _release_trend_series_js())
