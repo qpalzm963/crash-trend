@@ -13,6 +13,8 @@ import os
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from crash_trend.alerts.providers.registry import default_webhook_env_for
+
 
 @dataclass(frozen=True)
 class AlertPolicy:
@@ -98,11 +100,19 @@ def load_alert_policy(
     resend_on_new_reason = bool(raw_cfg.get("resend_on_new_reason", True))
     notify_recovery = bool(raw_cfg.get("notify_recovery", True))
 
-    # Google Chat specific settings
-    raw_gchat = raw_cfg.get("google_chat")
-    gchat_dict: dict[str, Any] = raw_gchat if isinstance(raw_gchat, dict) else {}
-    webhook_env = str(gchat_dict.get("webhook_env", raw_cfg.get("webhook_env", "GOOGLE_CHAT_WEBHOOK_URL"))).strip()
-    use_threads = bool(gchat_dict.get("use_threads", raw_cfg.get("use_threads", True)))
+    # Provider 專屬設定。原本只認 `google_chat:` 這個子區塊；現在任何 provider 都能用
+    # 同名子區塊（`slack:` / `microsoft_teams:` / `webhook:`），語意與原本一致。
+    raw_provider_cfg = raw_cfg.get(provider)
+    provider_dict: dict[str, Any] = raw_provider_cfg if isinstance(raw_provider_cfg, dict) else {}
+
+    # 未指定時用**該 provider 自己的**預設環境變數，而不是一律 Google Chat 的那一個：
+    # 把 GOOGLE_CHAT_WEBHOOK_URL 帶到 Slack 上，會在「設定看起來沒錯」的情況下永遠
+    # 讀不到 URL。provider 名不認識時退回 Google Chat 的預設值（維持既有行為）。
+    fallback_env = default_webhook_env_for(provider) or "GOOGLE_CHAT_WEBHOOK_URL"
+    webhook_env = str(
+        provider_dict.get("webhook_env", raw_cfg.get("webhook_env", fallback_env))
+    ).strip()
+    use_threads = bool(provider_dict.get("use_threads", raw_cfg.get("use_threads", True)))
 
     policy_version = str(raw_cfg.get("policy_version", "1.0")).strip()
 
@@ -127,7 +137,7 @@ def load_alert_policy(
         resend_on_status_change=resend_on_status_change,
         resend_on_new_reason=resend_on_new_reason,
         notify_recovery=notify_recovery,
-        webhook_env=webhook_env or "GOOGLE_CHAT_WEBHOOK_URL",
+        webhook_env=webhook_env or fallback_env,
         use_threads=use_threads,
         policy_version=policy_version or "1.0",
         dashboard_url=dash_url or None,

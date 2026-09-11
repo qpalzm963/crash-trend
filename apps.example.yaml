@@ -91,7 +91,8 @@ apps:
         introduced_issues_count: { warn: 5, fail: 10 }      # 新引入問題數門檻
     release_alerts:                       # 版本品質通知設定 (選填；Dashboard V2.7 - Issue #59)
       enabled: true                       # 是否啟用通知（預設 true）
-      provider: google_chat               # 通知管道（目前支援 google_chat）
+      provider: google_chat               # 通知管道：google_chat / slack / microsoft_teams / webhook
+                                          #   （別名：teams, msteams, http, custom）
       notify_on:                          # 觸發通知之狀態清單
         - fail
         - warn
@@ -99,9 +100,19 @@ apps:
       resend_on_status_change: true       # 狀態變更時（如 WARN 轉 FAIL）忽略冷卻立即重新發送
       resend_on_new_reason: true          # 出現新退化原因時忽略冷卻立即發送
       notify_recovery: true               # 前次異常後若指標復原至 PASS，發送復原通知
-      google_chat:
+      google_chat:                        # provider 專屬設定：子區塊名稱 == provider 名稱
         webhook_env: GOOGLE_CHAT_WEBHOOK_URL # Webhook URL 環境變數名稱（嚴禁在設定檔寫死 URL 與 Token）
-        use_threads: true                 # 是否使用版本專屬 threadKey 收攏通知
+        use_threads: true                 # 是否使用版本專屬 threadKey 收攏通知（僅 Google Chat 支援）
+      # 其他通道的設定方式相同，只要把子區塊改成該 provider 的名稱。未指定 webhook_env
+      # 時各通道有自己的預設環境變數，不會沿用 Google Chat 的那一個：
+      #   slack:            webhook_env: SLACK_WEBHOOK_URL      # Slack Incoming Webhook（不支援 thread）
+      #   microsoft_teams:  webhook_env: MS_TEAMS_WEBHOOK_URL   # O365 connector 或 Power Automate 皆可
+      #   webhook:          webhook_env: ALERT_WEBHOOK_URL      # 自家 HTTP 接收端
+      # `webhook` 通道送出的是 AlertMessage 的**完整結構化欄位**（app_id / platform /
+      #   target_version / gate_status / regression_reasons / decision_action /
+      #   recommendation / dashboard_url / text ...），而非排版後的文字，方便接收端自行
+      #   轉派或開單。所有通道共用同一套投遞語意：2xx 視為成功、429 與 5xx 有限次數
+      #   指數退避重試、其餘 4xx 立刻失敗，且錯誤訊息一律遮蔽 webhook URL。
 
   rider_app:                              # 範例 2：Crashlytics-only 模式 (推薦：輕量、不佔 Sessions 儲存)
     display_name: 外送司機端

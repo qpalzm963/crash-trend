@@ -27,7 +27,8 @@ from crash_trend.alerts.policy import (
     load_alert_policy,
 )
 from crash_trend.alerts.providers import AlertProvider
-from crash_trend.alerts.providers.google_chat import GoogleChatWebhookProvider
+from crash_trend.alerts.providers.factory import build_provider
+from crash_trend.alerts.providers.registry import supported_providers
 from crash_trend.alerts.state import AlertDeliveryStore
 from crash_trend.config import get_app, load_config, out_dir
 from crash_trend.gate.artifact import ReleaseGateArtifact, load_release_gate_artifact
@@ -473,7 +474,10 @@ class AlertDispatcher:
                     status="failed",
                     attempt_count=0,
                     error_code="NO_PROVIDER",
-                    error_message=f"No delivery provider configured for '{policy.provider}'.",
+                    error_message=(
+                        f"No delivery provider configured for '{policy.provider}'. "
+                        f"Supported: {', '.join(supported_providers())}."
+                    ),
                 )
             else:
                 res = self.provider.send(msg)
@@ -569,12 +573,10 @@ def dispatch_alerts_for_app(
         except Exception:
             effective_hist_store = None
 
+    # 通道清單只有 providers/registry 一份；dispatcher 不需要知道任何 provider 的名字。
     effective_provider = provider
-    if effective_provider is None and effective_policy.provider == "google_chat":
-        effective_provider = GoogleChatWebhookProvider(
-            webhook_env=effective_policy.webhook_env,
-            use_threads=effective_policy.use_threads,
-        )
+    if effective_provider is None:
+        effective_provider = build_provider(effective_policy)
 
     dispatcher = AlertDispatcher(
         store=effective_store,
