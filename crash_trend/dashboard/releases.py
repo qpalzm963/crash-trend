@@ -670,7 +670,7 @@ function renderReleaseModalBody(item) {
     // 單一次評估不構成趨勢，因此 < 2 筆時給一句說明而不是畫一個單點折線圖：
     // 一個只有一點的「趨勢圖」比沒有圖更容易被讀成「很平穩」。
     let trendChartHtml = "";
-    if (gateHistory.length >= RELEASE_TREND_MIN_POINTS) {
+    if (hasPlottableTrendSeries(item)) {
       trendChartHtml = `
         <div style="margin-top:12px;padding-top:10px;border-top:1px dashed var(--border)">
           <div style="font-size:12px;font-weight:600;color:var(--text-main);margin-bottom:6px">
@@ -688,6 +688,14 @@ function renderReleaseModalBody(item) {
       trendChartHtml = `
         <div style="margin-top:12px;padding-top:10px;border-top:1px dashed var(--border);font-size:11.5px;color:var(--text-muted)">
           指標演進：此版本只有一次品質閘門評估，尚無法構成趨勢。
+        </div>
+      `;
+    } else if (gateHistory.length >= RELEASE_TREND_MIN_POINTS) {
+      // 有多次評估、但這兩個指標都沒有觀測值（舊快照可能只記了 gate_status）。
+      // 插入一個永遠是空的圖框比不畫更糟，因此說明原因。
+      trendChartHtml = `
+        <div style="margin-top:12px;padding-top:10px;border-top:1px dashed var(--border);font-size:11.5px;color:var(--text-muted)">
+          指標演進：此版本的評估紀錄未包含崩潰率與無崩潰用戶率的觀測值，無法繪製趨勢。
         </div>
       `;
     }
@@ -1074,16 +1082,28 @@ function toTrendPercent(value) {
   return (typeof value === "number") ? value * RELEASE_TREND_PERCENT_SCALE : null;
 }
 
-// 門檻取「最後一筆有記錄該門檻的評估」：policy 可能中途調整過，最新那份才與
-// 畫面上其他地方的判定一致。
-function latestThresholds(history, metricName) {
-  for (let i = history.length - 1; i >= 0; i--) {
-    const rule = readGateHistoryMetric(history[i], metricName);
-    if (rule && (typeof rule.warn_threshold === "number" || typeof rule.fail_threshold === "number")) {
-      return rule;
-    }
-  }
-  return null;
+// 門檻**逐點**取該次評估自己記錄的值。
+//
+// 這張圖畫的是歷史，因此門檻也必須是歷史的：把最後一筆門檻平鋪到整條線，會在 policy
+// 中途調整過時產生自我矛盾的畫面——舊門檻 10%、當時 12% 判 WARN，之後門檻改成 20%，
+// 那個點就會落在警告線「下方」卻帶著 WARN 的 tooltip。缺門檻的點留 null（斷線），
+// 而不是拿隔壁那次的門檻頂替。
+function thresholdSeries(history, metricName, field) {
+  return history.map(point => {
+    const rule = readGateHistoryMetric(point, metricName);
+    return rule ? toTrendPercent(rule[field]) : null;
+  });
+}
+
+// 至少要有一個目標 metric 真的有觀測值，才值得畫這張圖。
+// 呈現層（是否插入 canvas）與渲染層共用這一個判斷，否則兩邊條件一旦分歧就會留下
+// 一個空的圖框——舊快照只有 gate_status、沒有這兩個 rule_results 時正是如此。
+function hasPlottableTrendSeries(item) {
+  const history = (item && Array.isArray(item.gate_history)) ? item.gate_history : [];
+  if (history.length < RELEASE_TREND_MIN_POINTS) return false;
+  return RELEASE_TREND_SERIES.some(sp =>
+    history.some(h => typeof (readGateHistoryMetric(h, sp.metric_name) || {}).current_value === "number")
+  );
 }
 
 function destroyReleaseTrendChart() {
@@ -1095,8 +1115,8 @@ function renderReleaseTrendChart(item) {
   if (typeof Chart === "undefined") return;
   const canvas = $(RELEASE_TREND_CANVAS_ID);
   if (!canvas) return;
-  const history = (item && Array.isArray(item.gate_history)) ? item.gate_history : [];
-  if (history.length < RELEASE_TREND_MIN_POINTS) return;
+  if (!hasPlottableTrendSeries(item)) return;
+  const history = item.gate_history;
 
   const colors = getChartColors();
   const seriesColors = [colors.danger, colors.accent];
@@ -1121,22 +1141,22 @@ function renderReleaseTrendChart(item) {
       spanGaps: false,
     });
 
-    const thresholds = latestThresholds(history, sp.metric_name);
-    if (!thresholds) return;
     [["warn_threshold", "警告門檻", colors.warning], ["fail_threshold", "失敗門檻", colors.danger]].forEach(
       ([field, name, color]) => {
-        const level = toTrendPercent(thresholds[field]);
-        if (level === null) return;
+        const levels = thresholdSeries(history, sp.metric_name, field);
+        if (levels.every(v => v === null)) return;
         datasets.push({
           label: `${sp.label} ${name}`,
-          data: labels.map(() => level),
+          data: levels,
           yAxisID: sp.axis,
           borderColor: color,
           backgroundColor: "transparent",
           borderWidth: 1,
           borderDash: [4, 4],
           pointRadius: 0,
-          tension: 0,
+          // 階梯線：門檻在兩次評估之間是固定的，用斜線連接會畫出一個從未存在過的門檻值。
+          stepped: "before",
+          spanGaps: false,
         });
       }
     );

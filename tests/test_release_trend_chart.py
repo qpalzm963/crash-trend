@@ -207,20 +207,74 @@ class TestThresholdsFollowTheDataNotTheCode(TrendChartRuntime):
         self.assertEqual([round(v, 2) for v in warn["data"]], [42.0] * 3)
         self.assertEqual([round(v, 2) for v in fail["data"]], [99.0] * 3)
 
-    def test_the_latest_recorded_threshold_wins(self) -> None:
-        """policy 中途調整過時，門檻線要用最新那份，才與畫面其他地方的判定一致。"""
+    def test_each_point_uses_the_threshold_recorded_with_it(self) -> None:
+        """門檻是歷史的：policy 中途調整過時，每個點用它自己那次的門檻。
+
+        把最後一筆門檻平鋪到整條線會產生自我矛盾的畫面（見下一條測試）。
+        """
         bundle = copy.deepcopy(self.bundle)
         release = self.release(bundle)
-        for rule in release["gate_history"][0]["rule_results"]:
-            if rule["metric_name"] == "crash_rate_change_pct":
-                rule["warn_threshold"] = 0.01
-        for rule in release["gate_history"][-1]["rule_results"]:
-            if rule["metric_name"] == "crash_rate_change_pct":
-                rule["warn_threshold"] = 0.33
+        for point, warn_level in zip(release["gate_history"], (0.01, 0.10, 0.33), strict=True):
+            for rule in point["rule_results"]:
+                if rule["metric_name"] == "crash_rate_change_pct":
+                    rule["warn_threshold"] = warn_level
         dump = self.open_target(bundle)
         warn = self.dataset(dump["config"], "崩潰率 警告門檻")
         assert warn is not None
-        self.assertEqual([round(v, 2) for v in warn["data"]], [33.0] * 3)
+        self.assertEqual([round(v, 2) for v in warn["data"]], [1.0, 10.0, 33.0])
+
+    def test_a_policy_change_never_contradicts_the_historical_status(self) -> None:
+        """reviewer 提出的情境：舊門檻 10% 判 WARN，新門檻 20%。
+
+        若門檻線平鋪成 20%，那個 12% 的點會落在警告線下方、tooltip 卻寫 WARN。
+        逐點門檻讓「點在自己那條線之上」與「當時判 WARN」保持一致。
+        """
+        bundle = copy.deepcopy(self.bundle)
+        release = self.release(bundle)
+        release["gate_history"] = release["gate_history"][:2]
+        old_point, new_point = release["gate_history"]
+        old_point["gate_status"] = "warn"
+        new_point["gate_status"] = "pass"
+        for point, (value, warn_level) in zip(
+            release["gate_history"], ((0.12, 0.10), (0.12, 0.20)), strict=True
+        ):
+            for rule in point["rule_results"]:
+                if rule["metric_name"] == "crash_rate_change_pct":
+                    rule["current_value"] = value
+                    rule["warn_threshold"] = warn_level
+
+        dump = self.open_target(bundle)
+        values = self.dataset(dump["config"], "崩潰率 變化")
+        warn = self.dataset(dump["config"], "崩潰率 警告門檻")
+        assert values is not None and warn is not None
+        self.assertEqual([round(v, 2) for v in warn["data"]], [10.0, 20.0])
+        # 判 WARN 的那次：觀測值在自己那條門檻之上。
+        self.assertGreater(values["data"][0], warn["data"][0])
+        # 門檻放寬之後的那次：同樣的觀測值在新門檻之下，與 pass 一致。
+        self.assertLess(values["data"][1], warn["data"][1])
+
+    def test_threshold_lines_are_stepped_not_interpolated(self) -> None:
+        """門檻在兩次評估之間是固定的；斜線會畫出一個從未存在過的門檻值。"""
+        dump = self.open_target()
+        for name in ("崩潰率 警告門檻", "崩潰率 失敗門檻"):
+            with self.subTest(dataset=name):
+                ds = self.dataset(dump["config"], name)
+                assert ds is not None
+                self.assertTrue(ds.get("stepped"))
+                self.assertFalse(ds.get("spanGaps"))
+
+    def test_a_point_without_thresholds_leaves_a_gap(self) -> None:
+        """缺門檻的那次不得拿隔壁那次的門檻頂替。"""
+        bundle = copy.deepcopy(self.bundle)
+        release = self.release(bundle)
+        for rule in release["gate_history"][1]["rule_results"]:
+            if rule["metric_name"] == "crash_rate_change_pct":
+                rule.pop("warn_threshold", None)
+        dump = self.open_target(bundle)
+        warn = self.dataset(dump["config"], "崩潰率 警告門檻")
+        assert warn is not None
+        self.assertIsNone(warn["data"][1])
+        self.assertEqual([warn["data"][0], warn["data"][2]], [10.0, 10.0])
 
     def test_a_metric_without_thresholds_still_draws_its_series(self) -> None:
         bundle = copy.deepcopy(self.bundle)
@@ -280,6 +334,35 @@ class TestDegradation(TrendChartRuntime):
     def test_an_empty_history_list_renders_no_chart_block(self) -> None:
         bundle = copy.deepcopy(self.bundle)
         self.release(bundle)["gate_history"] = []
+        dump = self.open_target(bundle)
+        self.assertEqual(dump["configs"], 0)
+        self.assertNotIn(releases.RELEASE_TREND_CANVAS_ID, dump["body"])
+
+    def test_no_chart_shell_when_no_metric_has_observations(self) -> None:
+        """多次評估但兩個目標指標都沒有觀測值（舊快照只記了 gate_status）。
+
+        原本只看 `gate_history.length >= 2` 就插入 canvas，渲染時才把全 null 的
+        series 丟掉，於是留下一個 200px 的空圖框。
+        """
+        bundle = copy.deepcopy(self.bundle)
+        release = self.release(bundle)
+        targets = {"crash_rate_change_pct", "crash_free_users_diff"}
+        for point in release["gate_history"]:
+            point["rule_results"] = [
+                r for r in point["rule_results"] if r["metric_name"] not in targets
+            ]
+        dump = self.open_target(bundle)
+        self.assertEqual(dump["configs"], 0, "沒有可畫的 series 卻建了圖表")
+        self.assertNotIn(releases.RELEASE_TREND_CANVAS_ID, dump["body"], "留下了空圖框")
+        self.assertIn("未包含崩潰率與無崩潰用戶率的觀測值", dump["body"])
+
+    def test_a_history_with_only_thresholds_and_no_values_draws_nothing(self) -> None:
+        """有門檻但沒有觀測值時，不得只畫兩條門檻線（那不是趨勢圖）。"""
+        bundle = copy.deepcopy(self.bundle)
+        release = self.release(bundle)
+        for point in release["gate_history"]:
+            for rule in point["rule_results"]:
+                rule["current_value"] = None
         dump = self.open_target(bundle)
         self.assertEqual(dump["configs"], 0)
         self.assertNotIn(releases.RELEASE_TREND_CANVAS_ID, dump["body"])
