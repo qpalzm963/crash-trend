@@ -168,12 +168,16 @@ def threshold_rule_for(spec: ComparisonMetricSpec, policy: GatePolicy) -> Thresh
     return rule
 
 
-def _oriented(spec: ComparisonMetricSpec, change: float) -> float:
-    """把契約上的變化量轉成「正值代表退化」。"""
+def oriented_change(spec: ComparisonMetricSpec, change: float) -> float:
+    """把契約上的變化量轉成「正值代表退化」。
+
+    公開給門檻推薦（#76）共用：正負號的處理只能有一份，否則下降型指標
+    （無崩潰用戶率）的門檻正負號會在兩個模組裡各自演化。
+    """
     return change if spec.direction == "increase" else -change
 
 
-def _signed_threshold(spec: ComparisonMetricSpec, value: float | int) -> float | int:
+def signed_threshold(spec: ComparisonMetricSpec, value: float | int) -> float | int:
     """把 threshold 轉回與 `change` 同一個方向。
 
     與 evaluator 對 `crash_free_users_drop` 的既有慣例一致（該 rule 的
@@ -190,8 +194,8 @@ def format_threshold_display(spec: ComparisonMetricSpec, rule: ThresholdRule) ->
     那個 `* 100` 與小數位數就會變成前端對 threshold 語意的第二份假設。前端只負責
     把這個字串印出來。
     """
-    warn = _signed_threshold(spec, rule.warn) * 100
-    fail = _signed_threshold(spec, rule.fail) * 100
+    warn = signed_threshold(spec, rule.warn) * 100
+    fail = signed_threshold(spec, rule.fail) * 100
     return f"警告 {warn:+.2f}% / 失敗 {fail:+.2f}%"
 
 
@@ -210,7 +214,7 @@ def _reason(
     pct = change * 100
     if classification == "pass":
         return f"{spec.label}變動 {pct:+.2f}% 於正常範圍（{format_threshold_display(spec, rule)}）"
-    threshold = _signed_threshold(spec, rule.fail if classification == "fail" else rule.warn) * 100
+    threshold = signed_threshold(spec, rule.fail if classification == "fail" else rule.warn) * 100
     level = "失敗" if classification == "fail" else "警告"
     return f"{spec.label}變動 {pct:+.2f}%，達到{level}門檻 ({threshold:+.2f}%)"
 
@@ -232,7 +236,7 @@ def evaluate_comparison_metric(
         classification: MetricClassification = "skip"
     else:
         classification = classify_threshold_breach(
-            _oriented(spec, change), rule, zero_baseline=zero_baseline
+            oriented_change(spec, change), rule, zero_baseline=zero_baseline
         )
 
     return {
@@ -242,8 +246,8 @@ def evaluate_comparison_metric(
         "direction": spec.direction,
         "change": change,
         "classification": classification,
-        "warn_threshold": _signed_threshold(spec, rule.warn),
-        "fail_threshold": _signed_threshold(spec, rule.fail),
+        "warn_threshold": signed_threshold(spec, rule.warn),
+        "fail_threshold": signed_threshold(spec, rule.fail),
         "threshold_display": format_threshold_display(spec, rule),
         "threshold_source": COMPARISON_THRESHOLD_SOURCE,
         "policy_version": policy.policy_version,

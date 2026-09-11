@@ -538,6 +538,47 @@ python3 -m crash_trend.ai_config_service --serve 8080
 
 ---
 
+## Gate 門檻建議 (Threshold Recommendation - Issue #76)
+
+門檻該定在哪，是新接一個 App 時最沒有依據的決定。本工具依該 App 的歷史 release 分佈
+產出建議值，**只輸出、不修改任何設定檔**：
+
+- **觀測值與 Gate 的輸入完全相同**：讀 `release_catalog[].vs_previous` 的四個變化量——
+  那正是 gate rule 1~4 實際評估的量，因此分佈與門檻是同一個尺度。
+- **確定性百分位數**：nearest-rank（不插值），`warn` 取 p80、`fail` 取 p95，因此每個門檻
+  都對應到某一次真實發布，而不是一個從未被觀測到的插值。
+- **反事實是這份建議唯一可被審查的部分**：同一批歷史版本在「現行門檻」與「建議門檻」下
+  各會被判幾次 warn / fail。該計算一律呼叫 gate 的同一個判定原語
+  `classify_threshold_breach()`，不存在第二套判定。
+- **只收 gate 真的會評估的歷史點**：`evaluate_release()` 在跑 rule 1~4 之前會先擋掉
+  本版／前版樣本不足的版本（回 `insufficient_data`），那些變化量從來不會被判定，因此
+  也不得進入分佈與反事實。本版樣本是否充足一律問 guard 用的同一個
+  `is_sample_sufficient()`。
+- **寧可不給數字**：可用觀測值不足 5 筆、歷史上從未觀測到退化、建議的 `warn` 四捨五入後
+  不大於 0（負門檻會被 `load_gate_policy()` 退回預設值、零門檻會讓沒有退化的發布也判
+  warn），或分佈過於集中導致 `warn >= fail` 時，一律拒絕給建議並說明原因。零基準退化、
+  本版／前版樣本不足與缺值一律排除並計數回報。
+- **`enabled: false` 時明載前提**：gate 停用時 `evaluate_release()` 會在第一行就 return、
+  一條 metric 判定都不產生，因此「現行門檻會判幾次」本來沒有答案。此時報表會標明以下
+  數字是「假設把 gate 啟用」的推算，可貼的片段也會一併帶上 `enabled: true`（少了那一行，
+  貼進去的門檻不會被評估，反事實就不成立）；JSON 輸出帶 `gate_enabled` / `hypothetical`。
+  parity 由測試以 `enabled=True` 的 policy clone 跑 `evaluate_release()` 核對。
+- **這是相對標準，不是品質標準**：百分位門檻回答「對這個 App 而言什麼算不尋常」，照抄會
+  讓 gate 永遠對最差的那幾 % 發布喊 fail。輸出中已明載此限制，採用與否是人的決定。
+- **不成為第二個門檻來源**：執行期門檻仍只來自 `GatePolicy`，
+  `metric_evaluations.threshold_source` 維持單一合法值 `release_gate_policy`（Issue #74
+  契約不變）；gate 在評估時也不會呼叫推薦器（V3 定案不建立動態統計 baseline）。
+
+```bash
+# 產出建議報表（含分佈、反事實與可貼上 apps.yaml 的片段）
+python3 -m crash_trend.recommend_gate_thresholds --app shop_app
+
+# 以 JSON 輸出供其他工具取用
+python3 -m crash_trend.recommend_gate_thresholds --app shop_app --json
+```
+
+---
+
 ## 告警觀測度與發送審計 (Alert Delivery Observability - Issue #63)
 
 系統提供完整的唯讀投影與查詢層 (`crash_trend/alerts/observability.py`)，將 Google Chat 品質通知之發送狀態、重試、去重冷卻與審計記錄安全呈現於 Dashboard 與 CLI：

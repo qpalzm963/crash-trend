@@ -36,12 +36,17 @@ def _attach_decision(result: PlatformGateResult) -> PlatformGateResult:
     return result
 
 
-def _is_sample_sufficient(
+def is_sample_sufficient(
     item: dict[str, Any] | None,
     recent_health: dict[str, Any] | None,
     policy: GatePolicy,
 ) -> tuple[bool, int, str, str | None]:
-    """Inspects recent health windows and release item using unified is_version_sample_sufficient."""
+    """Inspects recent health windows and release item using unified is_version_sample_sufficient.
+
+    公開（#101 review）給門檻推薦（#76）共用：推薦器必須排除 gate 在
+    sample sufficiency guard 就回 `insufficient_data` 的歷史版本，而「樣本是否充足」
+    的判斷只能有一份——推薦器自己寫一次就會與 guard 各自演化。
+    """
     min_adopt = policy.min_adoption_rate
     min_sess = policy.min_sessions
     min_ev = policy.min_version_events
@@ -152,7 +157,7 @@ def evaluate_release(
         }
 
     recent_health = item.get("recent_health") or {}
-    sample_ok, total_sess, sess_reason, suff_w = _is_sample_sufficient(item, recent_health, policy)
+    sample_ok, total_sess, sess_reason, suff_w = is_sample_sufficient(item, recent_health, policy)
 
     # 1. Sample Sufficiency Guard
     if not sample_ok:
