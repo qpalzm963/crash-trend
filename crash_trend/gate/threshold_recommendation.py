@@ -51,6 +51,23 @@ baseline，本模組刻意不越過那條線：它不會寫入任何設定檔，
 
 被排除的觀測值（本版樣本不足、零基準、前版樣本不足、缺值）一律計數並回報，不靜默丟棄。
 
+## gate 停用時：明載前提的 hypothetical 建議
+
+`release_gate.enabled: false` 時 `evaluate_release()` 會在第一行就 return，rule 1~4
+完全不跑、一個 metric 判定都不產生。因此「現行門檻在歷史上會判幾次 warn / fail」這個
+問題在停用狀態下**沒有答案**——直接照算會產生一份與真實 gate 無關的反事實。
+
+這個工具最常被用在「新接一個 App、gate 還沒啟用，門檻該定在哪」，所以停用時不是拒絕
+輸出，而是把前提明載出來：`gate_enabled=False` 一路帶到報表與 JSON（報表講明這些數字
+是「假設 gate 啟用」的推算），可貼的片段也會一併帶上 `enabled: true`——否則貼進去的
+門檻仍然不會被評估，反事實就又不成立。
+
+**計算本身不需要為停用狀態做任何特例**：`enabled` 只決定 gate 要不要跑，不影響它怎麼
+判（門檻查表與 `classify_threshold_breach()` 都不讀那個欄位）。因此這裡不建
+`enabled=True` 的 clone——那會是一個永遠改不了任何輸出的無效動作。parity 改由測試負責：
+測試拿 `replace(policy, enabled=True)` 去跑 `evaluate_release()`，核對這裡算出的次數，
+另有一條先釘住「停用時 `rule_results` 真的是空的」這個前提。
+
 ## 只收 gate 真的會評估的歷史點
 
 `evaluate_release()` 在跑 rule 1~4 之前有兩道 guard：本版樣本不足、前版樣本不足，任一
@@ -115,6 +132,9 @@ class ThresholdRecommendation:
     rule_name: str
     policy_field: str
     label: str
+    #: 這個 App 的 `release_gate.enabled`。`False` 代表 gate 目前完全不做 rule 1~4 判定，
+    #: 因此以下反事實與建議值都是「假設把 gate 啟用」的推算（見模組 docstring）。
+    gate_enabled: bool
     observations: MetricObservations
     current: ThresholdRule
     recommended: ThresholdRule | None
@@ -131,6 +151,10 @@ class ThresholdRecommendation:
             "rule_name": self.rule_name,
             "policy_field": self.policy_field,
             "label": self.label,
+            "gate_enabled": self.gate_enabled,
+            # `gate_enabled` 的直接推論，但 JSON consumer 要的是「這些數字能不能當真」
+            # 這個問句的答案，因此明寫出來，不要求對方自己推。
+            "hypothetical": not self.gate_enabled,
             "sample_size": self.observations.sample_size,
             "excluded": {
                 "missing": self.observations.missing,
@@ -237,7 +261,13 @@ def recommend_for_metric(
     spec: ComparisonMetricSpec,
     policy: GatePolicy,
 ) -> ThresholdRecommendation:
-    """對單一指標產出門檻建議（或明確的不建議原因）。"""
+    """對單一指標產出門檻建議（或明確的不建議原因）。
+
+    `policy.enabled` 為 `False` 時，`evaluate_release()` 會在第一行就 return，rule 1~4
+    一個都不跑——那個狀態下「現行門檻會判幾次」沒有答案。算法不因此改變（`enabled` 不
+    影響 gate 怎麼判，只影響它跑不跑），但 `gate_enabled=False` 必須帶進結果，讓報表與
+    JSON 明載這份反事實的前提是「假設 gate 啟用」。
+    """
     obs = collect_observations(catalog, spec, policy)
     # `GatePolicy` 的門檻本來就存在「正值代表退化」的 frame 裡（`crash_free_users_drop`
     # 存 0.005 表示「下降 0.5 個百分點」），evaluator 也是直接把它交給
@@ -256,6 +286,7 @@ def recommend_for_metric(
             rule_name=spec.rule_name,
             policy_field=spec.policy_field,
             label=spec.label,
+            gate_enabled=policy.enabled,
             observations=obs,
             current=current,
             recommended=recommended,

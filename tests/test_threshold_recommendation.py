@@ -7,7 +7,9 @@
 
 1. **反事實必須等於 gate 真的會怎麼判。** 「這 7 次發布在現行門檻下有 2 次 fail」是這份
    建議唯一可被審查的部分；若它是用自己寫的比較算出來的，那它就不是證據。因此有一條
-   測試直接跑 `evaluate_release()`，逐一比對兩邊的判定。
+   測試直接跑 `evaluate_release()`，逐一比對兩邊的判定。`enabled: false` 是這條保證的
+   唯一例外——那個狀態下 gate 一條 rule 都不跑，因此輸出必須明載「假設 gate 啟用」這個
+   前提，parity 則對 `enabled=True` 的 clone 核對。
 2. **正負號只有一套。** `GatePolicy` 的門檻已經在「正值代表退化」的 frame 裡，而
    `vs_previous` 的變化量不是（下降型指標的退化是負值）。開發過程中這裡真的寫錯過一次：
    對 policy 門檻多做一次方向換算，導致無崩潰用戶率的反事實變成 4/4 fail。
@@ -21,6 +23,7 @@ import copy
 import json
 import sys
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -110,6 +113,20 @@ def make_catalog(
         )
         for idx, (change, diff) in enumerate(zip(crash_changes, cfu, strict=True))
     ]
+
+
+def parse_yaml_snippet(report: str) -> dict[str, Any]:
+    """把報表裡「可貼進 apps.yaml 的片段」真的用 yaml 解析出來。"""
+    start = report.index("    apps:")
+    end = report.index("=====", start)
+    snippet = "\n".join(
+        line[4:] if line.startswith("    ") else line
+        for line in report[start:end].splitlines()
+        if line.strip()
+    )
+    parsed = yaml.safe_load(snippet)
+    assert isinstance(parsed, dict)
+    return parsed
 
 
 class TestPercentileIsDeterministicAndObserved(unittest.TestCase):
@@ -255,6 +272,50 @@ class TestTheCounterfactualEqualsWhatTheGateWouldSay(unittest.TestCase):
             rec.current_counts,
             self._gate_counts(catalog, policy, CRASH_SPEC.metric_name),
         )
+
+    def test_a_disabled_gate_judges_nothing_at_all(self) -> None:
+        """前提：`enabled: false` 時 `evaluate_release()` 在第一行就 return。
+
+        因此「現行門檻在歷史上會判幾次」在停用狀態下沒有答案——不是 0 次 fail，
+        而是連一條 metric 判定都不存在。
+        """
+        catalog = make_catalog(list(self.CHANGES))
+        disabled = GatePolicy(enabled=False)
+        for item in catalog:
+            self.assertEqual(evaluate_release(item, disabled)["rule_results"], [])
+        self.assertEqual(
+            self._gate_counts(catalog, disabled, CRASH_SPEC.metric_name),
+            {"pass": 0, "warn": 0, "fail": 0},
+        )
+
+    def test_a_disabled_gate_counterfactual_equals_the_enabled_clone(self) -> None:
+        """停用時的反事實必須等於「同一份 policy 但 enabled=True」跑出來的判定。
+
+        推薦器不得默默拿停用的 policy 去算一份與真實 gate 無關的數字：那個前提要嘛
+        成立（clone parity），要嘛就不能出現在輸出裡。
+        """
+        catalog = make_catalog(list(self.CHANGES))
+        disabled = GatePolicy(enabled=False)
+        rec = recommend_for_metric(catalog, CRASH_SPEC, disabled)
+        self.assertFalse(rec.gate_enabled, "前提必須被帶進結果")
+        self.assertTrue(rec.to_dict()["hypothetical"])
+
+        enabled_clone = replace(disabled, enabled=True)
+        self.assertEqual(
+            rec.current_counts,
+            self._gate_counts(catalog, enabled_clone, CRASH_SPEC.metric_name),
+        )
+        assert rec.recommended is not None
+        adopted = replace(enabled_clone, crash_rate_change_pct=rec.recommended)
+        self.assertEqual(
+            rec.recommended_counts,
+            self._gate_counts(catalog, adopted, CRASH_SPEC.metric_name),
+        )
+
+    def test_an_enabled_gate_is_not_reported_as_hypothetical(self) -> None:
+        rec = recommend_for_metric(make_catalog(list(self.CHANGES)), CRASH_SPEC, GatePolicy())
+        self.assertTrue(rec.gate_enabled)
+        self.assertFalse(rec.to_dict()["hypothetical"])
 
     def test_the_decrease_metric_counterfactual_is_not_all_fail(self) -> None:
         """回歸測試：對 policy 門檻多做一次方向換算，會讓每一筆都變成 fail。"""
@@ -416,14 +477,7 @@ class TestTheReportIsPasteReady(unittest.TestCase):
 
     def test_the_snippet_round_trips_through_load_gate_policy(self) -> None:
         """最強的「可貼上」證明：真的用 yaml 解析，再餵給 load_gate_policy。"""
-        start = self.report.index("    apps:")
-        end = self.report.index("=====", start)
-        snippet = "\n".join(
-            line[4:] if line.startswith("    ") else line
-            for line in self.report[start:end].splitlines()
-            if line.strip()
-        )
-        parsed = yaml.safe_load(snippet)
+        parsed = parse_yaml_snippet(self.report)
         policy = load_gate_policy(parsed["apps"]["demo_app"])
         for rec in self.recs:
             if rec.recommended is None:
@@ -442,6 +496,60 @@ class TestTheReportIsPasteReady(unittest.TestCase):
     def test_both_counterfactuals_are_shown_for_an_actionable_metric(self) -> None:
         self.assertIn("現行 pass", self.report)
         self.assertIn("建議 pass", self.report)
+
+
+class TestADisabledGateIsAStatedAssumptionInTheReport(unittest.TestCase):
+    """停用時輸出的數字是推算，報表與片段都必須讓那個前提無法被忽略。"""
+
+    CATALOG = make_catalog(
+        [0.02, 0.31, -0.05, 0.12, 0.08, 0.45, 0.01],
+        cfu_diffs=[0.0001, -0.004, 0.0002, -0.001, 0.0, -0.009, 0.0003],
+    )
+
+    def _report(self, policy: GatePolicy) -> str:
+        return format_report("demo_app", recommend_thresholds(self.CATALOG, policy))
+
+    def test_the_report_says_the_numbers_assume_an_enabled_gate(self) -> None:
+        report = self._report(GatePolicy(enabled=False))
+        self.assertIn("release_gate.enabled 為 false", report)
+        self.assertIn("假設 gate 啟用", report)
+
+    def test_the_snippet_turns_the_gate_on_so_the_counterfactual_holds(self) -> None:
+        """少了 `enabled: true`，貼進去的門檻不會被評估，報表的反事實就不成立。"""
+        policy = GatePolicy(enabled=False)
+        recs = recommend_thresholds(self.CATALOG, policy)
+        parsed = parse_yaml_snippet(self._report(policy))
+        app_cfg = parsed["apps"]["demo_app"]
+        # 斷言片段**真的寫了**那一行，不能只問 load_gate_policy：`enabled` 缺席時
+        # loader 的預設值就是 True，那樣這條斷言永遠不會紅。
+        self.assertIs(
+            app_cfg["release_gate"].get("enabled"),
+            True,
+            "片段沒有把 gate 打開；貼進 enabled: false 的設定裡，門檻不會被評估",
+        )
+        adopted = load_gate_policy(app_cfg)
+        self.assertTrue(adopted.enabled)
+        for rec in recs:
+            if rec.recommended is None:
+                continue
+            with self.subTest(metric=rec.metric_name):
+                self.assertEqual(getattr(adopted, rec.policy_field), rec.recommended)
+                counts = {"pass": 0, "warn": 0, "fail": 0}
+                for item in self.CATALOG:
+                    for rule in evaluate_release(item, adopted)["rule_results"]:
+                        if rule["metric_name"] == rec.metric_name:
+                            counts[str(rule["status"])] += 1
+                self.assertEqual(
+                    counts,
+                    rec.recommended_counts,
+                    "貼上片段後 gate 的判定與報表的反事實不一致",
+                )
+
+    def test_an_enabled_gate_report_carries_no_assumption_and_no_enabled_line(self) -> None:
+        """gate 本來就啟用時不得出現前提字樣，也不得叫人去動 enabled。"""
+        report = self._report(GatePolicy())
+        self.assertNotIn("假設 gate 啟用", report)
+        self.assertNotIn("enabled", report)
 
 
 class TestItDoesNotCrossIntoRuntimeThresholds(unittest.TestCase):

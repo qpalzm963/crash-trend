@@ -30,7 +30,12 @@ from crash_trend.release_gate import load_app_release_catalog
 
 
 def format_report(app_name: str, recs: list[ThresholdRecommendation]) -> str:
-    """組出人讀的報表。"""
+    """組出人讀的報表。
+
+    `gate_enabled` 為 `False` 時，報表必須把「這些數字是假設 gate 啟用才成立」講在最
+    前面，並讓可貼的片段一併帶上 `enabled: true`——否則貼進去的門檻仍然不會被評估。
+    """
+    gate_enabled = next((r.gate_enabled for r in recs), True)
     lines: list[str] = [
         "",
         f"================ [Gate 門檻建議：{app_name}] ================",
@@ -41,6 +46,17 @@ def format_report(app_name: str, recs: list[ThresholdRecommendation]) -> str:
         "  gate 永遠對最差的那幾 % 發布喊 fail，無論絕對品質如何。請以反事實為判斷依據。",
         "",
     ]
+
+    if not gate_enabled:
+        lines.extend(
+            [
+                "  ⚠ 這個 App 的 release_gate.enabled 為 false：gate 目前會在第一行就 return，",
+                "    rule 1~4 一條都不跑，因此「現行門檻在歷史上會判幾次」本來沒有答案。以下",
+                "    反事實與建議值是「假設把 gate 啟用」的推算（以 enabled=true 的 policy 計算）。",
+                "    要讓這份推算成立，採用時必須連 enabled: true 一起寫進 apps.yaml。",
+                "",
+            ]
+        )
 
     for rec in recs:
         obs = rec.observations
@@ -64,8 +80,9 @@ def format_report(app_name: str, recs: list[ThresholdRecommendation]) -> str:
             )
         if obs.sample_size:
             cur = rec.current_counts
+            basis = "" if gate_enabled else "，假設 gate 啟用"
             lines.append(
-                f"     反事實（這 {obs.sample_size} 次發布）："
+                f"     反事實（這 {obs.sample_size} 次發布{basis}）："
                 f"現行 pass {cur['pass']} / warn {cur['warn']} / fail {cur['fail']}"
             )
             if rec.recommended is not None:
@@ -78,11 +95,18 @@ def format_report(app_name: str, recs: list[ThresholdRecommendation]) -> str:
 
     actionable = [r for r in recs if r.recommended is not None]
     if actionable:
-        lines.append("  可貼進 apps.yaml 的片段（請自行確認後再採用）：")
+        if gate_enabled:
+            lines.append("  可貼進 apps.yaml 的片段（請自行確認後再採用）：")
+        else:
+            lines.append("  可貼進 apps.yaml 的片段（請自行確認後再採用）；")
+            lines.append("  片段含 enabled: true —— 少了那一行，下面的門檻不會被評估，")
+            lines.append("  上面的反事實也不會成立：")
         lines.append("")
         lines.append("    apps:")
         lines.append(f"      {app_name}:")
         lines.append("        release_gate:")
+        if not gate_enabled:
+            lines.append("          enabled: true")
         lines.append("          thresholds:")
         for rec in actionable:
             assert rec.recommended is not None
@@ -125,6 +149,7 @@ def main() -> None:
             "warn_percentile": WARN_PERCENTILE,
             "fail_percentile": FAIL_PERCENTILE,
             "min_observations": MIN_OBSERVATIONS,
+            "gate_enabled": policy.enabled,
             "recommendations": [r.to_dict() for r in recs],
         }
         print(json.dumps(payload, ensure_ascii=False, indent=2))

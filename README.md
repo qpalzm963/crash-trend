@@ -558,6 +558,11 @@ python3 -m crash_trend.ai_config_service --serve 8080
   不大於 0（負門檻會被 `load_gate_policy()` 退回預設值、零門檻會讓沒有退化的發布也判
   warn），或分佈過於集中導致 `warn >= fail` 時，一律拒絕給建議並說明原因。零基準退化、
   本版／前版樣本不足與缺值一律排除並計數回報。
+- **`enabled: false` 時明載前提**：gate 停用時 `evaluate_release()` 會在第一行就 return、
+  一條 metric 判定都不產生，因此「現行門檻會判幾次」本來沒有答案。此時報表會標明以下
+  數字是「假設把 gate 啟用」的推算，可貼的片段也會一併帶上 `enabled: true`（少了那一行，
+  貼進去的門檻不會被評估，反事實就不成立）；JSON 輸出帶 `gate_enabled` / `hypothetical`。
+  parity 由測試以 `enabled=True` 的 policy clone 跑 `evaluate_release()` 核對。
 - **這是相對標準，不是品質標準**：百分位門檻回答「對這個 App 而言什麼算不尋常」，照抄會
   讓 gate 永遠對最差的那幾 % 發布喊 fail。輸出中已明載此限制，採用與否是人的決定。
 - **不成為第二個門檻來源**：執行期門檻仍只來自 `GatePolicy`，
