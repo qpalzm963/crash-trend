@@ -22,6 +22,8 @@ from typing import Any, Literal
 
 from crash_trend.config import out_dir
 from crash_trend.gate.artifact import ReleaseGateArtifact, RuleEvaluationResult
+from crash_trend.sqlite_store import connect as sqlite_connect
+from crash_trend.sqlite_store import connection as sqlite_connection
 from crash_trend.versions import version_key
 
 
@@ -299,7 +301,10 @@ class ReleaseGateHistoryStore:
 
         if not self._is_memory:
             Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-            with self._connect() as conn:
+            # `with sqlite3.connect(...)` 只管交易、不會關閉連線；原本這裡每建一次
+            # store 就漏一條連線，而 `get_gate_history_store()` 是在 release_catalog
+            # 的 per-platform / per-version 迴圈裡呼叫的。改用會關閉的 contextmanager。
+            with sqlite_connection(self.db_path) as conn:
                 conn.executescript(self.SCHEMA_SQL)
                 self._migrate_schema(conn)
         else:
@@ -319,13 +324,9 @@ class ReleaseGateHistoryStore:
     def _connect(self) -> sqlite3.Connection:
         if self._is_memory and self._persistent_conn is not None:
             return self._persistent_conn
-        conn = sqlite3.connect(str(self.db_path), timeout=10.0)
-        conn.row_factory = sqlite3.Row
-        try:
-            conn.execute("PRAGMA journal_mode=WAL;")
-        except Exception:
-            pass
-        return conn
+        # 連線設定（timeout / check_same_thread / pragma）唯一定義於 sqlite_store。
+        # 呼叫端仍自行負責 close（各查詢方法都有 try/finally）。
+        return sqlite_connect(self.db_path)
 
     def close(self) -> None:
         if self._persistent_conn is not None:

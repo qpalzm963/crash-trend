@@ -15,6 +15,9 @@ from collections.abc import Iterable, Iterator
 from pathlib import Path
 from typing import Any
 
+from crash_trend.sqlite_store import connect as sqlite_connect
+from crash_trend.sqlite_store import connection as sqlite_connection
+
 logger = logging.getLogger(__name__)
 
 
@@ -64,21 +67,18 @@ class CatalogAuthorityStore:
             if self._explicit_conn is not None:
                 yield self._explicit_conn
             else:
-                conn = sqlite3.connect(str(self.db_path), timeout=10.0, check_same_thread=False)
-                conn.row_factory = sqlite3.Row
-                try:
+                # 連線設定與生命週期唯一定義於 sqlite_store（成功 commit、失敗
+                # rollback、一律 close）。各寫入方法自己的 commit 保留不動。
+                with sqlite_connection(self.db_path) as conn:
                     yield conn
-                finally:
-                    conn.close()
 
     def _init_db(self) -> None:
         """Configures pragmas and creates tables and indexes if not existing."""
         with self._connection() as conn:
             cur = conn.cursor()
-            if not self.is_memory:
-                cur.execute("PRAGMA journal_mode = WAL;")
-                cur.execute("PRAGMA synchronous = NORMAL;")
-                cur.execute("PRAGMA busy_timeout = 5000;")
+            # pragma 不在這裡設：`synchronous` / `busy_timeout` 是 per-connection 的，
+            # 只在初始化這一條連線上設等於之後每條新連線都回到預設值。現在由
+            # sqlite_store.connect() 對每一條 file-backed 連線統一套用。
 
             cur.execute(
                 """
@@ -451,8 +451,7 @@ class CatalogAuthorityStore:
 
     def __enter__(self) -> CatalogAuthorityStore:
         if not self.is_memory and self._explicit_conn is None:
-            self._explicit_conn = sqlite3.connect(str(self.db_path), timeout=10.0, check_same_thread=False)
-            self._explicit_conn.row_factory = sqlite3.Row
+            self._explicit_conn = sqlite_connect(self.db_path)
         return self
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
