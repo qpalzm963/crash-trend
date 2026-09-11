@@ -44,9 +44,19 @@ baseline，本模組刻意不越過那條線：它不會寫入任何設定檔，
 * 可用觀測值少於 `MIN_OBSERVATIONS`；
 * 歷史上從未觀測到退化（所有觀測值 ≤ 0）——此時任何百分位數都 ≤ 0，套上去會讓每一次
   發布都觸發；
+* 四捨五入後 `warn <= 0`（多數版本其實在改善，只有少數退化）——負門檻貼進 `apps.yaml`
+  會被 `load_gate_policy()` 退回預設值，`warn = 0` 則會讓「完全沒有變化」也判 WARN。
+  兩者都會讓反事實與採用後的 gate 不一致，因此不給；
 * 四捨五入後 `warn >= fail`（分佈過於集中）——那會讓 warn 這一級永遠不可能出現。
 
-被排除的觀測值（零基準、前版樣本不足、缺值）一律計數並回報，不靜默丟棄。
+被排除的觀測值（本版樣本不足、零基準、前版樣本不足、缺值）一律計數並回報，不靜默丟棄。
+
+## 只收 gate 真的會評估的歷史點
+
+`evaluate_release()` 在跑 rule 1~4 之前有兩道 guard：本版樣本不足、前版樣本不足，任一
+成立就回 `insufficient_data`，那些變化量根本不會被判定。因此推薦器也必須排除它們——
+否則分佈與反事實會納入 gate 從來不看的數值。本版樣本是否充足一律問
+`evaluator.is_sample_sufficient()`（guard 用的同一個判斷），不自己重寫一份。
 """
 
 from __future__ import annotations
@@ -55,6 +65,7 @@ import math
 from dataclasses import dataclass
 from typing import Any
 
+from crash_trend.gate.evaluator import is_sample_sufficient
 from crash_trend.gate.metric_rules import (
     COMPARISON_METRIC_SPECS,
     ComparisonMetricSpec,
@@ -84,6 +95,8 @@ class MetricObservations:
     values: tuple[float, ...]
     #: 缺該指標變化量的版本數。
     missing: int
+    #: 本版樣本不足、gate 會在 sample sufficiency guard 就回 `insufficient_data` 的版本數。
+    insufficient_current: int
     #: 零基準退化（變化率在數學上無意義，是 ±1.0 的哨兵值）而被排除的版本數。
     zero_baseline: int
     #: 前版樣本不足、比較本身不可信而被排除的版本數。
@@ -122,6 +135,7 @@ class ThresholdRecommendation:
             "excluded": {
                 "missing": self.observations.missing,
                 "zero_baseline": self.observations.zero_baseline,
+                "insufficient_current_sample": self.observations.insufficient_current,
                 "insufficient_previous_sample": self.observations.insufficient_previous,
             },
             "current": {"warn": self.current.warn, "fail": self.current.fail},
@@ -155,20 +169,34 @@ def nearest_rank_percentile(values: tuple[float, ...] | list[float], p: float) -
 def collect_observations(
     catalog: list[dict[str, Any]],
     spec: ComparisonMetricSpec,
+    policy: GatePolicy,
 ) -> MetricObservations:
     """從 release catalog 收集單一指標的歷史觀測值。
 
-    只看有前版基準的版本；零基準與前版樣本不足一律排除並計數——前者的變化率在數學上
-    沒有意義，後者的比較本身不可信，把它們算進分佈只會讓門檻被雜訊拉高。
+    只收**gate 真的會拿去跑 rule 1~4 的版本**：沒有前版基準的版本不是觀測值；本版或
+    前版樣本不足的版本，`evaluate_release()` 會在 guard 就回 `insufficient_data`，那些
+    變化量從來不會被判定，算進分佈只會讓門檻被不可信的比較拉高。零基準的變化率在數學
+    上沒有意義，同樣排除。
+
+    `policy` 決定樣本充足與否（`min_sessions` / `min_adoption_rate` /
+    `min_version_events`），因此必須是 gate 實際會用的那一份 policy。
     """
     values: list[float] = []
     missing = 0
     zero_baseline = 0
+    insufficient_current = 0
     insufficient_previous = 0
 
     for item in catalog:
         vs_previous = item.get("vs_previous") if isinstance(item, dict) else None
         if not isinstance(vs_previous, dict) or not vs_previous.get("previous_version"):
+            continue
+        # guard 的順序與 `evaluate_release()` 一致：本版樣本先於前版樣本。
+        sample_ok, _sessions, _reason, _window = is_sample_sufficient(
+            item, item.get("recent_health") or {}, policy
+        )
+        if not sample_ok:
+            insufficient_current += 1
             continue
         if vs_previous.get("previous_sample_sufficient") is False:
             insufficient_previous += 1
@@ -186,6 +214,7 @@ def collect_observations(
         spec=spec,
         values=tuple(values),
         missing=missing,
+        insufficient_current=insufficient_current,
         zero_baseline=zero_baseline,
         insufficient_previous=insufficient_previous,
     )
@@ -209,7 +238,7 @@ def recommend_for_metric(
     policy: GatePolicy,
 ) -> ThresholdRecommendation:
     """對單一指標產出門檻建議（或明確的不建議原因）。"""
-    obs = collect_observations(catalog, spec)
+    obs = collect_observations(catalog, spec, policy)
     # `GatePolicy` 的門檻本來就存在「正值代表退化」的 frame 裡（`crash_free_users_drop`
     # 存 0.005 表示「下降 0.5 個百分點」），evaluator 也是直接把它交給
     # `classify_threshold_breach()`。因此這裡**不做**任何方向換算——多轉一次會把
@@ -263,6 +292,20 @@ def recommend_for_metric(
 
     warn_oriented = round(nearest_rank_percentile(obs.values, WARN_PERCENTILE), ROUND_DIGITS)
     fail_oriented = round(nearest_rank_percentile(obs.values, FAIL_PERCENTILE), ROUND_DIGITS)
+
+    if warn_oriented <= 0:
+        # 負門檻貼進 apps.yaml 會被 `load_gate_policy()` 的 `w_val < 0` 分支退回預設值，
+        # `warn = 0` 則讓「零變化」也達到門檻（判定是 `value >= rule.warn`）。兩種情況下
+        # 採用後的 gate 都不等於這裡算出的反事實，因此寧可不給。
+        return result(
+            None,
+            (
+                f"第 {int(WARN_PERCENTILE * 100)} 百分位數四捨五入後為 {warn_oriented}（不大於 0）："
+                "負門檻會被 load_gate_policy() 退回預設值、零門檻會讓沒有退化的發布也判 warn，"
+                "兩者都會讓實際 gate 與這份反事實不一致；維持現行門檻"
+            ),
+            percentiles,
+        )
 
     if warn_oriented >= fail_oriented:
         return result(

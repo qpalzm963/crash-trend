@@ -46,7 +46,9 @@ def format_report(app_name: str, recs: list[ThresholdRecommendation]) -> str:
         obs = rec.observations
         lines.append(f"  ── {rec.label}（{rec.metric_name}）")
         excluded = (
-            f"缺值 {obs.missing} / 零基準 {obs.zero_baseline} / 前版樣本不足 {obs.insufficient_previous}"
+            f"缺值 {obs.missing} / 零基準 {obs.zero_baseline}"
+            f" / 本版樣本不足 {obs.insufficient_current}"
+            f" / 前版樣本不足 {obs.insufficient_previous}"
         )
         lines.append(f"     觀測 {obs.sample_size} 筆（排除：{excluded}）")
         if rec.percentiles:

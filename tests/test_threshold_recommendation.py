@@ -80,6 +80,19 @@ def catalog_item(
     return item
 
 
+#: 一個 gate 會在 sample sufficiency guard 就擋下來的 recent_health：採用率、工作階段、
+#: 事件數三條都不達 `GatePolicy()` 的預設門檻。刻意不寫 `sample_sufficient` 旗標——
+#: 那是硬否決，會讓「充足與否由 policy 決定」這件事測不出來。
+STARVED_RECENT_HEALTH: dict[str, Any] = {
+    "30d": {
+        "crash_events": 2,
+        "affected_users": 1,
+        "sessions_total": 40,
+        "adoption_rate": 0.001,
+    }
+}
+
+
 def make_catalog(
     crash_changes: list[float | None],
     cfu_diffs: list[float] | None = None,
@@ -129,34 +142,62 @@ class TestObservationsAreOrientedAndFiltered(unittest.TestCase):
     def test_a_drop_in_crash_free_users_is_a_positive_observation(self) -> None:
         """下降型指標：退化在 `vs_previous` 裡是負值，觀測值必須翻正。"""
         catalog = make_catalog([0.0] * 3, cfu_diffs=[-0.01, 0.0, 0.02])
-        obs = collect_observations(catalog, CFU_SPEC)
+        obs = collect_observations(catalog, CFU_SPEC, GatePolicy())
         self.assertEqual(obs.values, (0.01, -0.0, -0.02))
 
     def test_zero_baseline_releases_are_excluded_and_counted(self) -> None:
         """零基準的變化率是 ±1.0 的哨兵值，算進分佈只會把門檻拉到 100%。"""
         catalog = make_catalog([0.05, 1.0, 0.08])
         catalog[1]["vs_previous"]["zero_baseline_crash"] = True
-        obs = collect_observations(catalog, CRASH_SPEC)
+        obs = collect_observations(catalog, CRASH_SPEC, GatePolicy())
         self.assertEqual(obs.values, (0.05, 0.08))
         self.assertEqual(obs.zero_baseline, 1)
 
     def test_an_insufficient_previous_sample_is_excluded_and_counted(self) -> None:
         catalog = make_catalog([0.05, 0.9, 0.08])
         catalog[1]["vs_previous"]["previous_sample_sufficient"] = False
-        obs = collect_observations(catalog, CRASH_SPEC)
+        obs = collect_observations(catalog, CRASH_SPEC, GatePolicy())
         self.assertEqual(obs.values, (0.05, 0.08))
         self.assertEqual(obs.insufficient_previous, 1)
 
+    def test_a_release_whose_own_sample_is_insufficient_is_excluded_and_counted(self) -> None:
+        """本版樣本不足時 gate 在 guard 就回 `insufficient_data`，rule 1~4 根本不會跑。
+
+        那筆變化量從來不會被判定，算進分佈只會讓門檻被一個 gate 不看的數值拉高。
+        """
+        catalog = make_catalog([0.05, 0.9, 0.08])
+        catalog[1]["recent_health"] = copy.deepcopy(STARVED_RECENT_HEALTH)
+        self.assertEqual(
+            evaluate_release(catalog[1], GatePolicy())["gate_status"],
+            "insufficient_data",
+            "前提：這一版 gate 真的會判 insufficient_data",
+        )
+        obs = collect_observations(catalog, CRASH_SPEC, GatePolicy())
+        self.assertEqual(obs.values, (0.05, 0.08))
+        self.assertEqual(obs.insufficient_current, 1)
+
+    def test_sample_sufficiency_follows_the_policy_the_gate_will_use(self) -> None:
+        """門檻放寬後 gate 會判定這一版，推薦器就必須把它收進分佈。"""
+        catalog = make_catalog([0.05, 0.9, 0.08])
+        catalog[1]["recent_health"] = copy.deepcopy(STARVED_RECENT_HEALTH)
+        lenient = GatePolicy(min_sessions=10, min_adoption_rate=0.0005, min_version_events=1)
+        self.assertNotEqual(
+            evaluate_release(catalog[1], lenient)["gate_status"], "insufficient_data"
+        )
+        obs = collect_observations(catalog, CRASH_SPEC, lenient)
+        self.assertEqual(obs.values, (0.05, 0.9, 0.08))
+        self.assertEqual(obs.insufficient_current, 0)
+
     def test_a_missing_metric_is_counted_not_treated_as_zero(self) -> None:
         catalog = make_catalog([0.05, None, 0.08])
-        obs = collect_observations(catalog, CRASH_SPEC)
+        obs = collect_observations(catalog, CRASH_SPEC, GatePolicy())
         self.assertEqual(obs.values, (0.05, 0.08))
         self.assertEqual(obs.missing, 1)
 
     def test_a_release_without_a_previous_version_is_not_an_observation(self) -> None:
         catalog = make_catalog([0.05, 0.08])
         catalog.append(catalog_item("2.0.0", None))
-        obs = collect_observations(catalog, CRASH_SPEC)
+        obs = collect_observations(catalog, CRASH_SPEC, GatePolicy())
         self.assertEqual(obs.sample_size, 2)
         self.assertEqual((obs.missing, obs.zero_baseline, obs.insufficient_previous), (0, 0, 0))
 
@@ -198,6 +239,23 @@ class TestTheCounterfactualEqualsWhatTheGateWouldSay(unittest.TestCase):
             self._gate_counts(catalog, adopted, CRASH_SPEC.metric_name),
         )
 
+    def test_a_release_the_gate_never_judges_is_absent_from_the_counterfactual(self) -> None:
+        """本版樣本不足的版本不得出現在分佈或反事實裡。
+
+        `_gate_counts()` 只數 gate 真的對這個指標做出的判定；那一版 gate 回的是
+        `sample_sufficiency` / `insufficient_data`，因此兩邊相等就代表推薦器排掉了它。
+        """
+        catalog = make_catalog([*self.CHANGES, 0.9])
+        catalog[-1]["recent_health"] = copy.deepcopy(STARVED_RECENT_HEALTH)
+        policy = GatePolicy()
+        rec = recommend_for_metric(catalog, CRASH_SPEC, policy)
+        self.assertEqual(rec.observations.insufficient_current, 1)
+        self.assertNotIn(0.9, rec.observations.values)
+        self.assertEqual(
+            rec.current_counts,
+            self._gate_counts(catalog, policy, CRASH_SPEC.metric_name),
+        )
+
     def test_the_decrease_metric_counterfactual_is_not_all_fail(self) -> None:
         """回歸測試：對 policy 門檻多做一次方向換算，會讓每一筆都變成 fail。"""
         catalog = make_catalog([0.0] * 6, cfu_diffs=[0.0002, -0.0009, -0.0026, 0.0, 0.0001, -0.001])
@@ -222,6 +280,43 @@ class TestRecommendationStaysInThePolicyFrame(unittest.TestCase):
         assert rec.recommended is not None
         self.assertGreater(rec.recommended.warn, 0)
         self.assertGreater(rec.recommended.fail, rec.recommended.warn)
+
+    def test_a_recommendation_survives_load_gate_policy_unchanged(self) -> None:
+        """建議值貼進 apps.yaml 後必須原封不動地回來。
+
+        `load_gate_policy()` 會把負門檻退回預設值、`ThresholdRule` 會把 warn 夾到 fail：
+        只要建議值踩到任何一條，報表裡的反事實就不是採用後真正會生效的 gate。
+        """
+        catalogs = (
+            make_catalog([-0.5, -0.4, -0.3, -0.2, 0.6]),
+            make_catalog([0.02, 0.31, -0.05, 0.12, 0.08, 0.45, 0.10, 0.25]),
+            make_catalog(
+                [0.0] * 7,
+                cfu_diffs=[-0.001, -0.004, 0.0, -0.009, 0.0002, -0.002, 0.0],
+            ),
+        )
+        for idx, catalog in enumerate(catalogs):
+            for rec in recommend_thresholds(catalog, GatePolicy()):
+                if rec.recommended is None:
+                    continue
+                with self.subTest(catalog=idx, metric=rec.metric_name):
+                    loaded = load_gate_policy(
+                        {
+                            "release_gate": {
+                                "thresholds": {
+                                    rec.policy_field: {
+                                        "warn": rec.recommended.warn,
+                                        "fail": rec.recommended.fail,
+                                    }
+                                }
+                            }
+                        }
+                    )
+                    self.assertEqual(
+                        getattr(loaded, rec.policy_field),
+                        rec.recommended,
+                        "建議門檻被 loader 換掉了，反事實不等於採用後的 gate",
+                    )
 
     def test_recommendation_uses_the_same_frame_as_current(self) -> None:
         for spec in COMPARISON_METRIC_SPECS:
@@ -251,6 +346,33 @@ class TestItRefusesRatherThanGuessing(unittest.TestCase):
         rec = recommend_for_metric(catalog, CRASH_SPEC, GatePolicy())
         self.assertIsNone(rec.recommended)
         self.assertIn("未觀測到任何退化", rec.reason)
+
+    def test_a_negative_warn_threshold_is_refused(self) -> None:
+        """多數版本其實在改善時 p80 會是負數。
+
+        負門檻貼進 `apps.yaml` 會被 `load_gate_policy()` 退回預設值，因此那份反事實
+        描述的不是採用後真正會生效的 gate。
+        """
+        catalog = make_catalog([-0.5, -0.4, -0.3, -0.2, 0.6])
+        rec = recommend_for_metric(catalog, CRASH_SPEC, GatePolicy())
+        self.assertIsNone(rec.recommended)
+        self.assertIn("不大於 0", rec.reason)
+        # 為什麼不能給：loader 會把它換掉。
+        loaded = load_gate_policy(
+            {"release_gate": {"thresholds": {"crash_rate_change_pct": {"warn": -0.2, "fail": 0.6}}}}
+        )
+        self.assertEqual(loaded.crash_rate_change_pct.warn, GatePolicy().crash_rate_change_pct.warn)
+
+    def test_a_zero_warn_threshold_is_refused(self) -> None:
+        """判定是 `value >= warn`，warn = 0 會讓「完全沒有變化」也觸發 WARN。"""
+        catalog = make_catalog([0.0, 0.0, 0.0, 0.0, 0.3])
+        rec = recommend_for_metric(catalog, CRASH_SPEC, GatePolicy())
+        self.assertIsNone(rec.recommended)
+        self.assertIn("不大於 0", rec.reason)
+        # 為什麼不能給：沒有退化的 0 會被判成 warn。
+        self.assertEqual(
+            classify_threshold_breach(0.0, ThresholdRule(warn=0.0, fail=0.3)), "warn"
+        )
 
     def test_a_distribution_too_concentrated_to_separate_warn_from_fail(self) -> None:
         catalog = make_catalog([0.2] * 8)
@@ -381,7 +503,7 @@ class TestRecommendationCoversEveryGateMetric(unittest.TestCase):
     def test_observations_are_oriented_with_the_shared_helper(self) -> None:
         """方向換算共用 metric_rules，不在本模組重寫。"""
         catalog = make_catalog([0.0] * 3, cfu_diffs=[-0.01, 0.005, 0.0])
-        obs = collect_observations(catalog, CFU_SPEC)
+        obs = collect_observations(catalog, CFU_SPEC, GatePolicy())
         expected = tuple(
             oriented_change(CFU_SPEC, v) for v in (-0.01, 0.005, 0.0)
         )
