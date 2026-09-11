@@ -13,6 +13,11 @@ import os
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from crash_trend.alerts.providers.registry import (
+    default_webhook_env_for,
+    normalize_provider_name,
+)
+
 
 @dataclass(frozen=True)
 class AlertPolicy:
@@ -25,7 +30,13 @@ class AlertPolicy:
     resend_on_status_change: bool = True
     resend_on_new_reason: bool = True
     notify_recovery: bool = True
-    webhook_env: str = "GOOGLE_CHAT_WEBHOOK_URL"
+    #: 讀 webhook URL 的環境變數名。`None` = **沒有指定**，由 provider 套自己的預設。
+    #:
+    #: 刻意不給 `"GOOGLE_CHAT_WEBHOOK_URL"` 當預設值：那會讓「沒指定」與「明確指定
+    #: Google Chat 的變數」在型別上無法區分，於是 `AlertPolicy(provider="slack")` 這種
+    #: 程式化建立的 policy 會拿著 Google Chat 的變數去跑 Slack——兩個 webhook 同時存在
+    #: 於環境時，Slack 的 payload 會被送到 Google Chat 的端點。
+    webhook_env: str | None = None
     use_threads: bool = True
     policy_version: str = "1.0"
     dashboard_url: str | None = None
@@ -79,7 +90,10 @@ def load_alert_policy(
         return AlertPolicy(enabled=False)
 
     enabled = bool(raw_cfg.get("enabled", True))
-    provider = str(raw_cfg.get("provider", "google_chat")).strip().lower()
+    # 在設定邊界就正規化：否則 `teams` / `msteams` / `microsoft_teams` 會在稽核紀錄的
+    # provider 欄位留下三個字串，同一個通道的觀測身分被切成三份（#100 review）。
+    raw_provider = str(raw_cfg.get("provider", "google_chat")).strip().lower()
+    provider = normalize_provider_name(raw_provider) or raw_provider
 
     # notify_on
     raw_notify = raw_cfg.get("notify_on", ["fail", "warn"])
@@ -98,11 +112,22 @@ def load_alert_policy(
     resend_on_new_reason = bool(raw_cfg.get("resend_on_new_reason", True))
     notify_recovery = bool(raw_cfg.get("notify_recovery", True))
 
-    # Google Chat specific settings
-    raw_gchat = raw_cfg.get("google_chat")
-    gchat_dict: dict[str, Any] = raw_gchat if isinstance(raw_gchat, dict) else {}
-    webhook_env = str(gchat_dict.get("webhook_env", raw_cfg.get("webhook_env", "GOOGLE_CHAT_WEBHOOK_URL"))).strip()
-    use_threads = bool(gchat_dict.get("use_threads", raw_cfg.get("use_threads", True)))
+    # Provider 專屬設定。原本只認 `google_chat:` 這個子區塊；現在任何 provider 都能用
+    # 同名子區塊（`slack:` / `microsoft_teams:` / `webhook:`），語意與原本一致。
+    # 子區塊以 canonical 名優先，找不到再用使用者寫的原字串——別名寫法的設定不該被忽略。
+    raw_provider_cfg = raw_cfg.get(provider)
+    if not isinstance(raw_provider_cfg, dict):
+        raw_provider_cfg = raw_cfg.get(raw_provider)
+    provider_dict: dict[str, Any] = raw_provider_cfg if isinstance(raw_provider_cfg, dict) else {}
+
+    # 未指定時用**該 provider 自己的**預設環境變數，而不是一律 Google Chat 的那一個：
+    # 把 GOOGLE_CHAT_WEBHOOK_URL 帶到 Slack 上，會在「設定看起來沒錯」的情況下永遠
+    # 讀不到 URL。provider 名不認識時退回 Google Chat 的預設值（維持既有行為）。
+    fallback_env = default_webhook_env_for(provider) or "GOOGLE_CHAT_WEBHOOK_URL"
+    webhook_env = str(
+        provider_dict.get("webhook_env", raw_cfg.get("webhook_env", fallback_env))
+    ).strip()
+    use_threads = bool(provider_dict.get("use_threads", raw_cfg.get("use_threads", True)))
 
     policy_version = str(raw_cfg.get("policy_version", "1.0")).strip()
 
@@ -127,7 +152,7 @@ def load_alert_policy(
         resend_on_status_change=resend_on_status_change,
         resend_on_new_reason=resend_on_new_reason,
         notify_recovery=notify_recovery,
-        webhook_env=webhook_env or "GOOGLE_CHAT_WEBHOOK_URL",
+        webhook_env=webhook_env or fallback_env,
         use_threads=use_threads,
         policy_version=policy_version or "1.0",
         dashboard_url=dash_url or None,

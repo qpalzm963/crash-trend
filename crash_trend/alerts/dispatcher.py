@@ -27,7 +27,11 @@ from crash_trend.alerts.policy import (
     load_alert_policy,
 )
 from crash_trend.alerts.providers import AlertProvider
-from crash_trend.alerts.providers.google_chat import GoogleChatWebhookProvider
+from crash_trend.alerts.providers.factory import build_provider
+from crash_trend.alerts.providers.registry import (
+    provider_supports_threads,
+    supported_providers,
+)
 from crash_trend.alerts.state import AlertDeliveryStore
 from crash_trend.config import get_app, load_config, out_dir
 from crash_trend.gate.artifact import ReleaseGateArtifact, load_release_gate_artifact
@@ -343,6 +347,24 @@ def evaluate_alert_decision(
 class AlertDispatcher:
     """Coordinates alert evaluation, deduplication state, and provider delivery."""
 
+    def _uses_threads(self, policy: AlertPolicy) -> bool:
+        """實際是否會用 thread = 設定要用 **且** 這個通道支援。
+
+        稽核紀錄必須反映「實際上有沒有用 thread」而不是設定值：Slack / Teams / 自家
+        webhook 都沒有 thread，若仍依 `policy.use_threads` 產生 thread key，那個值會在
+        HTTP 呼叫**之前**就被寫進 SQLite，而 provider 回報的 `thread_key=None` 並不會
+        把它更新掉——假紀錄就永久留在稽核列裡。
+
+        能力優先讀**實際要投遞的那個 provider**（測試會注入假 provider），沒有宣告時
+        才退回依 policy 的 provider 名查表。
+        """
+        if not policy.use_threads:
+            return False
+        declared = getattr(self.provider, "supports_threads", None)
+        if isinstance(declared, bool):
+            return declared
+        return provider_supports_threads(policy.provider)
+
     def __init__(
         self,
         store: AlertDeliveryStore,
@@ -372,6 +394,8 @@ class AlertDispatcher:
         now_dt = now or dt.datetime.now(dt.UTC)
         attempt_time_iso = now_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
         eval_at = artifact.get("generated_at") or attempt_time_iso
+        # 一次算好，send / suppressed / dry-run 三條路徑共用同一個答案。
+        uses_threads = self._uses_threads(policy)
 
         for pf_name, pf_res in artifact.get("platforms", {}).items():
             target_version = str(pf_res.get("target_version", "")).strip()
@@ -412,7 +436,11 @@ class AlertDispatcher:
                         reason_text=decision.reason,
                         attempted_at=attempt_time_iso,
                         reasons=triggered_reasons,
-                        thread_key=f"crash-trend:{app_id}:{pf_name}:{target_version}" if policy.use_threads else None,
+                        thread_key=(
+                            f"crash-trend:{app_id}:{pf_name}:{target_version}"
+                            if uses_threads
+                            else None
+                        ),
                         dry_run=False,
                         is_recovery=decision.is_recovery,
                     )
@@ -436,7 +464,7 @@ class AlertDispatcher:
                 policy_version=policy.policy_version,
                 evaluated_at=eval_at,
                 dashboard_url=policy.dashboard_url,
-                use_threads=policy.use_threads,
+                use_threads=uses_threads,
                 decision=pf_res.get("decision") or decision_from_gate_result(pf_res),
                 alert_severity=str((pf_res.get("alert") or {}).get("alert_severity", "none")),
             )
@@ -473,7 +501,10 @@ class AlertDispatcher:
                     status="failed",
                     attempt_count=0,
                     error_code="NO_PROVIDER",
-                    error_message=f"No delivery provider configured for '{policy.provider}'.",
+                    error_message=(
+                        f"No delivery provider configured for '{policy.provider}'. "
+                        f"Supported: {', '.join(supported_providers())}."
+                    ),
                 )
             else:
                 res = self.provider.send(msg)
@@ -569,12 +600,10 @@ def dispatch_alerts_for_app(
         except Exception:
             effective_hist_store = None
 
+    # 通道清單只有 providers/registry 一份；dispatcher 不需要知道任何 provider 的名字。
     effective_provider = provider
-    if effective_provider is None and effective_policy.provider == "google_chat":
-        effective_provider = GoogleChatWebhookProvider(
-            webhook_env=effective_policy.webhook_env,
-            use_threads=effective_policy.use_threads,
-        )
+    if effective_provider is None:
+        effective_provider = build_provider(effective_policy)
 
     dispatcher = AlertDispatcher(
         store=effective_store,
@@ -635,7 +664,10 @@ def dispatch_alerts_for_app(
                     policy_version=effective_policy.policy_version,
                     evaluated_at=str(effective_artifact.get("generated_at", "")),
                     dashboard_url=effective_policy.dashboard_url,
-                    use_threads=effective_policy.use_threads,
+                    use_threads=(
+                        effective_policy.use_threads
+                        and provider_supports_threads(effective_policy.provider)
+                    ),
                     decision=pf_data.get("decision") or decision_from_gate_result(pf_data),
                     alert_severity=str((pf_data.get("alert") or {}).get("alert_severity", "none")),
                 )

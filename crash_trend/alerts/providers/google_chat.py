@@ -1,17 +1,15 @@
 """Google Chat Incoming Webhook alert provider (Issue #59).
 
-Implements:
-- Secret injection strictly from environment
-- Finite bounded retries with exponential backoff on transient errors (429, 5xx, timeouts)
-- Fast failure on permanent 4xx errors (400, 401, 403, 404)
-- Thread key support and Space thread fallback
-- Redaction of webhook tokens and full URLs in logs/exceptions
+重試、退避、錯誤分類與機密遮蔽已收斂到 `providers/webhook.py`（#66 項目 4）；本檔
+只保留 Google Chat 真正不一樣的部分：
+
+- thread 支援（`threadKey` 走 query 參數，並在 400 時退回「不帶 thread」重送一次）
+- 從回應取出 `name` 作為可追溯的訊息 id
+- `chat.googleapis.com` 的 URL 遮蔽
 """
 
 from __future__ import annotations
 
-import datetime as dt
-import os
 import re
 import time
 from collections.abc import Callable
@@ -19,7 +17,11 @@ from typing import Any
 
 import requests
 
-from crash_trend.alerts.models import AlertMessage, DeliveryResult
+from crash_trend.alerts.models import AlertMessage
+from crash_trend.alerts.providers.webhook import WebhookDeliveryProvider, redact_secrets
+
+#: Google Chat webhook 的 host 正則（錯誤訊息裡回吐 URL 時也要遮）。
+GOOGLE_CHAT_HOST_PATTERN = r"https://chat\.googleapis\.com/[^\s'\"<>]+"
 
 
 def redact_url(text: str | None, raw_url: str | None = None) -> str:
@@ -29,19 +31,21 @@ def redact_url(text: str | None, raw_url: str | None = None) -> str:
     cleaned = str(text)
     if raw_url:
         cleaned = cleaned.replace(raw_url, "https://chat.googleapis.com/...<redacted>")
-    # Match any Google Chat webhook URL pattern
     cleaned = re.sub(
-        r"https://chat\.googleapis\.com/[^\s'\"<>]+",
+        GOOGLE_CHAT_HOST_PATTERN,
         "https://chat.googleapis.com/...<redacted>",
         cleaned,
     )
-    # Scrub common secret / token / key query params
-    cleaned = re.sub(r"([?&](?:key|token|access_token|secret)=)[^&\s'\"]+", r"\1<redacted>", cleaned)
-    return cleaned
+    return redact_secrets(cleaned)
 
 
-class GoogleChatWebhookProvider:
+class GoogleChatWebhookProvider(WebhookDeliveryProvider):
     """Delivers AlertMessage to Google Chat Space via Incoming Webhook."""
+
+    provider_name = "google_chat"
+    default_webhook_env = "GOOGLE_CHAT_WEBHOOK_URL"
+    host_pattern = GOOGLE_CHAT_HOST_PATTERN
+    supports_threads = True
 
     def __init__(
         self,
@@ -54,21 +58,19 @@ class GoogleChatWebhookProvider:
         sleep_fn: Callable[[float], None] = time.sleep,
         session: requests.Session | None = None,
     ) -> None:
-        self._explicit_url = webhook_url
-        self.webhook_env = webhook_env
+        super().__init__(
+            webhook_url=webhook_url,
+            webhook_env=webhook_env,
+            max_attempts=max_attempts,
+            timeout=timeout,
+            backoff_sec=backoff_sec,
+            sleep_fn=sleep_fn,
+            session=session,
+        )
         self.use_threads = use_threads
-        self.max_attempts = max(1, max_attempts)
-        self.timeout = timeout
-        self.backoff_sec = max(0.0, backoff_sec)
-        self.sleep_fn = sleep_fn
-        self._session = session
 
-    def resolve_webhook_url(self) -> str | None:
-        """Resolves webhook URL from explicit parameter or environment."""
-        if self._explicit_url:
-            return self._explicit_url.strip()
-        val = os.environ.get(self.webhook_env)
-        return val.strip() if val else None
+    def _include_thread(self, alert: AlertMessage) -> bool:
+        return bool(self.use_threads and alert.thread_key)
 
     def build_payload(self, alert: AlertMessage, include_thread: bool = True) -> dict[str, Any]:
         """Formats the JSON body for the Google Chat webhook."""
@@ -77,120 +79,28 @@ class GoogleChatWebhookProvider:
             payload["thread"] = {"threadKey": alert.thread_key}
         return payload
 
-    def send(self, alert: AlertMessage) -> DeliveryResult:
-        """Sends alert message to Google Chat Space with bounded retries and backoff."""
-        url = self.resolve_webhook_url()
-        if not url:
-            return DeliveryResult(
-                status="failed",
-                attempt_count=0,
-                error_code="MISSING_WEBHOOK_URL",
-                error_message=f"Environment variable '{self.webhook_env}' is not set or empty.",
-            )
+    def request_params(self, alert: AlertMessage) -> dict[str, str] | None:
+        if not self._include_thread(alert):
+            return None
+        return {
+            "threadKey": alert.thread_key or "",
+            "messageReplyOption": "REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD",
+        }
 
-        session = self._session or requests.Session()
+    def fallback_payload(self, alert: AlertMessage) -> dict[str, Any] | None:
+        """threadKey 失效時退回不帶 thread 的訊息。
 
-        include_thread = bool(self.use_threads and alert.thread_key)
-        payload = self.build_payload(alert, include_thread=include_thread)
-        params: dict[str, str] | None = None
-        if include_thread and alert.thread_key:
-            params = {
-                "threadKey": alert.thread_key,
-                "messageReplyOption": "REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD",
-            }
+        寧可送出一則沒有 thread 的通知，也不要讓一次 FAIL 通知整個消失。
+        """
+        if not self._include_thread(alert):
+            return None
+        return {"text": alert.text}
 
-        last_error_code: str | None = None
-        last_error_msg: str | None = None
-        last_status_code: int | None = None
+    def delivered_thread_key(self, alert: AlertMessage) -> str | None:
+        return alert.thread_key if self._include_thread(alert) else None
 
-        for attempt in range(1, self.max_attempts + 1):
-            try:
-                res = session.post(
-                    url,
-                    json=payload,
-                    params=params,
-                    timeout=self.timeout,
-                )
-                last_status_code = res.status_code
+    def extract_message_name(self, response: requests.Response) -> str | None:
+        return response.json().get("name")
 
-                if res.status_code in (200, 201):
-                    now_iso = dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-                    msg_name: str | None = None
-                    try:
-                        data = res.json()
-                        msg_name = data.get("name")
-                    except Exception:
-                        pass
-                    return DeliveryResult(
-                        status="sent",
-                        attempt_count=attempt,
-                        delivered_at=now_iso,
-                        http_status=res.status_code,
-                        thread_key=alert.thread_key if include_thread else None,
-                        message_name=msg_name,
-                    )
-
-                # Thread fallback on 400 Bad Request
-                if res.status_code == 400 and include_thread:
-                    try:
-                        fb_res = session.post(
-                            url,
-                            json={"text": alert.text},
-                            timeout=self.timeout,
-                        )
-                        if fb_res.status_code in (200, 201):
-                            now_iso = dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-                            msg_name = None
-                            try:
-                                msg_name = fb_res.json().get("name")
-                            except Exception:
-                                pass
-                            return DeliveryResult(
-                                status="sent",
-                                attempt_count=attempt + 1,
-                                delivered_at=now_iso,
-                                http_status=fb_res.status_code,
-                                thread_key=None,
-                                message_name=msg_name,
-                            )
-                    except Exception:
-                        pass
-
-                # Non-transient 4xx permanent error -> fast fail
-                if 400 <= res.status_code < 500 and res.status_code != 429:
-                    return DeliveryResult(
-                        status="failed",
-                        attempt_count=attempt,
-                        http_status=res.status_code,
-                        error_code=f"HTTP_{res.status_code}",
-                        error_message=redact_url(res.text[:300], raw_url=url),
-                    )
-
-                # Transient 429 or 5xx
-                last_error_code = f"HTTP_{res.status_code}"
-                last_error_msg = redact_url(res.text[:300], raw_url=url)
-
-            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError, requests.exceptions.RequestException) as exc:
-                last_error_code = "NETWORK_ERROR"
-                last_error_msg = redact_url(str(exc), raw_url=url)
-            except Exception as exc:
-                return DeliveryResult(
-                    status="failed",
-                    attempt_count=attempt,
-                    error_code="UNEXPECTED_ERROR",
-                    error_message=redact_url(str(exc), raw_url=url),
-                )
-
-            # Retry transient failures with exponential backoff
-            if attempt < self.max_attempts:
-                backoff = self.backoff_sec * (2 ** (attempt - 1))
-                if backoff > 0:
-                    self.sleep_fn(backoff)
-
-        return DeliveryResult(
-            status="failed",
-            attempt_count=self.max_attempts,
-            http_status=last_status_code,
-            error_code=last_error_code or "RETRY_EXHAUSTED",
-            error_message=last_error_msg or "Max delivery retry attempts reached.",
-        )
+    def redact(self, text: str | None, raw_url: str | None = None) -> str:
+        return redact_url(text, raw_url=raw_url)
