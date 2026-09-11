@@ -16,6 +16,9 @@
    裁掉最右邊的「查看分析 / 複製修復 Prompt」），而 header 右叢的 flex item 沒有
    `min-width: 0`（768px 視窗量到 `scrollWidth` 994）。
 
+5. **手機寬度的每個控制項都還能用。** header 放不下時換行而不是互相重疊；
+   `<select>` 與搜尋框可以縮；重複呈現的來源徽章條是該讓的那一個。
+
 另外釘一條通則：CSS 裡用到的每個 `var(--token)` 都必須在 `:root` 定義過。
 `.comparison-metric-reason` 原本寫著未定義的 `--text-secondary`，結果次級說明文字
 繼承成主文字色——「層級」就是這樣一個 typo 就沒了，而且畫面上看起來只是「比較黑」。
@@ -273,6 +276,82 @@ class TestNarrowViewportsKeepTheContentUsable(unittest.TestCase):
                 self.assertRegex(
                     block, re.escape(selector) + r"\s*\{[^}]*grid-template-columns:\s*1fr"
                 )
+
+
+class TestPhoneWidthsKeepEveryControlUsable(unittest.TestCase):
+    """手機寬度（#103 review 的 blocker）。
+
+    `min-width: 0` 只讓 header 的**父** flex item 可以縮，子控制項各自還有固定或
+    min-content 寬度：`<select>` 被最長的 option 撐到 244px、搜尋框 140px、
+    7/30/90 122px。390px 實際量到的結果是「控制項互相重疊 + 頁面水平溢出 96px」，
+    不是單純被裁掉。
+
+    而且這件事不能只靠一個手機 breakpoint：561px（剛好在 560 之上）原本會讓搜尋框
+    壓在 7/30/90 上、theme toggle 被推到視窗外。因此 header 改成「放不下就換行」，
+    breakpoint 只負責手機版的兩列排法。
+
+    320~1920px 掃過 22 個寬度後的實測（iframe 內量，media query 會照寬度生效）：
+    水平溢出全部 0、控制項零重疊、沒有任何控制項超出視窗。這裡把讓那個結果成立的
+    CSS 條件逐條釘住。
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.css = get_dashboard_styles()
+
+    def _media_block(self, max_width: int) -> str:
+        m = re.search(
+            r"@media[^{]*max-width:\s*" + str(max_width) + r"px[^{]*\{(.*?)\n  \}",
+            self.css,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(m, f"找不到 {max_width}px 的 breakpoint")
+        assert m is not None
+        return m.group(1)
+
+    def test_the_header_wraps_instead_of_overlapping(self) -> None:
+        """固定 height 會讓換行後的第二列溢出 header，因此必須是 min-height。"""
+        body = _rule_body(self.css, "header.top-header")
+        self.assertIn("flex-wrap: wrap", body)
+        self.assertIn("min-height: var(--header-h)", body)
+        self.assertNotRegex(
+            body, r"(?<!min-)height:", "header 不得有固定高度，否則換行的那一列會溢出"
+        )
+
+    def test_the_two_stretchable_controls_can_actually_shrink(self) -> None:
+        """`<select>` 與搜尋框是唯一該讓的兩個控制項；其餘寬度是固定的。"""
+        for selector in (".app-select-wrap", ".app-selector", ".search-box"):
+            with self.subTest(selector=selector):
+                self.assertIn("min-width: 0", _rule_body(self.css, selector))
+        search = _rule_body(self.css, ".search-input")
+        self.assertIn("min-width: 0", search)
+        self.assertIn("max-width: 100%", search)
+
+    def test_the_phone_breakpoint_puts_the_clusters_on_their_own_rows(self) -> None:
+        block = self._media_block(560)
+        self.assertRegex(
+            block,
+            r"\.header-left,\s*\n\s*\.header-right \{[^}]*flex: 1 1 100%",
+            "手機版 header 必須兩列",
+        )
+        self.assertRegex(block, r"\.app-selector \{[^}]*width: 100%")
+        self.assertRegex(block, r"\.search-input,\s*\n\s*\.search-input:focus \{[^}]*width: 100%")
+
+    def test_a_focused_search_box_cannot_grow_past_the_row_on_a_phone(self) -> None:
+        """`.search-input:focus` 在 768 的區塊裡是 180px；手機版必須一起被覆蓋，
+        否則點一下搜尋框就會把那一列推寬。"""
+        self.assertIn("width: 180px", self._media_block(768))
+        self.assertIn(".search-input:focus", self._media_block(560))
+
+    def test_source_chips_never_wrap_their_own_label(self) -> None:
+        """沒有 nowrap 時「Gemini AI」會折行，把 header 從 64px 撐成 90px。"""
+        self.assertIn("white-space: nowrap", _rule_body(self.css, ".src-chip"))
+
+    def test_the_duplicate_badge_strip_yields_before_the_real_controls(self) -> None:
+        """徽章條是首屏「資料來源健康度」卡片的重複呈現，因此它是該讓的那一個。"""
+        self.assertRegex(
+            self._media_block(1360), r"\.source-badges \{[^}]*display: none"
+        )
 
 
 class TestThePolishDidNotInventData(unittest.TestCase):
