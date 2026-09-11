@@ -77,6 +77,12 @@ class WebhookDeliveryProvider:
     default_webhook_env = "ALERT_WEBHOOK_URL"
     #: 遮蔽用的自家 host 正則（`None` 表示只靠 raw_url 與 query 參數遮蔽）。
     host_pattern: str | None = None
+    #: 這個通道支不支援把通知收攏到討論串。
+    #:
+    #: 這是 thread 能力的**唯一事實來源**：`AlertMessage.thread_key` 與稽核紀錄都要依它
+    #: 決定，而不是只依設定值 `policy.use_threads`。incoming webhook 多數不支援 thread，
+    #: 在稽核列裡寫一個沒用到的 thread key 就是假紀錄。
+    supports_threads = False
 
     def __init__(
         self,

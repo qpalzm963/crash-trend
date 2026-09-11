@@ -45,6 +45,7 @@ class GoogleChatWebhookProvider(WebhookDeliveryProvider):
     provider_name = "google_chat"
     default_webhook_env = "GOOGLE_CHAT_WEBHOOK_URL"
     host_pattern = GOOGLE_CHAT_HOST_PATTERN
+    supports_threads = True
 
     def __init__(
         self,

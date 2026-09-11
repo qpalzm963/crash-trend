@@ -47,6 +47,15 @@ def provider_class(name: str | None) -> type[WebhookDeliveryProvider] | None:
     return PROVIDER_CLASSES.get(normalize_provider_name(name))
 
 
+def provider_supports_threads(name: str | None) -> bool:
+    """該 provider 支不支援 thread。名稱不認識時回 `False`。
+
+    認不出來的通道等於沒有投遞路徑，宣稱用了 thread 只會在稽核裡留下假紀錄。
+    """
+    cls = provider_class(name)
+    return bool(cls.supports_threads) if cls is not None else False
+
+
 def default_webhook_env_for(name: str | None) -> str | None:
     """該 provider 未指定 `webhook_env` 時要讀的環境變數名。"""
     cls = provider_class(name)

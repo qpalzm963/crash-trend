@@ -31,7 +31,8 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from crash_trend.alerts.models import AlertMessage
+from crash_trend.alerts.dispatcher import AlertDispatcher
+from crash_trend.alerts.models import AlertMessage, DeliveryResult
 from crash_trend.alerts.policy import AlertPolicy, load_alert_policy
 from crash_trend.alerts.providers.factory import build_provider
 from crash_trend.alerts.providers.generic import GenericWebhookProvider
@@ -42,9 +43,12 @@ from crash_trend.alerts.providers.registry import (
     default_webhook_env_for,
     normalize_provider_name,
     provider_class,
+    provider_supports_threads,
     supported_providers,
 )
 from crash_trend.alerts.providers.slack import SlackWebhookProvider
+from crash_trend.alerts.state import AlertDeliveryStore
+from tests.test_alerts import make_sample_artifact
 
 #: 每個 provider 一組「帶機密的 webhook URL」，用來驗遮蔽。
 SECRET_URLS = {
@@ -396,6 +400,154 @@ class TestGenericWebhookEnvelope(unittest.TestCase):
         session = FakeSession([FakeResponse(200, "ok")])
         GenericWebhookProvider(webhook_url=SECRET_URLS["webhook"], session=session).send(make_alert())
         self.assertNotEqual(set(session.calls[0]["json"]), {"text"})
+
+
+class RecordingProvider:
+    """只記下收到的 AlertMessage，並照 provider 的能力回報結果。
+
+    刻意不用 MagicMock：`getattr(mock, "supports_threads")` 會回一個 MagicMock 而不是
+    bool，那樣就測不到 dispatcher 依 provider 能力決定 thread 的那條路徑。
+    """
+
+    def __init__(self, supports_threads: bool) -> None:
+        self.supports_threads = supports_threads
+        self.sent: list[AlertMessage] = []
+
+    def send(self, alert: AlertMessage) -> DeliveryResult:
+        self.sent.append(alert)
+        return DeliveryResult(
+            status="sent",
+            attempt_count=1,
+            delivered_at="2026-09-11T02:00:00Z",
+            http_status=200,
+            thread_key=alert.thread_key if self.supports_threads else None,
+        )
+
+
+class TestTheAuditRowReflectsWhetherThreadsWereActuallyUsed(unittest.TestCase):
+    """稽核紀錄必須反映**實際上**有沒有用 thread，而不是設定值（#100 review）。
+
+    provider 層回報 `thread_key=None` 是不夠的：thread key 在 HTTP 呼叫**之前**就被
+    `record_attempt()` 寫進 SQLite，而 `update_result()` 不會更新那個欄位——所以一個
+    沒被用到的 thread key 會永久留在稽核列裡。suppressed 與 dry-run 兩條路徑也各自
+    產生 thread key，同樣要一起修。
+
+    因此這一組測試打的是 dispatcher + **真的** AlertDeliveryStore，而不是 provider。
+    """
+
+    def _dispatch(
+        self,
+        provider_name: str,
+        supports_threads: bool,
+        dry_run: bool = False,
+        gate_status: str = "fail",
+    ) -> tuple[AlertDeliveryStore, Any, Any]:
+        store = AlertDeliveryStore(db_path=":memory:")
+        provider = RecordingProvider(supports_threads)
+        dispatcher = AlertDispatcher(store=store, provider=provider)
+        summary = dispatcher.dispatch(
+            app_id="demo",
+            artifact=make_sample_artifact(
+                app_id="demo", platform="android", version="1.0.0", gate_status=gate_status
+            ),
+            policy=AlertPolicy(
+                enabled=True,
+                provider=provider_name,
+                notify_on=("fail", "warn"),
+                use_threads=True,  # 設定說要用 thread——能力才是決定權
+            ),
+            dry_run=dry_run,
+        )
+        return store, summary, provider
+
+    def test_a_sent_row_has_no_thread_key_for_channels_without_threads(self) -> None:
+        for name in ("slack", "microsoft_teams", "webhook"):
+            with self.subTest(provider=name):
+                store, summary, provider = self._dispatch(name, supports_threads=False)
+                self.assertEqual(summary.total_sent, 1)
+                rows = store.get_history("demo", "android", "1.0.0")
+                self.assertTrue(rows, "沒有寫入任何稽核列")
+                self.assertIsNone(rows[0].thread_key, f"{name} 在稽核裡留下了假的 thread key")
+                self.assertIsNone(provider.sent[0].thread_key, "AlertMessage 本身就帶了 thread key")
+                self.assertIsNone(summary.results["android"].thread_key)
+
+    def test_a_suppressed_row_has_no_thread_key_either(self) -> None:
+        """suppressed 路徑自己組 deterministic thread key，是第二個假紀錄來源。"""
+        for name in ("slack", "microsoft_teams", "webhook"):
+            with self.subTest(provider=name):
+                store, _summary, _provider = self._dispatch(
+                    name, supports_threads=False, gate_status="pass"
+                )
+                rows = store.get_history("demo", "android", "1.0.0")
+                self.assertTrue(rows, "沒有寫入 suppressed 稽核列")
+                self.assertEqual(rows[0].status, "suppressed")
+                self.assertIsNone(rows[0].thread_key)
+
+    def test_a_dry_run_preview_does_not_claim_a_thread(self) -> None:
+        for name in ("slack", "microsoft_teams", "webhook"):
+            with self.subTest(provider=name):
+                _store, summary, _provider = self._dispatch(
+                    name, supports_threads=False, dry_run=True
+                )
+                self.assertEqual(summary.total_sent, 1)
+                self.assertIsNone(summary.results["android"].thread_key)
+
+    def test_google_chat_still_records_its_thread_key(self) -> None:
+        """對照組：支援 thread 的通道不得因為這個修正而失去 thread。"""
+        store, summary, provider = self._dispatch("google_chat", supports_threads=True)
+        rows = store.get_history("demo", "android", "1.0.0")
+        self.assertTrue(rows)
+        self.assertEqual(rows[0].thread_key, "crash-trend:demo:android:1.0.0")
+        self.assertEqual(provider.sent[0].thread_key, "crash-trend:demo:android:1.0.0")
+        self.assertEqual(summary.results["android"].thread_key, "crash-trend:demo:android:1.0.0")
+
+    def test_turning_threads_off_still_wins_for_a_capable_channel(self) -> None:
+        """能力是上限，設定仍可以關掉它。"""
+        store = AlertDeliveryStore(db_path=":memory:")
+        dispatcher = AlertDispatcher(store=store, provider=RecordingProvider(True))
+        dispatcher.dispatch(
+            app_id="demo",
+            artifact=make_sample_artifact(
+                app_id="demo", platform="android", version="1.0.0", gate_status="fail"
+            ),
+            policy=AlertPolicy(
+                enabled=True, provider="google_chat", notify_on=("fail",), use_threads=False
+            ),
+        )
+        rows = store.get_history("demo", "android", "1.0.0")
+        self.assertIsNone(rows[0].thread_key)
+
+    def test_capability_is_declared_on_the_providers_themselves(self) -> None:
+        """thread 能力的唯一事實來源是 provider 類別，不是 dispatcher 裡的條件式。"""
+        self.assertTrue(provider_supports_threads("google_chat"))
+        for name in ("slack", "microsoft_teams", "webhook"):
+            with self.subTest(provider=name):
+                self.assertFalse(provider_supports_threads(name))
+        self.assertFalse(provider_supports_threads("carrier_pigeon"))
+        self.assertTrue(PROVIDER_CLASSES["google_chat"].supports_threads)
+
+
+class TestProviderIdentityIsCanonical(unittest.TestCase):
+    """別名不得讓同一個通道在稽核紀錄裡碎成多個身分（#100 review，non-blocking）。"""
+
+    def test_aliases_are_normalised_at_the_config_boundary(self) -> None:
+        for raw in ("teams", "msteams", "ms_teams", "microsoft_teams"):
+            with self.subTest(raw=raw):
+                policy = load_alert_policy({"release_alerts": {"provider": raw}})
+                self.assertEqual(policy.provider, "microsoft_teams")
+
+    def test_an_alias_named_sub_block_is_still_honoured(self) -> None:
+        """正規化不得讓使用者用別名寫的子區塊被忽略。"""
+        policy = load_alert_policy(
+            {"release_alerts": {"provider": "teams", "teams": {"webhook_env": "ALIAS_BLOCK"}}}
+        )
+        self.assertEqual(policy.provider, "microsoft_teams")
+        self.assertEqual(policy.webhook_env, "ALIAS_BLOCK")
+
+    def test_an_unknown_provider_name_is_left_untouched(self) -> None:
+        """認不出來的名字要原樣留著，才看得出設定打錯了什麼。"""
+        policy = load_alert_policy({"release_alerts": {"provider": "carrier_pigeon"}})
+        self.assertEqual(policy.provider, "carrier_pigeon")
 
 
 class TestRetryLogicExistsOnlyOnce(unittest.TestCase):

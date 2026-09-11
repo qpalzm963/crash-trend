@@ -13,7 +13,10 @@ import os
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from crash_trend.alerts.providers.registry import default_webhook_env_for
+from crash_trend.alerts.providers.registry import (
+    default_webhook_env_for,
+    normalize_provider_name,
+)
 
 
 @dataclass(frozen=True)
@@ -81,7 +84,10 @@ def load_alert_policy(
         return AlertPolicy(enabled=False)
 
     enabled = bool(raw_cfg.get("enabled", True))
-    provider = str(raw_cfg.get("provider", "google_chat")).strip().lower()
+    # 在設定邊界就正規化：否則 `teams` / `msteams` / `microsoft_teams` 會在稽核紀錄的
+    # provider 欄位留下三個字串，同一個通道的觀測身分被切成三份（#100 review）。
+    raw_provider = str(raw_cfg.get("provider", "google_chat")).strip().lower()
+    provider = normalize_provider_name(raw_provider) or raw_provider
 
     # notify_on
     raw_notify = raw_cfg.get("notify_on", ["fail", "warn"])
@@ -102,7 +108,10 @@ def load_alert_policy(
 
     # Provider 專屬設定。原本只認 `google_chat:` 這個子區塊；現在任何 provider 都能用
     # 同名子區塊（`slack:` / `microsoft_teams:` / `webhook:`），語意與原本一致。
+    # 子區塊以 canonical 名優先，找不到再用使用者寫的原字串——別名寫法的設定不該被忽略。
     raw_provider_cfg = raw_cfg.get(provider)
+    if not isinstance(raw_provider_cfg, dict):
+        raw_provider_cfg = raw_cfg.get(raw_provider)
     provider_dict: dict[str, Any] = raw_provider_cfg if isinstance(raw_provider_cfg, dict) else {}
 
     # 未指定時用**該 provider 自己的**預設環境變數，而不是一律 Google Chat 的那一個：
