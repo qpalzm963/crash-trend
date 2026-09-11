@@ -29,17 +29,25 @@ from typing import Any
 
 try:
     from crash_trend.bq_credentials import make_bq_client
+    from crash_trend.bq_query import UNSET, _Unset, execute_query, resolve_query_timeout
     from crash_trend.config import ROOT, app_argparser, get_app, is_sessions_enabled, out_dir, write_json
     from crash_trend.fetch_bigquery import list_crash_tables
     from crash_trend.schema_v2 import CrashFreeMetric
 except ImportError:
     try:
         from bq_credentials import make_bq_client
+        from bq_query import UNSET, _Unset, execute_query, resolve_query_timeout  # type: ignore[no-redef]
         from config import ROOT, app_argparser, get_app, is_sessions_enabled, out_dir, write_json
         from fetch_bigquery import list_crash_tables
         from schema_v2 import CrashFreeMetric
     except ImportError:
         from crash_trend.bq_credentials import make_bq_client
+        from crash_trend.bq_query import (  # type: ignore[no-redef]
+            UNSET,
+            _Unset,
+            execute_query,
+            resolve_query_timeout,
+        )
         from crash_trend.config import (
             ROOT,
             app_argparser,
@@ -244,9 +252,17 @@ def list_session_tables(
         return []
 
 
-def run_sessions_query(client: Any, sql: str) -> list[dict[str, Any]]:
-    """Runs a BigQuery query and returns rows as dictionaries."""
-    rows = client.query(sql).result(max_results=5000)
+def run_sessions_query(
+    client: Any,
+    sql: str,
+    timeout: float | None | _Unset = UNSET,
+) -> list[dict[str, Any]]:
+    """Runs a BigQuery query and returns rows as dictionaries.
+
+    等待上限與逾時取消共用 `bq_query.execute_query`（與 Crashlytics 端同一份實作）；
+    呼叫端解析好 per-app 設定後傳進來。
+    """
+    rows = execute_query(client, sql, max_results=5000, timeout=timeout)
     return [dict(r) for r in rows]
 
 
@@ -478,6 +494,10 @@ def fetch_sessions_data(
     periods: list[int] | None = None,
 ) -> dict[str, Any]:
     """Fetches Firebase Sessions data from BigQuery with graceful degradation."""
+    # 與 Crashlytics 端同一套設定；解析一次供本次所有 sessions 查詢使用。
+    # 放在 client 分支之外：呼叫端自帶 client（測試與 pipeline 都會）時同樣要有上限。
+    query_timeout = resolve_query_timeout(app_cfg=app_config)
+
     if client is None:
         try:
             client = make_sessions_client(project, app_cfg=app_config)
@@ -522,7 +542,7 @@ def fetch_sessions_data(
             kpi_sql = SQLS["kpi_joined"].format(
                 sessions_table=sessions_fq, crash_table=matching_crash_table, days=days
             )
-            kpi_rows = run_sessions_query(client, kpi_sql)
+            kpi_rows = run_sessions_query(client, kpi_sql, timeout=query_timeout)
 
             if kpi_rows:
                 r = kpi_rows[0]
@@ -535,7 +555,7 @@ def fetch_sessions_data(
             daily_sql = SQLS["daily_joined"].format(
                 sessions_table=sessions_fq, crash_table=matching_crash_table, days=days
             )
-            daily_rows = run_sessions_query(client, daily_sql)
+            daily_rows = run_sessions_query(client, daily_sql, timeout=query_timeout)
             all_daily_rows.extend(daily_rows)
 
             # 3. Version Health Query
@@ -543,7 +563,7 @@ def fetch_sessions_data(
             ver_sql = SQLS["versions_joined"].format(
                 sessions_table=sessions_fq, crash_table=matching_crash_table, days=days
             )
-            ver_rows = run_sessions_query(client, ver_sql)
+            ver_rows = run_sessions_query(client, ver_sql, timeout=query_timeout)
             for vr in ver_rows:
                 if isinstance(vr, dict):
                     vr["_platform"] = table_pf
@@ -555,7 +575,7 @@ def fetch_sessions_data(
                     prev_sql = SQLS["kpi_previous_joined"].format(
                         sessions_table=sessions_fq, crash_table=matching_crash_table, days=comparison_days
                     )
-                    prev_rows = run_sessions_query(client, prev_sql)
+                    prev_rows = run_sessions_query(client, prev_sql, timeout=query_timeout)
                     if prev_rows:
                         pr = prev_rows[0]
                         prev_total_sessions += int(pr.get("prev_total_sessions") or 0)
