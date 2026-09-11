@@ -15,6 +15,9 @@ from collections.abc import Iterable, Iterator
 from pathlib import Path
 from typing import Any
 
+from crash_trend.sqlite_store import connect as sqlite_connect
+from crash_trend.sqlite_store import connection as sqlite_connection
+
 logger = logging.getLogger(__name__)
 
 
@@ -64,21 +67,19 @@ class CatalogAuthorityStore:
             if self._explicit_conn is not None:
                 yield self._explicit_conn
             else:
-                conn = sqlite3.connect(str(self.db_path), timeout=10.0, check_same_thread=False)
-                conn.row_factory = sqlite3.Row
-                try:
+                # 連線設定與生命週期唯一定義於 sqlite_store（成功 commit、失敗
+                # rollback、一律 close）。各寫入方法自己的 commit 保留不動。
+                with sqlite_connection(self.db_path) as conn:
                     yield conn
-                finally:
-                    conn.close()
 
     def _init_db(self) -> None:
         """Configures pragmas and creates tables and indexes if not existing."""
         with self._connection() as conn:
             cur = conn.cursor()
-            if not self.is_memory:
-                cur.execute("PRAGMA journal_mode = WAL;")
-                cur.execute("PRAGMA synchronous = NORMAL;")
-                cur.execute("PRAGMA busy_timeout = 5000;")
+            # pragma 不在這裡設：WAL 由 sqlite_store.connect() 對每條連線統一套用。
+            # 原本這裡的 `PRAGMA busy_timeout = 5000` 已移除——它與 connect(timeout=10)
+            # 是同一個 busy handler，實際效果是把等鎖時間砍半；`synchronous = NORMAL`
+            # 也移除，保留 sqlite 預設的 FULL（見 sqlite_store.FILE_PRAGMAS 的說明）。
 
             cur.execute(
                 """
@@ -451,8 +452,7 @@ class CatalogAuthorityStore:
 
     def __enter__(self) -> CatalogAuthorityStore:
         if not self.is_memory and self._explicit_conn is None:
-            self._explicit_conn = sqlite3.connect(str(self.db_path), timeout=10.0, check_same_thread=False)
-            self._explicit_conn.row_factory = sqlite3.Row
+            self._explicit_conn = sqlite_connect(self.db_path)
         return self
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:

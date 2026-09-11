@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from crash_trend.alerts.models import DeliveryRecord
+from crash_trend.sqlite_store import connection as sqlite_connection
 
 
 class AlertStoreError(Exception):
@@ -91,26 +92,10 @@ class AlertDeliveryStore:
                 self._conn.row_factory = sqlite3.Row
             yield self._conn
         else:
-            if self.read_only:
-                db_p = Path(self.db_path).resolve().as_posix()
-                uri = f"file:{db_p}?mode=ro"
-                conn = sqlite3.connect(uri, uri=True, timeout=10.0)
-                conn.row_factory = sqlite3.Row
-                try:
-                    yield conn
-                finally:
-                    conn.close()
-            else:
-                conn = sqlite3.connect(str(self.db_path), timeout=10.0)
-                conn.row_factory = sqlite3.Row
-                try:
-                    yield conn
-                    conn.commit()
-                except Exception:
-                    conn.rollback()
-                    raise
-                finally:
-                    conn.close()
+            # 連線設定與生命週期（commit / rollback / close、pragma、
+            # check_same_thread）唯一定義於 sqlite_store。
+            with sqlite_connection(self.db_path, read_only=self.read_only) as conn:
+                yield conn
 
     def _table_exists(self, conn: sqlite3.Connection, table_name: str = "alert_deliveries") -> bool:
         cur = conn.execute(
@@ -123,7 +108,6 @@ class AlertDeliveryStore:
         if self.read_only:
             return
         with self._connection() as conn:
-            conn.execute("PRAGMA journal_mode = WAL;")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS alert_deliveries (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -74,6 +74,7 @@ files = [
     "crash_trend/bq_credentials.py",
     "crash_trend/bq_query.py",
     "crash_trend/schema_v2.py",
+    "crash_trend/sqlite_store.py",
     "crash_trend/authority_store.py",
     "crash_trend/catalog",
     "crash_trend/gate",
