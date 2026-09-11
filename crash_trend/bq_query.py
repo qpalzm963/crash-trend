@@ -27,13 +27,19 @@ transient 延遲，pipeline 就會無限期卡在某一支查詢上，而且卡�
 - 預設 `DEFAULT_QUERY_TIMEOUT_SEC`（300 秒）
 
 值為 `0` / `none` / `off` / `disabled` / `false` 時代表**明確**取消上限（回 `None`）；
-這是一個要自己寫下來的選擇，不是預設。設成無法解析的值則拋
-`BQQueryConfigError`——不靜默退回預設，因為「以為設了 30 秒、其實跑的是 300 秒」
-正是這類設定最常見的失敗。
+這是一個要自己寫下來的選擇，不是預設。
+
+**空值不是取消上限**：YAML 的 `query_timeout_sec:`（沒寫值）會解析成 `None`，環境變數
+`CRASH_TREND_BQ_QUERY_TIMEOUT=` 同理。這種寫法一律視為「這一層沒設」並往下一層找，
+否則一個看起來無害的空行就能悄悄關掉整張單要加的 guard。
+
+設成無法解析的值（含 `nan` / `inf`）則拋 `BQQueryConfigError`——不靜默退回預設，
+因為「以為設了 30 秒、其實跑的是 300 秒」正是這類設定最常見的失敗。
 """
 
 from __future__ import annotations
 
+import math
 import os
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from typing import Any
@@ -90,10 +96,26 @@ class _Unset:
 UNSET = _Unset()
 
 
+def _is_unset(raw: Any) -> bool:
+    """判斷一個設定值是否等於「這一層沒設」。
+
+    YAML 的 `query_timeout_sec:`（沒寫值）會解析成 `None`，`""` 同理。這種寫法**不是**
+    「不設上限」——那會讓一個看起來無害的空行悄悄關掉整個 guard。沒寫值一律往下一層
+    找（app → 全域 → 預設），要取消上限必須明確寫 `0` / `off`。
+    """
+    return raw is None or (isinstance(raw, str) and raw.strip() == "")
+
+
 def _coerce_timeout(raw: Any, source: str) -> float | None:
-    """把設定值轉成秒數；回 `None` 代表不設上限。無法解析時拋錯，不猜。"""
-    if raw is None:
-        return None
+    """把設定值轉成秒數；回 `None` 代表不設上限。無法解析時拋錯，不猜。
+
+    呼叫端必須先用 `_is_unset()` 濾掉「沒設」——空值到這裡就是程式錯誤（例如有人直接
+    傳 `timeout=""`），不是 unlimited。
+    """
+    if _is_unset(raw):
+        raise BQQueryConfigError(
+            f"{source} 是空值；沒有要設定就整行移除，要取消上限請明確寫 0 / off"
+        )
     if isinstance(raw, bool):
         # YAML 的 `false` 會被解析成 bool，語意同 sentinel；`true` 沒有對應秒數。
         if raw is False:
@@ -111,6 +133,12 @@ def _coerce_timeout(raw: Any, source: str) -> float | None:
             raise BQQueryConfigError(
                 f"{source} 必須是秒數或 0 / off（不設上限），實際為：{raw!r}"
             ) from None
+    if not math.isfinite(secs):
+        # nan 比對永遠為 False，會一路穿過下面的檢查；inf 則在 int(secs * 1000) 溢位。
+        # 兩者都不是「不設上限」的寫法——不設上限請明確寫 0 / off。
+        raise BQQueryConfigError(
+            f"{source} 必須是有限的秒數（不接受 nan / inf），實際為：{raw!r}"
+        )
     if secs == 0:
         return None
     if secs < 0:
@@ -129,16 +157,16 @@ def resolve_query_timeout(
     """
     environ = env if env is not None else os.environ
     raw_env = environ.get(ENV_QUERY_TIMEOUT)
-    if raw_env is not None and str(raw_env).strip() != "":
+    if not _is_unset(raw_env):
         return _coerce_timeout(raw_env, f"環境變數 {ENV_QUERY_TIMEOUT}")
 
-    if app_cfg and APP_TIMEOUT_KEY in app_cfg:
+    if app_cfg and not _is_unset(app_cfg.get(APP_TIMEOUT_KEY)):
         return _coerce_timeout(app_cfg[APP_TIMEOUT_KEY], f"apps.<app>.{APP_TIMEOUT_KEY}")
 
     if cfg is None:
         cfg = load_config()
     section = cfg.get(GLOBAL_TIMEOUT_SECTION) or {}
-    if isinstance(section, dict) and GLOBAL_TIMEOUT_KEY in section:
+    if isinstance(section, dict) and not _is_unset(section.get(GLOBAL_TIMEOUT_KEY)):
         return _coerce_timeout(
             section[GLOBAL_TIMEOUT_KEY], f"{GLOBAL_TIMEOUT_SECTION}.{GLOBAL_TIMEOUT_KEY}"
         )
@@ -156,7 +184,12 @@ def _job_config_kwargs(timeout_sec: float | None) -> dict[str, Any]:
 
 
 def _cancel_quietly(job: Any) -> str | None:
-    """嘗試取消 job；回傳取消失敗的原因（成功則 `None`）。
+    """嘗試取消 job；回傳「取消請求沒送出」的原因（送出成功則 `None`）。
+
+    `QueryJob.cancel()` 的契約是 **bool：取消請求是否送出**（不是「job 已結束」）。
+    因此 `False` 代表請求根本沒送出，必須當成失敗回報——把 no-exception 當成成功會
+    讓訊息宣稱取消了一支其實還在跑的 job。回傳非 bool（自訂 wrapper / 舊版 client）
+    時同樣無法確認，一律回報而不是樂觀假設。
 
     取消失敗不得蓋掉原本的逾時錯誤——逾時才是呼叫端要處理的事實——但也不能被吞掉，
     因為那代表 BigQuery 端可能還有一支 job 在跑。
@@ -165,10 +198,14 @@ def _cancel_quietly(job: Any) -> str | None:
     if not callable(cancel):
         return "job 物件沒有 cancel()"
     try:
-        cancel()
+        sent = cancel()
     except Exception as exc:  # noqa: BLE001 - 任何取消失敗都只是附註，不改變控制流
         return str(exc)[:300]
-    return None
+    if sent is True:
+        return None
+    if sent is False:
+        return "cancel() 回傳 False"
+    return f"cancel() 回傳非 bool（{sent!r}），無法確認取消請求是否送出"
 
 
 def execute_query(
@@ -185,9 +222,13 @@ def execute_query(
 
     逾時（client 端）會先取消 job，再拋 `BQQueryTimeout`。
     """
-    secs = resolve_query_timeout() if isinstance(timeout, _Unset) else _coerce_timeout(
-        timeout, "timeout 參數"
-    )
+    if isinstance(timeout, _Unset):
+        secs = resolve_query_timeout()
+    elif timeout is None:
+        # 呼叫端**明確**傳 None 才是不設上限（設定檔的空值不是，見 `_is_unset`）。
+        secs = None
+    else:
+        secs = _coerce_timeout(timeout, "timeout 參數")
 
     job = client.query(sql, **_job_config_kwargs(secs))
 
@@ -202,7 +243,13 @@ def execute_query(
     except FuturesTimeoutError as exc:
         job_id = getattr(job, "job_id", None)
         cancel_error = _cancel_quietly(job)
-        suffix = f"；取消 job 也失敗：{cancel_error}" if cancel_error else "；已取消該 job"
+        # 送出取消請求 != job 已結束（BigQuery 的 cancel 是 best-effort），因此兩個
+        # 分支都只敘述「請求」的狀態，不宣稱 job 已經停了。
+        suffix = (
+            f"；取消請求未送出：{cancel_error}"
+            if cancel_error
+            else "；已送出取消請求（BigQuery 端可能仍在收尾）"
+        )
         assert secs is not None  # 沒設上限時 result() 不會逾時
         raise BQQueryTimeout(
             f"BigQuery 查詢超過 {secs:g} 秒上限 (job_id={job_id}){suffix}",

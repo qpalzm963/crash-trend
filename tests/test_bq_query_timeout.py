@@ -55,10 +55,14 @@ class FakeJob:
         raise_timeout: bool = False,
         cancel_raises: str | None = None,
         job_id: str | None = "job-123",
+        cancel_returns: Any = True,
     ) -> None:
         self.rows = rows if rows is not None else []
         self.raise_timeout = raise_timeout
         self.cancel_raises = cancel_raises
+        # `QueryJob.cancel()` 的契約是 bool：**取消請求是否送出**。假 job 必須照這個
+        # 契約回傳，否則測試會在一個真實 client 不可能出現的形狀上通過。
+        self.cancel_returns = cancel_returns
         self.job_id = job_id
         self.result_kwargs: dict[str, Any] | None = None
         self.cancel_calls = 0
@@ -69,10 +73,11 @@ class FakeJob:
             raise FuturesTimeoutError("waited too long")
         return self.rows
 
-    def cancel(self) -> None:
+    def cancel(self) -> Any:
         self.cancel_calls += 1
         if self.cancel_raises:
             raise RuntimeError(self.cancel_raises)
+        return self.cancel_returns
 
 
 class _JobWithoutCancel:
@@ -142,9 +147,71 @@ class TestTimeoutResolution(unittest.TestCase):
                     resolve_query_timeout(app_cfg={"bq_query_timeout_sec": raw}, cfg={}, env={})
                 )
 
+    def test_an_empty_config_value_is_not_unlimited(self) -> None:
+        """YAML 的 `query_timeout_sec:`（沒寫值）會變成 None。
+
+        把它讀成「不設上限」等於一個看起來無害的空行就能關掉整道防護，
+        因此空值一律是「這一層沒設」，往下一層找。
+        """
+        cfg_empty_global = {"bigquery": {"query_timeout_sec": None}}
+        self.assertEqual(
+            resolve_query_timeout(app_cfg={}, cfg=cfg_empty_global, env={}),
+            DEFAULT_QUERY_TIMEOUT_SEC,
+        )
+        # app 層留空 → 掉回全域，而不是取消上限。
+        self.assertEqual(
+            resolve_query_timeout(
+                app_cfg={"bq_query_timeout_sec": None},
+                cfg={"bigquery": {"query_timeout_sec": 45}},
+                env={},
+            ),
+            45.0,
+        )
+        # 引號空字串與只有空白同理。
+        for raw in ("", "   "):
+            with self.subTest(raw=raw):
+                self.assertEqual(
+                    resolve_query_timeout(
+                        app_cfg={"bq_query_timeout_sec": raw},
+                        cfg={"bigquery": {"query_timeout_sec": 45}},
+                        env={},
+                    ),
+                    45.0,
+                )
+
+    def test_every_level_left_empty_still_lands_on_the_default(self) -> None:
+        """三層全空時必須回預設上限——絕不能一路空到「不設上限」。"""
+        self.assertEqual(
+            resolve_query_timeout(
+                app_cfg={"bq_query_timeout_sec": None},
+                cfg={"bigquery": {"query_timeout_sec": None}},
+                env={ENV_QUERY_TIMEOUT: ""},
+            ),
+            DEFAULT_QUERY_TIMEOUT_SEC,
+        )
+
+    def test_nan_and_inf_are_rejected(self) -> None:
+        """nan 的比較永遠是 False，會穿過所有邊界檢查；inf 則在換算 ms 時溢位。
+
+        兩者都不是「不設上限」的寫法，必須在設定解析階段就擋下來，而不是等到
+        `int(secs * 1000)` 爆掉或 `result(timeout=nan)` 行為未定義。
+        """
+        for raw in (float("nan"), float("inf"), float("-inf"), "nan", "inf", "-inf"):
+            with self.subTest(raw=raw):
+                with self.assertRaises(BQQueryConfigError) as ctx:
+                    resolve_query_timeout(
+                        app_cfg={"bq_query_timeout_sec": raw}, cfg={}, env={}
+                    )
+                self.assertIn("nan / inf", str(ctx.exception))
+
+    def test_an_explicit_empty_timeout_argument_is_a_programming_error(self) -> None:
+        """設定檔的空值往下找，但程式直接傳 `timeout=""` 是寫錯了，不是 unlimited。"""
+        with self.assertRaises(BQQueryConfigError):
+            execute_query(FakeClient(FakeJob()), "SELECT 1", timeout="")
+
     def test_a_broken_value_raises_instead_of_falling_back(self) -> None:
         """靜默退回預設 = 操作者以為設了 30 秒、實際跑 300 秒。"""
-        for raw in ("abc", "30s", "", True, -1):
+        for raw in ("abc", "30s", True, -1):
             with self.subTest(raw=raw):
                 with self.assertRaises(BQQueryConfigError):
                     resolve_query_timeout(app_cfg={"bq_query_timeout_sec": raw}, cfg={}, env={})
@@ -214,6 +281,37 @@ class TestTimeoutCancelsTheJob(unittest.TestCase):
         self.assertIsNone(err.cancel_error)
         self.assertIn("15", str(err))
         self.assertIn("job-abc", str(err))
+
+    def test_a_cancel_request_that_was_not_sent_is_reported(self) -> None:
+        """`cancel()` 回傳 False = 取消請求**沒送出**。
+
+        把 no-exception 當成成功，訊息就會宣稱取消了一支其實還在 BigQuery 上跑的 job，
+        而操作者會因此不去查它。
+        """
+        job = FakeJob(raise_timeout=True, cancel_returns=False)
+        with self.assertRaises(BQQueryTimeout) as ctx:
+            execute_query(FakeClient(job), "SELECT 1", timeout=15)
+        self.assertEqual(job.cancel_calls, 1)
+        self.assertIsNotNone(ctx.exception.cancel_error)
+        self.assertIn("未送出", str(ctx.exception))
+
+    def test_a_non_bool_cancel_return_is_not_assumed_to_be_success(self) -> None:
+        """自訂 wrapper / 舊版 client 可能回 None：無法確認就不能樂觀當成成功。"""
+        job = FakeJob(raise_timeout=True, cancel_returns=None)
+        with self.assertRaises(BQQueryTimeout) as ctx:
+            execute_query(FakeClient(job), "SELECT 1", timeout=15)
+        self.assertIsNotNone(ctx.exception.cancel_error)
+        self.assertIn("非 bool", str(ctx.exception.cancel_error or ""))
+
+    def test_a_sent_request_is_not_described_as_a_finished_cancel(self) -> None:
+        """BigQuery 的 cancel 是 best-effort：送出請求 != job 已經停了。"""
+        job = FakeJob(raise_timeout=True, cancel_returns=True)
+        with self.assertRaises(BQQueryTimeout) as ctx:
+            execute_query(FakeClient(job), "SELECT 1", timeout=15)
+        message = str(ctx.exception)
+        self.assertIn("已送出取消請求", message)
+        self.assertNotIn("已取消該 job", message)
+        self.assertIsNone(ctx.exception.cancel_error)
 
     def test_a_failed_cancel_is_reported_not_swallowed(self) -> None:
         """取消失敗代表對面可能還在跑；逾時仍是主要事實，但這件事不能消失。"""

@@ -26,6 +26,9 @@ bigquery:
   #   CRASH_TREND_BQ_QUERY_TIMEOUT 優先於兩者（CI / 一次性排查用）。
   # 特殊值 0 / off / none / false → 不設上限（明確選擇；寫壞的值會直接報錯，不會靜默
   #   退回預設）
+  # 注意：`query_timeout_sec:` 留空**不是**「不設上限」，而是「這一層沒設」（會往下一層
+  #   找：app → 全域 → 預設 300 秒）。要取消上限必須明確寫 0 / off，
+  #   否則一個空行就能悄悄關掉這道防護。
   query_timeout_sec: 300
 
 ai:
