@@ -37,6 +37,7 @@ except ImportError:
 
 try:
     from crash_trend.bq_credentials import BQCredentialsError, make_bq_client
+    from crash_trend.bq_query import UNSET, _Unset, execute_query, resolve_query_timeout
     from crash_trend.config import app_argparser, get_app, out_dir, write_json
     from crash_trend.schema_v2 import (
         AppDashboardV2Data,
@@ -65,6 +66,7 @@ try:
     from crash_trend.versions import max_version, min_version, version_key
 except ImportError:
     from bq_credentials import BQCredentialsError, make_bq_client
+    from bq_query import UNSET, _Unset, execute_query, resolve_query_timeout  # type: ignore[no-redef]
     from config import app_argparser, get_app, out_dir, write_json
     from schema_v2 import (
         AppDashboardV2Data,
@@ -495,9 +497,18 @@ def list_crash_tables(
     return batch_tables
 
 
-def run_query(client: bigquery.Client, sql: str, max_results: int | None = None) -> list[dict]:
-    query_job = client.query(sql)
-    rows = query_job.result() if max_results is None else query_job.result(max_results=max_results)
+def run_query(
+    client: bigquery.Client,
+    sql: str,
+    max_results: int | None = None,
+    timeout: float | None | _Unset = UNSET,
+) -> list[dict]:
+    """執行查詢並把 row 轉成 dict（timestamp 一律正規化成 ISO UTC）。
+
+    等待上限與逾時取消由 `bq_query.execute_query` 負責（唯一實作）；`timeout` 省略時
+    走環境變數 + 全域設定，`main()` 會先解析好 per-app 設定再傳進來。
+    """
+    rows = execute_query(client, sql, max_results=max_results, timeout=timeout)
     out: list[dict] = []
     for r in rows:
         d = dict(r)
@@ -1302,6 +1313,11 @@ def main() -> None:
 
     is_incremental = bool(not is_bootstrap and watermark)
 
+    # 逾時上限解析一次就好（每支查詢各自讀設定檔只是重複 I/O），並印出來——
+    # 操作者看到「某支查詢逾時」時，得能立刻知道當時生效的是哪個值。
+    query_timeout = resolve_query_timeout(app_cfg=app)
+    print(f"  查詢逾時上限：{'不設上限' if query_timeout is None else f'{query_timeout:g} 秒/查詢'}")
+
     try:
         client = make_client(project, app_cfg=app)
         tables = list_crash_tables(client, project, dataset, app_config={**app, "app_id": args.app})
@@ -1349,13 +1365,13 @@ def main() -> None:
         catalog_days = max(90, p_days)
         formatted_sql = sql_tpl.format(table=fq, days=p_days, catalog_days=catalog_days) if "{table}" in sql_tpl else sql_tpl
         try:
-            rows = run_query(client, formatted_sql)
+            rows = run_query(client, formatted_sql, timeout=query_timeout)
             return p_days, table, name, rows, None
         except Exception as e:
             if "Unrecognized name: error" in str(e) and "error[" in formatted_sql:
                 try:
                     retry_sql = formatted_sql.replace("error[SAFE_OFFSET(0)]", "errors[SAFE_OFFSET(0)]")
-                    rows = run_query(client, retry_sql)
+                    rows = run_query(client, retry_sql, timeout=query_timeout)
                     return p_days, table, name, rows, None
                 except Exception:
                     pass

@@ -333,7 +333,9 @@ class TestFetchSessionsMetrics(unittest.TestCase):
             {"version": "0.9.0", "sessions_total": 30000, "crashed_sessions": 60, "users_total": 6000, "crashed_users": 20},
         ]
 
-        def query_side_effect(sql: str):
+        # `**kwargs` 吸收 bq_query 加上的 job_config（server 端 job_timeout_ms）；
+        # 逾時本身的行為由 tests/test_bq_query_timeout.py 負責。
+        def query_side_effect(sql: str, **kwargs: object):
             mock_res = MagicMock()
             if "s.version" in sql or "version" in sql and "GROUP BY 1" in sql and "FORMAT_TIMESTAMP" not in sql:
                 mock_res.result.return_value = mock_ver_rows

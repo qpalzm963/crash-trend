@@ -589,10 +589,13 @@ class TestIssueOccurrenceTimeline(unittest.TestCase):
         mock_job.result.return_value = mock_rows
         mock_client.query.return_value = mock_job
 
-        res = run_query(mock_client, "SELECT 1")
+        res = run_query(mock_client, "SELECT 1", timeout=120)
         self.assertEqual(len(res), 5400)
-        # Ensure result was called with no max_results limit
-        mock_job.result.assert_called_with()
+        # Ensure result was called with no max_results limit（逾時上限不是列數上限：
+        # bq_query 會帶 timeout，但**不得**順手帶上 max_results，否則 90 天資料會被截斷）
+        _, result_kwargs = mock_job.result.call_args
+        self.assertNotIn("max_results", result_kwargs)
+        self.assertEqual(result_kwargs.get("timeout"), 120)
 
         # 2. Verify transform_bq_period_snapshot preserves full 90 days including latest date
         daily_rows: list[dict] = []

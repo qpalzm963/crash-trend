@@ -29,6 +29,7 @@ except ImportError:
     bigquery = None  # type: ignore
 
 try:
+    from crash_trend.bq_query import UNSET, _Unset, execute_query, resolve_query_timeout
     from crash_trend.config import (
         ROOT,
         app_argparser,
@@ -48,6 +49,7 @@ try:
         is_valid_iso8601_utc,
     )
 except ImportError:
+    from bq_query import UNSET, _Unset, execute_query, resolve_query_timeout  # type: ignore[no-redef]
     from config import (
         ROOT,
         app_argparser,
@@ -642,6 +644,7 @@ def fetch_issue_details_from_bq(
     issue_ids: list[str],
     days: int = 30,
     source_repo: str | Path | None = None,
+    query_timeout: float | None | _Unset = UNSET,
 ) -> dict[str, dict[str, Any]]:
     """Queries detailed crash events, stack frames, breadcrumbs, logs, and custom keys from BigQuery."""
     if not client or not tables or not issue_ids:
@@ -707,12 +710,12 @@ def fetch_issue_details_from_bq(
         """
 
         try:
-            event_rows = [dict(r) for r in client.query(sql_events).result(max_results=200)]
+            event_rows = [dict(r) for r in execute_query(client, sql_events, max_results=200, timeout=query_timeout)]
         except Exception as e:
             if "Unrecognized name: error" in str(e) and "error," in sql_events:
                 try:
                     retry_sql = sql_events.replace("error,\n", "errors,\n")
-                    event_rows = [dict(r) for r in client.query(retry_sql).result(max_results=200)]
+                    event_rows = [dict(r) for r in execute_query(client, retry_sql, max_results=200, timeout=query_timeout)]
                 except Exception as retry_e:
                     print(f"  ⚠ BigQuery sample events query retry failed for {table}: {retry_e}")
                     event_rows = []
@@ -722,7 +725,7 @@ def fetch_issue_details_from_bq(
 
         devices_by_issue: dict[str, list[dict]] = {}
         try:
-            device_rows = [dict(r) for r in client.query(sql_devices).result(max_results=500)]
+            device_rows = [dict(r) for r in execute_query(client, sql_devices, max_results=500, timeout=query_timeout)]
             for r in device_rows:
                 iid = r.get("issue_id")
                 if iid not in devices_by_issue:
@@ -733,7 +736,7 @@ def fetch_issue_details_from_bq(
 
         os_by_issue: dict[str, list[dict]] = {}
         try:
-            os_rows = [dict(r) for r in client.query(sql_os).result(max_results=500)]
+            os_rows = [dict(r) for r in execute_query(client, sql_os, max_results=500, timeout=query_timeout)]
             for r in os_rows:
                 iid = r.get("issue_id")
                 if iid not in os_by_issue:
@@ -891,7 +894,8 @@ def fetch_issue_details(
             batch_tables = [t for t in tables if not t.endswith("_REALTIME")]
             if batch_tables:
                 bq_results = fetch_issue_details_from_bq(
-                    bq_client, project, dataset, batch_tables, list(issue_ids), days=days, source_repo=repo
+                    bq_client, project, dataset, batch_tables, list(issue_ids), days=days,
+                    source_repo=repo, query_timeout=resolve_query_timeout(app_cfg=app),
                 )
                 for iid, data in bq_results.items():
                     results[iid] = data

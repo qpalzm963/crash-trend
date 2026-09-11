@@ -16,6 +16,21 @@ credentials:
   #   不會靜默退回 ADC（避免用比預期弱的身分抓到不完整的資料）
   bq_service_account: ~/.config/crash-trend/sa.json
 
+bigquery:
+  # 單一查詢的等待上限（秒；選填。Dashboard V2.8 - Issue #66）
+  # 沒設時為 300 秒。用途不是調效能，而是「GCP 出現 transient 延遲時 pipeline 不要
+  #   無限期卡住」：逾時會同時讓 BigQuery 端終止 job（job_timeout_ms）並取消該 job，
+  #   而那一支查詢會變成明確的錯誤（該期間 KPI 為 status: "error"），
+  #   絕不會被當成「這段時間沒有崩潰」。
+  # 可被 apps.<app_id>.bq_query_timeout_sec 覆寫；環境變數
+  #   CRASH_TREND_BQ_QUERY_TIMEOUT 優先於兩者（CI / 一次性排查用）。
+  # 特殊值 0 / off / none / false → 不設上限（明確選擇；寫壞的值會直接報錯，不會靜默
+  #   退回預設）
+  # 注意：`query_timeout_sec:` 留空**不是**「不設上限」，而是「這一層沒設」（會往下一層
+  #   找：app → 全域 → 預設 300 秒）。要取消上限必須明確寫 0 / off，
+  #   否則一個空行就能悄悄關掉這道防護。
+  query_timeout_sec: 300
+
 ai:
   # AI Task Router 設定 (選填；Dashboard V2.4 - Issue #35)
   # 支援 auto（deep_analysis 給 Gemini，lightweight 給 OpenRouter 免費模型）、gemini_only、openrouter_only
@@ -40,6 +55,7 @@ apps:
     display_name: 購物商城 App             # 儀表板與報表顯示名稱
     firebase_project: shop-app-12345      # Firebase 專案 ID（BigQuery 專案同名或關聯專案）
     bq_service_account: ~/.config/crash-trend/shop-app-sa.json  # 選填：此 App 專屬 SA，覆寫全域 credentials.bq_service_account
+    bq_query_timeout_sec: 300             # 選填：此 App 專屬查詢逾時上限（秒），覆寫全域 bigquery.query_timeout_sec
                                           # （Crashlytics 與 Sessions 兩條路徑共用同一把，不會分岔）
     data_sources:                         # 資料源設定 (選填，可細部控制)
       crashlytics_bigquery: true          # 預設 true
