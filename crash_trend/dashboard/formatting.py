@@ -146,6 +146,34 @@ function getLifecycleBadgeHtml(lc) {
   return "";
 }
 
+// fix_status 的 badge。與 getLifecycleBadgeHtml 並存：後者是「這一版修好了什麼」的
+// 版本功勞視角，本函式是「這個問題現在還在不在」的 issue 視角。still_present 是多數
+// 狀態，刻意不出 badge，讓少數「已消失」在列表中跳出來。
+function getFixStatusBadgeHtml(fx) {
+  if (!fx || !fx.status) return "";
+  const reason = fx.reason || "";
+  if (fx.status === "likely_fixed") {
+    // 資料年齡必須以「打開畫面的當下」計算：產生時寫入的 data_age_days 會凍結在檔案裡，
+    // 而儀表板可能數週後才被打開（產出時資料才 3 天舊，兩週後打開已是 17 天，期間的復發看不到）。
+    // 門檻與 detect_issue_fix_status 的 stale_after_days / unusable_after_days 一致。
+    const asOf = fx.data_as_of ? Date.parse(fx.data_as_of) : NaN;
+    const ageDays = Number.isFinite(asOf) ? (Date.now() - asOf) / 86400000 : fx.data_age_days;
+    if (typeof ageDays === "number" && ageDays > 30) {
+      return `<span class="badge badge-fix-unproven" title="資料截至 ${Math.round(ageDays)} 天前，期間的復發無從得知">⚪ 資料過舊</span>`;
+    }
+    const n = (fx.versions_since || []).length;
+    const stale = typeof ageDays === "number" && ageDays > 7;
+    const cls = fx.confidence === "high" && !stale ? "badge-fix-likely" : "badge-fix-likely-weak";
+    // 產生時已偏舊的話，理由裡已有「資料截至…」，不重複附加
+    const tip = stale && !reason.includes("資料截至") ? `${reason}（資料截至 ${Math.round(ageDays)} 天前）` : reason;
+    return `<span class="badge ${cls}" title="${esc(tip)}">✅ 已消失 ${n} 版</span>`;
+  }
+  if (fx.status === "unproven") {
+    return `<span class="badge badge-fix-unproven" title="${esc(reason)}">⚪ 無法判定</span>`;
+  }
+  return "";
+}
+
 // priority.trend 的 badge（#74）。與 getErrorTypeBadgeHtml / getLifecycleBadgeHtml
 // 一樣只在此定義一份：Overview 與 Issues 兩個 render 點共用，文案不會各自演化。
 //

@@ -17,6 +17,7 @@ from typing import Any, Literal
 
 from crash_trend.authority_store import CatalogAuthorityStore
 from crash_trend.catalog.issue_lifecycle import (
+    detect_issue_fix_status,
     detect_issue_lifecycle,
     is_version_sample_sufficient,
 )
@@ -841,10 +842,62 @@ def enrich_app_data_with_lifecycle(
             "error_message": None,
         }
 
+    # 判定只能描述「資料截止當下」的狀態：一份兩週前的 catalog 說某個 issue 已修復，
+    # 說的是兩週前的事，期間的復發它看不到。算出資料邊界距今幾天交給 fix_status 決定
+    # 要不要降級或拒答。以本期資料的結束時間為準，沒有才退回 catalog watermark。
+    data_age_days: float | None = None
+    data_as_of: str | None = None
+    _boundary = app_data.get("period", {}).get("end_time") if isinstance(app_data.get("period"), dict) else None
+    _boundary = _boundary or cat.watermark
+    if _boundary:
+        try:
+            _parsed = dt.datetime.fromisoformat(str(_boundary).replace("Z", "+00:00"))
+            if _parsed.tzinfo is None:
+                _parsed = _parsed.replace(tzinfo=dt.UTC)
+            data_age_days = max(0.0, (dt.datetime.now(dt.UTC) - _parsed).total_seconds() / 86400.0)
+            data_as_of = _parsed.astimezone(dt.UTC).isoformat().replace("+00:00", "Z")
+        except (ValueError, TypeError):
+            data_age_days = None
+
+    # App 設定（apps.yaml 的 release_gate）必須在此解析：樣本充足度判定在步驟 3/5 就要用到。
+    # 先前只在步驟 6 解析並傳給 release_catalog，導致同一個 app 在同一次執行中跑著兩套標準——
+    # release_catalog 吃設定值，lifecycle / fix_status 吃函式預設值。
+    effective_policy = gate_policy
+    if effective_policy is None:
+        effective_app_id = app_name or (app_data.get("metadata", {}).get("app_id") if isinstance(app_data, dict) else None)
+        app_cfg = None
+        if effective_app_id:
+            try:
+                from crash_trend.config import load_config
+                cfg = load_config()
+                app_cfg = (cfg.get("apps") or {}).get(effective_app_id)
+            except Exception:
+                app_cfg = None
+        try:
+            from crash_trend.gate.policy import load_gate_policy
+            effective_policy = load_gate_policy(app_cfg)
+        except Exception:
+            effective_policy = None
+
+    _suff_kwargs: dict[str, Any] = {}
+    if effective_policy is not None:
+        for _name in ("min_adoption_rate", "min_sessions", "min_version_events"):
+            _val = getattr(effective_policy, _name, None)
+            if isinstance(_val, (int, float)):
+                _suff_kwargs[_name] = _val
+    # fix_status 的證據門檻必須與樣本充足度同一套標準，否則同一個 issue 會出現
+    # lifecycle 說「樣本足夠、已收斂」而 fix_status 說「曝光量不足」的矛盾。
+    _fix_kwargs: dict[str, Any] = {}
+    if "min_version_events" in _suff_kwargs:
+        _fix_kwargs["min_evidence_events"] = _suff_kwargs["min_version_events"]
+    if "min_sessions" in _suff_kwargs:
+        _fix_kwargs["min_evidence_sessions"] = _suff_kwargs["min_sessions"]
+
     # 3. Determine per-platform version universe and latest version
     per_pf_latest: dict[str, str] = {}
     per_pf_known: dict[str, list[str]] = {}
     per_pf_sufficiency: dict[str, dict[str, bool]] = {}
+    per_pf_health: dict[str, dict[str, dict]] = {}
 
     for pf in ("android", "ios"):
         # Filter version health for pf
@@ -872,15 +925,19 @@ def enrich_app_data_with_lifecycle(
         known_set.add(latest_v)
         sorted_pf_versions = sorted(list(known_set), key=version_key)
 
-        # Build sample sufficiency for pf
+        # Build sample sufficiency for pf（順帶留下 health map 供 fix_status 佐證曝險量）
         suff_map: dict[str, bool] = {}
+        health_map: dict[str, dict] = {}
         for v in sorted_pf_versions:
             v_info = pf_vh_map.get(v) or cat.get_version_info(v, platform=pf)
-            suff_map[v] = is_version_sample_sufficient(v_info)
+            if isinstance(v_info, dict):
+                health_map[v] = v_info
+            suff_map[v] = is_version_sample_sufficient(v_info, **_suff_kwargs)
 
         per_pf_latest[pf] = latest_v
         per_pf_known[pf] = sorted_pf_versions
         per_pf_sufficiency[pf] = suff_map
+        per_pf_health[pf] = health_map
 
     # 4. Enrich top-level top_issues with platform-isolated version universes
     if isinstance(app_data.get("top_issues"), list):
@@ -912,6 +969,18 @@ def enrich_app_data_with_lifecycle(
             )
             iss["lifecycle"] = lc
 
+            # 「這個問題現在還在不在」——與 lifecycle 的版本功勞視角互補
+            iss["fix_status"] = detect_issue_fix_status(
+                versions_seen=set(hist_versions) | {v for v, e in v_events.items() if e},
+                all_known_versions=target_known,
+                latest_version=target_latest,
+                version_health_map=per_pf_health.get(iss_pf, {}),
+                issue_version_events=v_events,
+                data_age_days=data_age_days,
+                data_as_of=data_as_of,
+                **_fix_kwargs,
+            )
+
     # 5. Enrich each period snapshot's top_issues with platform isolation
     if isinstance(periods, dict):
         for snap in periods.values():
@@ -925,6 +994,7 @@ def enrich_app_data_with_lifecycle(
             snap_pf_latest: dict[str, str] = {}
             snap_pf_known: dict[str, list[str]] = {}
             snap_pf_sufficiency: dict[str, dict[str, bool]] = {}
+            snap_pf_health: dict[str, dict[str, dict]] = {}
 
             for pf in ("android", "ios"):
                 snap_pf_vh = [
@@ -948,13 +1018,17 @@ def enrich_app_data_with_lifecycle(
                 sorted_snap_pf_versions = sorted(list(snap_known_set), key=version_key)
 
                 snap_suff_map: dict[str, bool] = {}
+                snap_health_map: dict[str, dict] = {}
                 for v in sorted_snap_pf_versions:
                     v_info = snap_pf_vh_map.get(v) or cat.get_version_info(v, platform=pf)
-                    snap_suff_map[v] = is_version_sample_sufficient(v_info)
+                    if isinstance(v_info, dict):
+                        snap_health_map[v] = v_info
+                    snap_suff_map[v] = is_version_sample_sufficient(v_info, **_suff_kwargs)
 
                 snap_pf_latest[pf] = snap_latest_v
                 snap_pf_known[pf] = sorted_snap_pf_versions
                 snap_pf_sufficiency[pf] = snap_suff_map
+                snap_pf_health[pf] = snap_health_map
 
             snap_issues = snap.get("top_issues") or []
             for iss in snap_issues:
@@ -985,24 +1059,19 @@ def enrich_app_data_with_lifecycle(
                 )
                 iss["lifecycle"] = lc
 
-    # 6. Build persistent Release Catalog and attach to app_data and period snapshots
-    effective_policy = gate_policy
-    if effective_policy is None:
-        effective_app_id = app_name or (app_data.get("metadata", {}).get("app_id") if isinstance(app_data, dict) else None)
-        app_cfg = None
-        if effective_app_id:
-            try:
-                from crash_trend.config import load_config
-                cfg = load_config()
-                app_cfg = (cfg.get("apps") or {}).get(effective_app_id)
-            except Exception:
-                app_cfg = None
-        try:
-            from crash_trend.gate.policy import load_gate_policy
-            effective_policy = load_gate_policy(app_cfg)
-        except Exception:
-            effective_policy = None
+                # 問題列表 UI 讀的是期間快照，fix_status 必須同步掛在這裡
+                iss["fix_status"] = detect_issue_fix_status(
+                    versions_seen=set(hist_versions) | {v for v, e in v_events.items() if e},
+                    all_known_versions=target_snap_known,
+                    latest_version=target_snap_latest,
+                    version_health_map=snap_pf_health.get(iss_pf, {}),
+                    issue_version_events=v_events,
+                    data_age_days=data_age_days,
+                    data_as_of=data_as_of,
+                    **_fix_kwargs,
+                )
 
+    # 6. Build persistent Release Catalog and attach to app_data and period snapshots
     release_catalog = cat.build_release_catalog(app_data, gate_policy=effective_policy)
     app_data["release_catalog"] = release_catalog
     if isinstance(periods, dict):

@@ -194,6 +194,10 @@ def assemble_bundle_from_apps(cfg: dict | None = None, root_dir: str | Path | No
                 app_gate_policy = None
 
             if isinstance(a_data.get("top_issues"), list):
+                # 僅以 lifecycle 缺失為觸發條件。enrich 會連帶重建 release_catalog
+                # 與 release_gate，對 pre-V3.2 的 legacy bundle 而言那是破壞性的
+                # （既有 gate 結論會被重算掉），因此新增的 enrichment 欄位（如
+                # fix_status）不納入此判斷——它們由正常管線產生，不在此處回填。
                 has_missing_lc = any(isinstance(i, dict) and "lifecycle" not in i for i in a_data["top_issues"])
                 if has_missing_lc:
                     try:

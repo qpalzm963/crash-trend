@@ -25,6 +25,7 @@ from crash_trend.catalog.historical import (
     enrich_app_data_with_lifecycle,
 )
 from crash_trend.catalog.issue_lifecycle import (
+    detect_issue_fix_status,
     detect_issue_lifecycle,
     is_version_sample_sufficient,
 )
@@ -37,6 +38,7 @@ from crash_trend.catalog.watermark import advance_watermark, is_ts_le
 
 __all__ = [
     "IssueHistoricalCatalog",
+    "detect_issue_fix_status",
     "detect_issue_lifecycle",
     "is_version_sample_sufficient",
     "get_latest_app_version",

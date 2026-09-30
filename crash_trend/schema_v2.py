@@ -278,6 +278,36 @@ class IssueLifecycle(TypedDict):
     reason: str | None
 
 
+IssueFixStatusValue = Literal["still_present", "likely_fixed", "unproven"]
+
+
+class IssueFixStatus(TypedDict):
+    """「這個 issue 目前還在不在」的判定結果。
+
+    與 :class:`IssueLifecycle` 互補而非取代：後者以「版本」為主體，回答
+    「latest_version 這一版修好了什麼」，因此要求 issue 在緊鄰前一版仍活躍；
+    一個更早就消失的 issue 在那個契約下永遠不會是 resolved。本結構以「issue」
+    為主體，回答「這個問題最後出現在哪一版、之後是否有足夠曝光量證明它沒再出現」。
+    """
+
+    status: IssueFixStatusValue
+    last_seen_version: str
+    versions_since: list[str]
+    evidence_events: int
+    evidence_sessions: int | None
+    confidence: Literal["high", "medium", "low"]
+    reason: str
+    #: 依 issue 自身歷史發生率推算，後續版本「本應」觀察到的次數。None 代表
+    #: 缺少該 issue 的分版本事件數，無法推算，此時退回絕對事件數門檻判定。
+    expected_occurrences: float | None
+    #: 判定所依據的資料距今幾天。None 代表呼叫端未提供。資料越舊，
+    #: 「已修復」越可能只是還沒觀察到後續復發。
+    data_age_days: float | None
+    #: 判定所依據資料的截止時間（ISO 8601）。data_age_days 是產生當下算的、會凍結在檔案裡；
+    #: 儀表板可能在數週後才被打開，因此檢視端必須用這個時間點重新算「距今多久」。
+    data_as_of: str | None
+
+
 class CatalogIssueHistory(TypedDict):
     issue_id: str
     platform: Literal["ios", "android"]
