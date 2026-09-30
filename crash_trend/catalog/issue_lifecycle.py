@@ -298,27 +298,48 @@ def detect_issue_fix_status(
         )
 
     # 檢查 2：以 issue 自身發生率推算後續版本「本應」出現幾次。
+    # 分母要跟證據同一種單位：有 sessions 時用「每 session 發生率 × 後續 sessions」；
+    # 只有當機數時才退回「佔當機比例 × 後續當機數」。若在有 sessions 時仍用當機佔比，
+    # 新版當機大幅減少（正是修好的樣子）反而會讓本應出現次數趨近 0，把最強的
+    # sessions 證據擋掉——多給資料卻得出更弱的結論。
     expected: float | None = None
+    basis = ""
+    rate = 0.0
     own_at_last = (issue_version_events or {}).get(last_seen)
-    total_at_last = (health.get(last_seen) or {}).get("crash_events")
-    if (
-        isinstance(own_at_last, (int, float)) and own_at_last > 0
-        and isinstance(total_at_last, (int, float)) and total_at_last > 0
-    ):
-        # 分版本事件數與版本總量可能來自不同視窗，佔比會超過 100%；夾在 1.0 以免高估本應出現次數
-        rate = min(1.0, float(own_at_last) / float(total_at_last))
-        expected = rate * float(evidence_events)
-        if expected < min_expected_occurrences:
-            return _result(
-                "unproven", last_seen, versions_since, evidence_events, evidence_sessions, "low",
-                f"最後出現於 {last_seen}（該版佔比 {rate:.0%}）；其後 {since_desc} 僅 {evidence_events} 次事件，"
-                f"本應出現約 {expected:.1f} 次，不足以證明消失",
-                expected,
-            )
+    last_info = health.get(last_seen) or {}
+    total_at_last = last_info.get("crash_events")
+    sessions_at_last = last_info.get("sessions_total")
+    if isinstance(own_at_last, (int, float)) and own_at_last > 0:
+        if evidence_sessions is not None and isinstance(sessions_at_last, (int, float)) and sessions_at_last > 0:
+            rate = min(1.0, float(own_at_last) / float(sessions_at_last))
+            expected = rate * float(evidence_sessions)
+            basis = "sessions"
+        elif evidence_sessions is not None and evidence_sessions >= min_evidence_sessions:
+            # 後續版本有足量 sessions、但缺最後出現版本的 sessions 無法換算發生率：
+            # 直接的 sessions 證據已足夠，不以當機佔比這個較弱的代理去否決它。
+            expected = None
+        elif isinstance(total_at_last, (int, float)) and total_at_last > 0:
+            # 分版本事件數與版本總量可能來自不同視窗，佔比會超過 100%；夾在 1.0 以免高估本應出現次數
+            rate = min(1.0, float(own_at_last) / float(total_at_last))
+            expected = rate * float(evidence_events)
+            basis = "events"
+
+    if expected is not None and expected < min_expected_occurrences:
+        if basis == "sessions":
+            detail = (f"每萬 sessions 約 {rate * 10000:.2f} 次）；其後 {since_desc} 合計 {evidence_sessions} sessions，")
+        else:
+            detail = f"該版佔比 {rate:.0%}）；其後 {since_desc} 僅 {evidence_events} 次事件，"
+        return _result(
+            "unproven", last_seen, versions_since, evidence_events, evidence_sessions, "low",
+            f"最後出現於 {last_seen}（{detail}本應出現約 {expected:.1f} 次，不足以證明消失",
+            expected,
+        )
 
     if evidence_sessions is not None and evidence_sessions >= min_evidence_sessions:
         conf = "high"
         reason = f"最後出現於 {last_seen}；其後 {since_desc} 合計 {evidence_sessions} sessions 未再觀察到"
+        if expected is not None:
+            reason += f"，依自身發生率本應出現約 {expected:.1f} 次"
     elif evidence_events >= min_evidence_events:
         # crash_events 是版本層級總量，可能全部來自其他 issue，只是粗略的曝光量代理
         conf = "medium"

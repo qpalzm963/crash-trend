@@ -170,7 +170,9 @@ function renderIssuesList() {
     if (filterPlat !== "ALL" && iss.platform !== filterPlat) return false;
     if (filterPrio !== "ALL" && iss.priority?.level !== filterPrio) return false;
     if (filterLife !== "ALL" && (iss.lifecycle?.status || "persistent") !== filterLife) return false;
-    if (filterFix !== "ALL" && (iss.fix_status?.status || "still_present") !== filterFix) return false;
+    // 沒有 fix_status 代表尚未判定（例如本功能上線前產生的 bundle，renderer 不會回填），
+    // 不可預設成「仍在發生」：只在「全部」時出現，任何特定狀態的篩選都排除它。
+    if (filterFix !== "ALL" && iss.fix_status?.status !== filterFix) return false;
     if (searchQuery) {
       const target = `${iss.title} ${iss.subtitle} ${iss.issue_id} ${iss.blame_frame?.file || ""}`.toLowerCase();
       if (!target.includes(searchQuery)) return false;

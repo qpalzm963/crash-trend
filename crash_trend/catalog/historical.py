@@ -885,6 +885,13 @@ def enrich_app_data_with_lifecycle(
             _val = getattr(effective_policy, _name, None)
             if isinstance(_val, (int, float)):
                 _suff_kwargs[_name] = _val
+    # fix_status 的證據門檻必須與樣本充足度同一套標準，否則同一個 issue 會出現
+    # lifecycle 說「樣本足夠、已收斂」而 fix_status 說「曝光量不足」的矛盾。
+    _fix_kwargs: dict[str, Any] = {}
+    if "min_version_events" in _suff_kwargs:
+        _fix_kwargs["min_evidence_events"] = _suff_kwargs["min_version_events"]
+    if "min_sessions" in _suff_kwargs:
+        _fix_kwargs["min_evidence_sessions"] = _suff_kwargs["min_sessions"]
 
     # 3. Determine per-platform version universe and latest version
     per_pf_latest: dict[str, str] = {}
@@ -971,6 +978,7 @@ def enrich_app_data_with_lifecycle(
                 issue_version_events=v_events,
                 data_age_days=data_age_days,
                 data_as_of=data_as_of,
+                **_fix_kwargs,
             )
 
     # 5. Enrich each period snapshot's top_issues with platform isolation
@@ -1060,6 +1068,7 @@ def enrich_app_data_with_lifecycle(
                     issue_version_events=v_events,
                     data_age_days=data_age_days,
                     data_as_of=data_as_of,
+                    **_fix_kwargs,
                 )
 
     # 6. Build persistent Release Catalog and attach to app_data and period snapshots

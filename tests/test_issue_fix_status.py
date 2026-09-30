@@ -127,10 +127,6 @@ class TestIssueFixStatus(unittest.TestCase):
         self.assertEqual(fx["last_seen_version"], "3.10.3")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestFixStatusFreshness(unittest.TestCase):
     """資料新鮮度護欄。
 
@@ -233,6 +229,59 @@ class TestFixStatusOwnOccurrenceRate(unittest.TestCase):
         self.assertEqual(with_rate["status"], "unproven")
         self.assertAlmostEqual(with_rate["expected_occurrences"], 0.03, places=3)
 
+    def test_session_evidence_is_not_vetoed_by_crash_share(self):
+        """多給一份資料不得讓結論變弱。
+
+        新版 10 萬 sessions、只剩 2 次當機（當機大幅減少正是修好的樣子）。若用「佔當機比例」
+        推算，本應出現次數只有 1 次，會把最強的 sessions 證據否決成 unproven；而同一份資料
+        不給分版本次數時卻是 likely_fixed/high。有 sessions 時必須改用每 session 發生率。
+        """
+        kwargs = dict(
+            versions_seen=["2.3.0"],
+            all_known_versions=["2.3.0", "2.4.0"],
+            latest_version="2.4.0",
+            version_health_map={
+                "2.3.0": {"crash_events": 10, "sessions_total": 20000},
+                "2.4.0": {"crash_events": 2, "sessions_total": 100000},
+            },
+        )
+        without = detect_issue_fix_status(**kwargs)
+        with_rate = detect_issue_fix_status(**kwargs, issue_version_events={"2.3.0": 5})
+
+        self.assertEqual((without["status"], without["confidence"]), ("likely_fixed", "high"))
+        self.assertEqual((with_rate["status"], with_rate["confidence"]), ("likely_fixed", "high"))
+        # 5 / 20000 sessions × 100000 sessions = 25 次
+        self.assertAlmostEqual(with_rate["expected_occurrences"], 25.0)
+
+    def test_rare_issue_per_session_rate_stays_unproven(self):
+        """sessions 很多也不等於照得出冷門 bug：每百萬 sessions 才 1 次的 bug，10 萬 sessions 本應只出現 0.1 次。"""
+        r = detect_issue_fix_status(
+            versions_seen=["2.3.0"],
+            all_known_versions=["2.3.0", "2.4.0"],
+            latest_version="2.4.0",
+            version_health_map={
+                "2.3.0": {"crash_events": 50, "sessions_total": 1000000},
+                "2.4.0": {"crash_events": 40, "sessions_total": 100000},
+            },
+            issue_version_events={"2.3.0": 1},
+        )
+        self.assertEqual(r["status"], "unproven")
+        self.assertAlmostEqual(r["expected_occurrences"], 0.1)
+
+    def test_direct_session_evidence_used_when_last_version_lacks_sessions(self):
+        """最後出現版本沒有 sessions 無法換算發生率時，後續足量的 sessions 本身就是直接證據，不退回較弱的當機佔比。"""
+        r = detect_issue_fix_status(
+            versions_seen=["2.3.0"],
+            all_known_versions=["2.3.0", "2.4.0"],
+            latest_version="2.4.0",
+            version_health_map={
+                "2.3.0": {"crash_events": 10},
+                "2.4.0": {"crash_events": 2, "sessions_total": 100000},
+            },
+            issue_version_events={"2.3.0": 5},
+        )
+        self.assertEqual((r["status"], r["confidence"]), ("likely_fixed", "high"))
+
     def test_frequent_issue_can_still_be_proven_fixed(self):
         """發生率檢查不是一律變保守：本來很吵的 bug，後續版本有量卻完全沒出現，仍應判定消失。"""
         health = {"3.10.3": {"crash_events": 40}, "3.11.0": {"crash_events": 400}, "3.11.2": {"crash_events": 9000}}
@@ -317,3 +366,28 @@ class TestSampleSufficiencyUsesAppPolicy(unittest.TestCase):
         # 2.4.0 只有 8 次事件：預設門檻 20 不足以證明，App 自訂門檻 5 則足夠
         self.assertEqual(strict["top_issues"][0]["lifecycle"]["status"], "not_observed_latest")
         self.assertEqual(lenient["top_issues"][0]["lifecycle"]["status"], "resolved")
+
+        # fix_status 必須跟 lifecycle 用同一套門檻：否則同一個 issue 會一邊說「已收斂」、
+        # 一邊說「曝光量不足」。先前這個測試只檢查 lifecycle，因此沒抓到 fix_status 仍吃預設值。
+        self.assertEqual(strict["top_issues"][0]["fix_status"]["status"], "unproven")
+        self.assertEqual(lenient["top_issues"][0]["fix_status"]["status"], "likely_fixed")
+
+
+class TestFixStatusFilterContract(unittest.TestCase):
+    """問題列表的修復狀態篩選，對「尚未判定」的 issue 不得捏造狀態。
+
+    本功能上線前產生的 bundle 已帶 lifecycle、沒有 fix_status，而 renderer 刻意不回填它。
+    若篩選把缺值當成 still_present，「仍在發生」會列出全部舊 issue、「無法判定」一筆都沒有——
+    等於替從未判定過的 issue 下了結論。
+    """
+
+    def test_missing_fix_status_is_not_defaulted_to_still_present(self):
+        from crash_trend.dashboard.issues import get_issues_js
+
+        js = get_issues_js()
+        self.assertIn('filterFix !== "ALL" && iss.fix_status?.status !== filterFix', js)
+        self.assertNotIn('fix_status?.status || "still_present"', js)
+
+
+if __name__ == "__main__":
+    unittest.main()
