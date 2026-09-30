@@ -220,7 +220,10 @@ class TestAIObservability(unittest.TestCase):
                 "paid_model_allowed": True,
             },
         ]
-        summary = aggregate_ai_usage(records, days=7)
+        # 固定「現在」：aggregate_ai_usage 只算最近 N 天，寫死的 timestamp 會隨時間掉出視窗，
+        # 測試在 2026-09-11 之後就會恆定失敗（0 != 4）。與上方 test 同樣以 now 釘住時間。
+        now = dt.datetime(2026, 9, 4, 14, 0, 0, tzinfo=dt.UTC)
+        summary = aggregate_ai_usage(records, days=7, now=now)
         self.assertEqual(summary["total_requests"], 4)
         # Only call 1 and call 3 are free tier (2 / 4 = 0.5), call 2 (Pro) and call 4 (Flash-image) are NOT counted!
         self.assertEqual(summary["free_tier_count"], 2)
