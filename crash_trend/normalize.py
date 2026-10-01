@@ -32,6 +32,37 @@ def norm_error_type(raw: str, fatal: bool) -> str:
     return et if et in ("FATAL", "ANR", "NON_FATAL") else ("FATAL" if fatal else "NON_FATAL")
 
 
+def weekly_from_daily(daily: list[dict] | None) -> list[dict]:
+    """daily_trend → weekly_trend（僅事件數）。
+
+    BigQuery 抓取端不再另跑週彙總查詢，月摘要的 weekly_trend 因此一直是空的，月報卡片的
+    週趨勢圖就畫不出來。週 key 與 check_surge.weekly_totals_from_daily 相同：取該週週一的
+    ``%Y-%W``。不直接用每一天自己的 ``%W``，是因為跨年那週會被拆成兩個不完整的點
+    （例如 2025-52 與 2026-00）。
+
+    受影響人數刻意不加總：同一人在不同天出現會被重複計算，週層級的去重人數無法由日資料還原。
+    """
+    by_week: dict[str, int] = {}
+    for row in daily or []:
+        try:
+            day = dt.date.fromisoformat(str(row.get("date"))[:10])
+        except (TypeError, ValueError):
+            continue
+        key = (day - dt.timedelta(days=day.weekday())).strftime("%Y-%W")
+        by_week[key] = by_week.get(key, 0) + int(row.get("events") or 0)
+    return [{"week": k, "events": v} for k, v in sorted(by_week.items())]
+
+
+def _widest_daily_trend(bq: dict, table: str, data: dict) -> list[dict]:
+    """取涵蓋期間最長的 daily_trend：優先多期間快照裡天數最大的那期，否則用頂層。"""
+    periods = (bq or {}).get("periods") or {}
+    for key in sorted(periods, key=lambda k: int(k) if str(k).isdigit() else -1, reverse=True):
+        rows = (((periods.get(key) or {}).get("tables") or {}).get(table) or {}).get("daily_trend")
+        if rows:
+            return rows
+    return data.get("daily_trend") or []
+
+
 def bq_issues_to_unified(bq: dict) -> tuple[list[dict], dict, list[dict], list[dict]]:
     issues, dists, custom_keys, weekly = [], {}, [], []
     for table, data in (bq or {}).get("tables", {}).items():
@@ -67,7 +98,8 @@ def bq_issues_to_unified(bq: dict) -> tuple[list[dict], dict, list[dict], list[d
         d["os"] = [{"label": r.get("os_version", "?"), "events": int(r.get("events", 0)), "users": int(r.get("users", 0))} for r in data.get("by_os", [])]
         d["app_version"] = [{"label": r.get("app_version", "?"), "events": int(r.get("events", 0)), "users": int(r.get("users", 0))} for r in data.get("by_app_version", [])]
         custom_keys += [{**r, "platform": platform} for r in data.get("custom_keys", [])]
-        weekly += [{**r, "platform": platform} for r in data.get("weekly_trend", [])]
+        weekly_rows = data.get("weekly_trend") or weekly_from_daily(_widest_daily_trend(bq, table, data))
+        weekly += [{**r, "platform": platform} for r in weekly_rows]
     return issues, dists, custom_keys, weekly
 
 

@@ -7,6 +7,9 @@
 2. 儀表板按鈕必須是 canonical deep link（#overview?app=<app>）。舊格式 #<app>
    會被新版路由當成未知頁面而退回預設 app：多 app 部署時，第二個 app 的卡片會開到第一個 app。
 3. 發卡前要先產生 TOP 1 的白話說明（pm_note），卡片才有給非工程師看的那一行。
+4. 週趨勢的資料來源要真的存在。抓取端不再跑週彙總查詢，月摘要的 weekly_trend 必須由
+   daily_trend 換算，否則第 1 點只是送出一個永遠空的清單。
+5. 什麼資料都沒抓到時不發卡。全部來源失敗時摘要的數字全是 0，發出去就變成「本月 0 次當機」。
 """
 
 from __future__ import annotations
@@ -23,6 +26,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "crash_trend"))
 
+import check_surge  # noqa: E402
+import normalize  # noqa: E402
 import post_report  # noqa: E402
 
 
@@ -52,21 +57,24 @@ class TestBuildWeeklyTrend(unittest.TestCase):
         self.assertEqual(post_report.build_weekly_trend({"weekly_trend": [{"events": 3}]}), [])
 
 
-class TestCardPayload(unittest.TestCase):
-    """以實際 main() 組出的 payload 驗證，而不是只測輔助函式——卡片漏欄位的問題就出在組裝處。"""
+class _CardSender:
+    """以實際 main() 組卡的共用輔助：卡片漏欄位的問題就出在組裝處，不能只測輔助函式。"""
 
-    def _send(self, app_id: str) -> dict:
+    def _send(self, app_id: str, summary: dict | None = None) -> dict | None:
+        """以 main() 實際組卡；回傳送出的 payload，沒送出則回傳 None。"""
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             data_dir = root / "reports" / "data" / app_id
             data_dir.mkdir(parents=True)
             month = post_report.dt.date.today().strftime("%Y-%m")
-            (data_dir / f"{month}.json").write_text(json.dumps({
-                "kpis": {"events": 10, "users": 4},
-                "top_issues": [],
-                "priority_list": [],
-                "weekly_trend": [{"week": "2026-W38", "events": 7, "platform": "ios"}],
-            }), encoding="utf-8")
+            if summary is None:
+                summary = {
+                    "kpis": {"events": 10, "users": 4},
+                    "top_issues": [],
+                    "priority_list": [],
+                    "weekly_trend": [{"week": "2026-W38", "events": 7, "platform": "ios"}],
+                }
+            (data_dir / f"{month}.json").write_text(json.dumps(summary), encoding="utf-8")
 
             response = MagicMock(status_code=200)
             response.json.return_value = {"space": "s"}
@@ -78,7 +86,10 @@ class TestCardPayload(unittest.TestCase):
                  patch.dict(os.environ, env, clear=False), \
                  patch.object(sys, "argv", ["post_report.py", "--app", app_id]):
                 post_report.main()
-            return post.call_args.kwargs["json"]
+            return post.call_args.kwargs["json"] if post.called else None
+
+
+class TestCardPayload(_CardSender, unittest.TestCase):
 
     def test_payload_carries_weekly_trend(self):
         payload = self._send("second_app")
@@ -88,6 +99,92 @@ class TestCardPayload(unittest.TestCase):
         payload = self._send("second_app")
         self.assertEqual(payload["dashboard_url"], "http://dash:8787#overview?app=second_app")
         self.assertNotIn("#second_app", payload["dashboard_url"])
+
+
+class TestNoDataNoCard(_CardSender, unittest.TestCase):
+    """全部資料來源都失敗時，摘要數字全是 0；發卡等於對全團隊宣稱「本月 0 次當機」。"""
+
+    def test_all_sources_failed_skips_the_card(self):
+        summary = {
+            "kpis": {"events": 0, "users": 0},
+            "top_issues": [], "priority_list": [],
+            "sources": {"crashlytics_bq": False, "mcp_report": False, "manual_console": False},
+        }
+        self.assertIsNone(self._send("blind_app", summary))
+
+    def test_any_working_source_still_posts(self):
+        summary = {
+            "kpis": {"events": 0, "users": 0},
+            "top_issues": [], "priority_list": [],
+            "sources": {"crashlytics_bq": True, "mcp_report": False},
+        }
+        # 真的 0 次當機（來源正常、只是沒事件）仍然要發——那是好消息，不是缺資料
+        self.assertIsNotNone(self._send("quiet_app", summary))
+
+    def test_legacy_summary_without_sources_still_posts(self):
+        """舊月摘要沒有 sources 欄位：不能因為新增的檢查就讓既有部署停止發卡。"""
+        summary = {"kpis": {"events": 3, "users": 1}, "top_issues": [], "priority_list": []}
+        self.assertIsNotNone(self._send("legacy_app", summary))
+
+    def test_v2_fallback_uses_source_status(self):
+        dead = {"sources": {"crashlytics_bq": {"status": "error"}, "mcp_crashlytics": {"status": "unavailable"}}}
+        alive = {"sources": {"crashlytics_bq": {"status": "available"}}}
+        self.assertFalse(post_report.has_any_data_source(None, dead))
+        self.assertTrue(post_report.has_any_data_source(None, alive))
+
+
+class TestWeeklyTrendFromDaily(unittest.TestCase):
+    def test_daily_rows_are_summed_per_week(self):
+        rows = [
+            {"date": "2026-09-14", "events": 2},  # 週一
+            {"date": "2026-09-20", "events": 3},  # 同週週日
+            {"date": "2026-09-21", "events": 5},  # 下一週週一
+        ]
+        self.assertEqual(
+            normalize.weekly_from_daily(rows),
+            [{"week": "2026-37", "events": 5}, {"week": "2026-38", "events": 5}],
+        )
+
+    def test_week_key_matches_surge_detection_across_year_boundary(self):
+        """卡片週趨勢與暴增偵測必須用同一套週切法，否則同一週在兩處會是不同的 key。
+
+        跨年那週最容易分岔：若以每天自己的 %W 計，12/29–12/31 與 1/1–1/4 會被拆成
+        2025-52 與 2026-00 兩個不完整的點。
+        """
+        rows = [{"date": d, "events": i + 1} for i, d in enumerate(["2025-12-29", "2026-01-01", "2026-01-04", "2026-01-05"])]
+        ours = {r["week"]: r["events"] for r in normalize.weekly_from_daily(rows)}
+        surge = check_surge.weekly_totals_from_daily([{"date": r["date"], "crash_events": r["events"]} for r in rows])
+        self.assertEqual(ours, surge)
+        self.assertEqual(len(ours), 2)
+
+    def test_users_are_not_summed_across_days(self):
+        """同一人在不同天出現會被重複計算；週層級的去重人數無法由日資料還原，寧可不給。"""
+        rows = [{"date": "2026-09-14", "events": 1, "users": 1}, {"date": "2026-09-15", "events": 1, "users": 1}]
+        self.assertNotIn("users", normalize.weekly_from_daily(rows)[0])
+
+    def test_bq_output_without_weekly_query_gets_weekly_from_widest_period(self):
+        """抓取端沒有週彙總查詢時，改由涵蓋最久的那期 daily_trend 換算。"""
+        bq = {
+            "tables": {"x_IOS": {"daily_trend": [{"date": "2026-09-15", "events": 1}]}},
+            "periods": {
+                "7": {"tables": {"x_IOS": {"daily_trend": [{"date": "2026-09-15", "events": 1}]}}},
+                "90": {"tables": {"x_IOS": {"daily_trend": [
+                    {"date": "2026-08-04", "events": 4}, {"date": "2026-09-15", "events": 1},
+                ]}}},
+            },
+        }
+        weekly = normalize.bq_issues_to_unified(bq)[3]
+        self.assertEqual([w["week"] for w in weekly], ["2026-31", "2026-37"])
+        self.assertTrue(all(w["platform"] == "ios" for w in weekly))
+
+    def test_existing_weekly_trend_is_kept(self):
+        """仍有週彙總資料的來源（例如較舊的抓取結果）照用，不被日資料換算覆蓋。"""
+        bq = {"tables": {"x_ANDROID": {
+            "weekly_trend": [{"week": "2026-30", "events": 9, "users": 2}],
+            "daily_trend": [{"date": "2026-09-15", "events": 1}],
+        }}}
+        weekly = normalize.bq_issues_to_unified(bq)[3]
+        self.assertEqual(weekly, [{"week": "2026-30", "events": 9, "users": 2, "platform": "android"}])
 
 
 class TestWeeklySyncCardOrder(unittest.TestCase):

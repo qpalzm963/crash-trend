@@ -26,6 +26,24 @@ from crash_trend.dashboard.navigation import build_deep_link  # noqa: E402
 WEEKLY_TREND_WEEKS = 12
 
 
+def has_any_data_source(summary: dict | None, v2_app: dict | None) -> bool:
+    """月摘要（或 V2 聚合資料）是否至少有一個資料來源成功取得資料。
+
+    月摘要的 ``sources`` 是各來源的布林旗標；全為 False 代表這個月什麼都沒抓到。
+    舊摘要沒有 ``sources`` 欄位時視為有資料（維持向後相容，不擋發卡）。
+    """
+    if summary is not None:
+        sources = summary.get("sources")
+        if isinstance(sources, dict) and sources:
+            return any(bool(v) for v in sources.values())
+        return True
+    if v2_app is not None:
+        bq = ((v2_app.get("sources") or {}).get("crashlytics_bq") or {}).get("status")
+        mcp = ((v2_app.get("sources") or {}).get("mcp_crashlytics") or {}).get("status")
+        return "available" in (bq, mcp)
+    return False
+
+
 def build_weekly_trend(summary: dict | None, weeks: int = WEEKLY_TREND_WEEKS) -> list[dict]:
     """月摘要的 weekly_trend（各平台分列）→ 跨平台加總、依週排序的最近 ``weeks`` 週。
 
@@ -74,6 +92,12 @@ def main() -> None:
 
     if not summary and not v2_app:
         sys.exit(f"[錯誤] 找不到 {summary_path} 或 V2 聚合資料，先跑 weekly_sync.sh")
+
+    # 沒有任何資料來源時不發卡：「抓不到資料」會被呈現成「本月 0 次當機」，
+    # 對看卡片的人而言是錯誤資訊。以 0 結束（不算失敗），避免同月其他 app 的卡被重發。
+    if not has_any_data_source(summary, v2_app):
+        print(f"  [略過] {args.app} 本月沒有任何可用的資料來源（BigQuery / MCP / 手動匯出皆無），不發送卡片")
+        return
 
     kpis = (summary or {}).get("kpis")
     if not kpis and v2_app:
