@@ -20,7 +20,7 @@ from config import ROOT, app_argparser, get_app
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from normalize import weekly_from_daily  # noqa: E402
+from normalize import bq_kpi_queries_succeeded, weekly_from_daily  # noqa: E402
 
 from crash_trend.dashboard.navigation import build_deep_link  # noqa: E402
 
@@ -28,14 +28,16 @@ from crash_trend.dashboard.navigation import build_deep_link  # noqa: E402
 WEEKLY_TREND_WEEKS = 12
 
 
-def card_data_is_trustworthy(summary: dict | None, v2_app: dict | None) -> bool:
+def card_data_is_trustworthy(summary: dict | None, v2_app: dict | None, bq: dict | None = None) -> bool:
     """這張卡的數字能不能如實呈現給團隊。
 
     要擋的只有一種情況：卡片寫「本月 0 次當機」，實際上是什麼都沒抓到。所以：
 
     - 當機數 > 0：數字來自實際取得的資料，照發。
-    - 當機數為 0：只有在能確認本次有 KPI 來源成功時才發——BigQuery 至少一個查詢成功
-      （``sources.crashlytics_bq``，由 normalize.bq_has_results 判定），或有手動匯出。
+    - 當機數為 0：只有在能確認算出這個 0 的查詢都成功時才發——本次 BigQuery 結果（``bq``，
+      即 out/<app>/crashlytics_bq.json）裡每張表的 ``top_issues`` 都查詢成功
+      （normalize.bq_kpi_queries_succeeded），或有手動匯出。只看「有沒有任何查詢成功」不夠：
+      ``top_issues`` 失敗、其他查詢成功時，當機數會少算一整個平台。
 
     刻意「不」採信的來源：``mcp_crashlytics`` 是上次成功留下的 stack trace 快取，不提供 KPI；
     ``mcp_report`` 記的是「有沒有 issue」而非「抓取是否成功」，且其檔案跨次保留，0 筆時無從分辨
@@ -47,7 +49,7 @@ def card_data_is_trustworthy(summary: dict | None, v2_app: dict | None) -> bool:
         if isinstance(events, (int, float)) and events > 0:
             return True
         sources = summary.get("sources") or {}
-        return bool(sources.get("crashlytics_bq") or sources.get("manual_console"))
+        return bool(sources.get("manual_console")) or bq_kpi_queries_succeeded(bq)
     if v2_app is not None:
         events = ((v2_app.get("kpi") or {}).get("crash_events") or {}).get("value")
         return isinstance(events, (int, float)) and events > 0
@@ -105,7 +107,12 @@ def main() -> None:
 
     # 「抓不到資料」不得呈現成「本月 0 次當機」：對看卡片的人而言是錯誤資訊。
     # 以 0 結束（不算失敗），避免同月其他 app 的卡被重發。
-    if not card_data_is_trustworthy(summary, v2_app):
+    bq_path = ROOT / "out" / args.app / "crashlytics_bq.json"
+    try:
+        bq = json.loads(bq_path.read_text(encoding="utf-8")) if bq_path.exists() else None
+    except Exception:
+        bq = None
+    if not card_data_is_trustworthy(summary, v2_app, bq):
         print(f"  [略過] {args.app} 本月當機數為 0，但無法確認有資料來源成功取得資料，不發送卡片（避免把「抓不到」顯示成「0 次當機」）")
         return
 

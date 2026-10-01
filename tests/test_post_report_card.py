@@ -60,18 +60,22 @@ class TestBuildWeeklyTrend(unittest.TestCase):
 class _CardSender:
     """以實際 main() 組卡的共用輔助：卡片漏欄位的問題就出在組裝處，不能只測輔助函式。"""
 
-    def _send(self, app_id: str, summary: dict | None = None, v2_app: dict | None = None) -> dict | None:
+    def _send(self, app_id: str, summary: dict | None = None, v2_app: dict | None = None,
+              bq: dict | None = None) -> dict | None:
         """以 main() 實際組卡；回傳送出的 payload，沒送出則回傳 None。
 
         給 v2_app 時不寫月摘要，改寫 out/<app>/dashboard_v2.json，走 V2 fallback 路徑。
+        給 bq 時寫成 out/<app>/crashlytics_bq.json（本次 BigQuery 抓取結果）。
         """
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             data_dir = root / "reports" / "data" / app_id
             data_dir.mkdir(parents=True)
             month = post_report.dt.date.today().strftime("%Y-%m")
+            (root / "out" / app_id).mkdir(parents=True)
+            if bq is not None:
+                (root / "out" / app_id / "crashlytics_bq.json").write_text(json.dumps(bq), encoding="utf-8")
             if v2_app is not None:
-                (root / "out" / app_id).mkdir(parents=True)
                 (root / "out" / app_id / "dashboard_v2.json").write_text(json.dumps(v2_app), encoding="utf-8")
             elif summary is None:
                 summary = {
@@ -111,8 +115,8 @@ class TestCardPayload(_CardSender, unittest.TestCase):
 class TestNoDataNoCard(_CardSender, unittest.TestCase):
     """要擋的只有一種情況：卡片寫「本月 0 次當機」，實際上是什麼都沒抓到。
 
-    規則：當機數 > 0 照發；為 0 時只有確認 BigQuery 有查詢成功（或有手動匯出）才發。
-    下方各測試對應這條規則被繞過的實際路徑，包含 code review 指出的三種。
+    規則：當機數 > 0 照發；為 0 時只有確認算出這個 0 的查詢（每個平台的 top_issues）都成功，
+    或有手動匯出，才發。下方各測試對應這條規則曾被繞過的實際路徑。
     """
 
     ZERO = {"kpis": {"events": 0, "users": 0}, "top_issues": [], "priority_list": []}
@@ -124,9 +128,25 @@ class TestNoDataNoCard(_CardSender, unittest.TestCase):
         summary = self._zero(crashlytics_bq=False, mcp_report=False, manual_console=False)
         self.assertIsNone(self._send("blind_app", summary))
 
+    BQ_OK = {"tables": {"x_IOS": {"top_issues": [], "by_device": []}, "x_ANDROID": {"top_issues": []}}}
+
     def test_genuinely_quiet_month_with_working_bigquery_still_posts(self):
-        """來源正常、只是真的沒事件——那是好消息，要發。"""
-        self.assertIsNotNone(self._send("quiet_app", self._zero(crashlytics_bq=True, mcp_report=False)))
+        """每個平台的 top_issues 都查詢成功、只是真的沒事件——那是好消息，要發。"""
+        self.assertIsNotNone(self._send("quiet_app", self._zero(crashlytics_bq=True), bq=self.BQ_OK))
+
+    def test_partial_bigquery_failure_does_not_vouch_for_zero(self):
+        """一個平台的 top_issues 失敗、其他查詢成功：當機數少算一整個平台，0 不可信。"""
+        partial = {
+            "tables": {"x_IOS": {"by_device": [{"device_model": "d", "events": 3}]}, "x_ANDROID": {"top_issues": []}},
+            "errors": {"x_IOS.top_issues": "timeout"},
+        }
+        self.assertIsNone(self._send("partial_app", self._zero(crashlytics_bq=True), bq=partial))
+
+    def test_kpi_query_success_requires_top_issues_on_every_table(self):
+        self.assertTrue(normalize.bq_kpi_queries_succeeded(self.BQ_OK))
+        self.assertFalse(normalize.bq_kpi_queries_succeeded({"tables": {"x_IOS": {"by_device": []}}}))
+        self.assertFalse(normalize.bq_kpi_queries_succeeded({"tables": {}}))
+        self.assertFalse(normalize.bq_kpi_queries_succeeded(None))
 
     def test_cached_stack_traces_do_not_count_as_data(self):
         """stack trace 檔是上次成功留下的快取、不提供 KPI；不能讓它替一張全 0 的卡背書。"""

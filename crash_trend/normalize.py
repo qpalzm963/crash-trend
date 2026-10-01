@@ -42,6 +42,18 @@ def bq_has_results(bq: dict | None) -> bool:
     return any(bool(t) for t in ((bq or {}).get("tables") or {}).values())
 
 
+def bq_kpi_queries_succeeded(bq: dict | None) -> bool:
+    """月摘要的當機數能不能如實代表「0 次」。
+
+    ``kpis.events`` 由各表 ``top_issues`` 加總而來。抓取端每個查詢獨立成敗，``top_issues``
+    失敗、但 ``by_device`` 之類無關查詢成功時，表內容仍非空——``bq_has_results`` 會說有資料，
+    當機數卻因少了一個平台而偏低（甚至為 0）。所以要每張表的 ``top_issues`` 都查詢成功
+    （即使 0 列），加總出來的 0 才是真的 0。
+    """
+    tables = (bq or {}).get("tables") or {}
+    return bool(tables) and all("top_issues" in (t or {}) for t in tables.values())
+
+
 def weekly_from_daily(daily: list[dict] | None) -> list[dict]:
     """daily_trend → weekly_trend（僅事件數）。
 
