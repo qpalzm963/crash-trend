@@ -264,6 +264,25 @@ class TestWeeklyTrendFromDaily(unittest.TestCase):
         self.assertEqual([w["week"] for w in weekly], ["2026-31", "2026-37"])
         self.assertTrue(all(w["platform"] == "ios" for w in weekly))
 
+    def test_trend_is_omitted_when_any_platform_daily_query_failed(self):
+        """某平台的 daily_trend 查詢失敗時整份不換算：只畫出部分平台的趨勢，看起來卻像完整總量。
+
+        抓取端每個查詢獨立成敗；top_issues 都成功（當機數可信）不代表 daily_trend 也都成功。
+        """
+        bq = {"tables": {
+            "x_IOS": {"top_issues": [], "daily_trend": [{"date": "2026-09-15", "events": 4}]},
+            "x_ANDROID": {"top_issues": []},  # daily_trend 查詢失敗
+        }}
+        self.assertEqual(normalize.bq_issues_to_unified(bq)[3], [])
+
+    def test_daily_query_that_succeeded_with_no_rows_still_counts_as_complete(self):
+        """查詢成功但 0 列＝那個平台真的沒事件，不能跟「查詢失敗」混為一談而把整份趨勢丟掉。"""
+        bq = {"tables": {
+            "x_IOS": {"daily_trend": [{"date": "2026-09-15", "events": 4}]},
+            "x_ANDROID": {"daily_trend": []},
+        }}
+        self.assertEqual([w["week"] for w in normalize.bq_issues_to_unified(bq)[3]], ["2026-37"])
+
     def test_existing_weekly_trend_is_kept(self):
         """仍有週彙總資料的來源（例如較舊的抓取結果）照用，不被日資料換算覆蓋。"""
         bq = {"tables": {"x_ANDROID": {

@@ -75,19 +75,33 @@ def weekly_from_daily(daily: list[dict] | None) -> list[dict]:
     return [{"week": k, "events": v} for k, v in sorted(by_week.items())]
 
 
-def _widest_daily_trend(bq: dict, table: str, data: dict) -> list[dict]:
-    """取涵蓋期間最長的 daily_trend：優先多期間快照裡天數最大的那期，否則用頂層。"""
+def _widest_daily_trend(bq: dict, table: str, data: dict) -> list[dict] | None:
+    """取涵蓋期間最長的 daily_trend：優先多期間快照裡天數最大的那期，否則用頂層。
+
+    回傳 None 代表這張表的 daily_trend 查詢從未成功（各處都沒有這個欄位）；
+    回傳 [] 代表查詢成功但沒有資料。呼叫端要靠這個區分判斷趨勢是否完整。
+    """
     periods = (bq or {}).get("periods") or {}
+    found_empty = False
     for key in sorted(periods, key=lambda k: int(k) if str(k).isdigit() else -1, reverse=True):
-        rows = (((periods.get(key) or {}).get("tables") or {}).get(table) or {}).get("daily_trend")
-        if rows:
-            return rows
-    return data.get("daily_trend") or []
+        table_data = ((periods.get(key) or {}).get("tables") or {}).get(table) or {}
+        if "daily_trend" in table_data:
+            if table_data["daily_trend"]:
+                return table_data["daily_trend"]
+            found_empty = True
+    if "daily_trend" in data:
+        return data["daily_trend"] or []
+    return [] if found_empty else None
 
 
 def bq_issues_to_unified(bq: dict) -> tuple[list[dict], dict, list[dict], list[dict]]:
     issues, dists, custom_keys, weekly = [], {}, [], []
-    for table, data in (bq or {}).get("tables", {}).items():
+    tables = (bq or {}).get("tables", {})
+    # 由 daily_trend 換算週趨勢時，每張表的 daily_trend 都要查詢成功；缺一個平台就整份不換算，
+    # 否則趨勢圖會只畫出部分平台、看起來卻像完整的總量（抓取端每個查詢獨立成敗）。
+    daily_by_table = {t: _widest_daily_trend(bq, t, d) for t, d in tables.items()}
+    daily_complete = bool(daily_by_table) and all(rows is not None for rows in daily_by_table.values())
+    for table, data in tables.items():
         platform = "ios" if table.endswith("_IOS") else "android"
         ver_by_issue: dict[str, list[dict]] = {}
         for r in data.get("issue_versions", []):
@@ -120,7 +134,7 @@ def bq_issues_to_unified(bq: dict) -> tuple[list[dict], dict, list[dict], list[d
         d["os"] = [{"label": r.get("os_version", "?"), "events": int(r.get("events", 0)), "users": int(r.get("users", 0))} for r in data.get("by_os", [])]
         d["app_version"] = [{"label": r.get("app_version", "?"), "events": int(r.get("events", 0)), "users": int(r.get("users", 0))} for r in data.get("by_app_version", [])]
         custom_keys += [{**r, "platform": platform} for r in data.get("custom_keys", [])]
-        weekly_rows = data.get("weekly_trend") or weekly_from_daily(_widest_daily_trend(bq, table, data))
+        weekly_rows = data.get("weekly_trend") or (weekly_from_daily(daily_by_table[table]) if daily_complete else [])
         weekly += [{**r, "platform": platform} for r in weekly_rows]
     return issues, dists, custom_keys, weekly
 
