@@ -20,6 +20,8 @@ from config import ROOT, app_argparser, get_app
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from normalize import weekly_from_daily  # noqa: E402
+
 from crash_trend.dashboard.navigation import build_deep_link  # noqa: E402
 
 #: 卡片週趨勢迷你圖最多畫幾週
@@ -147,6 +149,11 @@ def main() -> None:
             pass
 
     dashboard = os.environ.get("DASHBOARD_URL", "")
+    weekly_trend = build_weekly_trend(summary)
+    if not weekly_trend and v2_app:
+        # 沒有月摘要、改由 V2 聚合資料組卡時，週趨勢同樣由 daily_trend 換算，不讓趨勢圖整塊消失
+        daily = [{"date": r.get("date"), "events": r.get("crash_events", 0)} for r in v2_app.get("daily_trend") or []]
+        weekly_trend = build_weekly_trend({"weekly_trend": weekly_from_daily(daily)})
     payload = {
         "app": args.app,
         "display_name": app.get("display_name", args.app),
@@ -154,7 +161,7 @@ def main() -> None:
         # canonical deep link（#overview?app=<app>）：儀表板據此切到該 app。
         # 舊格式 #<app> 會被當成未知頁面而退回預設 app，卡片按鈕會開錯 app。
         "dashboard_url": build_deep_link(app=args.app, base_url=dashboard) if dashboard else "",
-        "weekly_trend": build_weekly_trend(summary),
+        "weekly_trend": weekly_trend,
         "kpis": kpis or {},
         "prev_kpis": prev_kpis,
         "top_issues": (top_issues or [])[:10],

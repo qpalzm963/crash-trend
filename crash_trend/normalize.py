@@ -32,6 +32,16 @@ def norm_error_type(raw: str, fatal: bool) -> str:
     return et if et in ("FATAL", "ANR", "NON_FATAL") else ("FATAL" if fatal else "NON_FATAL")
 
 
+def bq_has_results(bq: dict | None) -> bool:
+    """BigQuery 來源是否真的取得資料：至少一張表有一個查詢成功（即使 0 列）。
+
+    只看「有沒有表」不夠：抓取端會先為每張表建空位，查詢成功才填入結果；全部查詢失敗或
+    逾時時會留下 ``{"x_IOS": {}}``，錯誤另記在 ``errors``。把它當成可用，下游就會把
+    「查詢全失敗」呈現成「本月 0 次當機」。
+    """
+    return any(bool(t) for t in ((bq or {}).get("tables") or {}).values())
+
+
 def weekly_from_daily(daily: list[dict] | None) -> list[dict]:
     """daily_trend → weekly_trend（僅事件數）。
 
@@ -267,7 +277,7 @@ def main() -> None:
         "generated_at": dt.date.today().isoformat(),
         "period_days": args.days,
         "sources": {
-            "crashlytics_bq": bool(bq and bq.get("tables")),
+            "crashlytics_bq": bq_has_results(bq),
             "mcp_report": bool(mcp_issues),  # BQ 未接時的 issue 來源（fetch_stacktraces.py MCP 報表模式）
             "manual_console": bool(manual),
             # 真實 stack trace（fetch_stacktraces.py）；內容不進 unified，analyze_gemini 直接讀原檔

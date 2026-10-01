@@ -60,21 +60,28 @@ class TestBuildWeeklyTrend(unittest.TestCase):
 class _CardSender:
     """以實際 main() 組卡的共用輔助：卡片漏欄位的問題就出在組裝處，不能只測輔助函式。"""
 
-    def _send(self, app_id: str, summary: dict | None = None) -> dict | None:
-        """以 main() 實際組卡；回傳送出的 payload，沒送出則回傳 None。"""
+    def _send(self, app_id: str, summary: dict | None = None, v2_app: dict | None = None) -> dict | None:
+        """以 main() 實際組卡；回傳送出的 payload，沒送出則回傳 None。
+
+        給 v2_app 時不寫月摘要，改寫 out/<app>/dashboard_v2.json，走 V2 fallback 路徑。
+        """
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             data_dir = root / "reports" / "data" / app_id
             data_dir.mkdir(parents=True)
             month = post_report.dt.date.today().strftime("%Y-%m")
-            if summary is None:
+            if v2_app is not None:
+                (root / "out" / app_id).mkdir(parents=True)
+                (root / "out" / app_id / "dashboard_v2.json").write_text(json.dumps(v2_app), encoding="utf-8")
+            elif summary is None:
                 summary = {
                     "kpis": {"events": 10, "users": 4},
                     "top_issues": [],
                     "priority_list": [],
                     "weekly_trend": [{"week": "2026-W38", "events": 7, "platform": "ios"}],
                 }
-            (data_dir / f"{month}.json").write_text(json.dumps(summary), encoding="utf-8")
+            if v2_app is None:
+                (data_dir / f"{month}.json").write_text(json.dumps(summary), encoding="utf-8")
 
             response = MagicMock(status_code=200)
             response.json.return_value = {"space": "s"}
@@ -126,11 +133,37 @@ class TestNoDataNoCard(_CardSender, unittest.TestCase):
         summary = {"kpis": {"events": 3, "users": 1}, "top_issues": [], "priority_list": []}
         self.assertIsNotNone(self._send("legacy_app", summary))
 
+    def test_all_bq_queries_failed_is_not_a_source(self):
+        """抓取端在查詢全失敗時仍會留下空的表位置；那不是「有資料」，下游不得據此發卡。"""
+        failed = {"tables": {"x_IOS": {}, "x_ANDROID": {}}, "errors": {"x_IOS.top_issues": "timeout"}}
+        zero_rows = {"tables": {"x_IOS": {"top_issues": [], "daily_trend": []}}}
+        self.assertFalse(normalize.bq_has_results(failed))
+        # 查詢成功但 0 列＝真的沒當機，仍算可用（該發卡報好消息）
+        self.assertTrue(normalize.bq_has_results(zero_rows))
+        self.assertFalse(normalize.bq_has_results(None))
+
     def test_v2_fallback_uses_source_status(self):
         dead = {"sources": {"crashlytics_bq": {"status": "error"}, "mcp_crashlytics": {"status": "unavailable"}}}
         alive = {"sources": {"crashlytics_bq": {"status": "available"}}}
         self.assertFalse(post_report.has_any_data_source(None, dead))
         self.assertTrue(post_report.has_any_data_source(None, alive))
+
+
+class TestV2FallbackCard(_CardSender, unittest.TestCase):
+    def test_v2_fallback_card_still_carries_weekly_trend(self):
+        """沒有月摘要、改由 V2 聚合資料組卡時，週趨勢不得整塊消失——daily_trend 足以換算。"""
+        v2_app = {
+            "sources": {"crashlytics_bq": {"status": "available"}},
+            "kpi": {"crash_events": {"value": 7}, "affected_users": {"value": 3}},
+            "top_issues": [],
+            "daily_trend": [
+                {"date": "2026-09-14", "crash_events": 2},
+                {"date": "2026-09-22", "crash_events": 5},
+            ],
+        }
+        payload = self._send("v2_app", v2_app=v2_app)
+        self.assertIsNotNone(payload)
+        self.assertEqual(payload["weekly_trend"], [{"week": "2026-37", "events": 2}, {"week": "2026-38", "events": 5}])
 
 
 class TestWeeklyTrendFromDaily(unittest.TestCase):
