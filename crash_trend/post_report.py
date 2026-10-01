@@ -16,6 +16,66 @@ import sys
 import requests
 from config import ROOT, app_argparser, get_app
 
+# 直接以腳本執行時，確保能 import crash_trend 套件（產生 canonical deep link 用）
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from normalize import bq_kpi_queries_succeeded, weekly_from_daily  # noqa: E402
+
+from crash_trend.dashboard.navigation import build_deep_link  # noqa: E402
+
+#: 卡片週趨勢迷你圖最多畫幾週
+WEEKLY_TREND_WEEKS = 12
+
+#: 資料不可信、本次不發卡的結束碼。weekly_sync 據此不記「本月已發」，下次排程重試；
+#: 與一般失敗（1）分開，才不會被當成發送錯誤，也不會讓已發的其他 app 重發。
+EXIT_DEFERRED = 3
+
+
+def card_data_is_trustworthy(summary: dict | None, v2_app: dict | None, bq: dict | None = None) -> bool:
+    """這張卡的數字能不能如實呈現給團隊；不可信時延後到下次排程重試（見 EXIT_DEFERRED）。
+
+    會誤導看卡片的人的兩種情況：
+
+    1. 寫「本月 0 次當機」，實際上是什麼都沒抓到。
+    2. 數字偏低：某個平台的 ``top_issues`` 查詢失敗或逾時，總數少算一整個平台
+       （例如 iOS 5 次＋Android 查詢逾時，卡片卻寫「本月 5 次」）。
+
+    規則：
+
+    - 數字來自 BigQuery 時（月摘要 ``sources.crashlytics_bq``，或 V2 fallback——V2 bundle 一律由
+      BigQuery 結果轉出）：本次結果 ``bq``（out/<app>/crashlytics_bq.json）裡每張表的
+      ``top_issues`` 都查詢成功才可信，不論當機數多少（normalize.bq_kpi_queries_succeeded）。
+    - 不是來自 BigQuery 時：當機數 > 0 照發；為 0 時只有手動匯出能背書。
+
+    刻意「不」採信的 0：``mcp_crashlytics`` 是上次成功留下的 stack trace 快取，不提供 KPI；
+    ``mcp_report`` 記的是「有沒有 issue」而非「抓取是否成功」，且其檔案跨次保留，0 筆時無從分辨
+    是健康的空結果還是舊檔。寧可晚一點發、或少發一張「0 次當機」的好消息卡，也不發一張可能是假的。
+    """
+    if summary is not None:
+        sources = summary.get("sources") or {}
+        if sources.get("crashlytics_bq"):
+            return bq_kpi_queries_succeeded(bq)
+        events = (summary.get("kpis") or {}).get("events")
+        if isinstance(events, (int, float)) and events > 0:
+            return True
+        return bool(sources.get("manual_console"))
+    if v2_app is not None:
+        return bq_kpi_queries_succeeded(bq)
+    return False
+
+
+def build_weekly_trend(summary: dict | None, weeks: int = WEEKLY_TREND_WEEKS) -> list[dict]:
+    """月摘要的 weekly_trend（各平台分列）→ 跨平台加總、依週排序的最近 ``weeks`` 週。
+
+    聊天服務據此畫 unicode 迷你圖；缺欄或空清單時該區塊不渲染（向後相容）。
+    """
+    by_week: dict[str, int] = {}
+    for row in (summary or {}).get("weekly_trend") or []:
+        if isinstance(row, dict) and row.get("week"):
+            by_week[row["week"]] = by_week.get(row["week"], 0) + int(row.get("events") or 0)
+    return [{"week": k, "events": by_week[k]} for k in sorted(by_week)][-weeks:]
+
 
 def main() -> None:
     args = app_argparser("發送當月摘要到聊天室").parse_args()
@@ -53,6 +113,18 @@ def main() -> None:
 
     if not summary and not v2_app:
         sys.exit(f"[錯誤] 找不到 {summary_path} 或 V2 聚合資料，先跑 weekly_sync.sh")
+
+    # 數字不可信（抓不到、或某平台查詢失敗而少算）就不發，以 EXIT_DEFERRED 結束：
+    # weekly_sync 不記本月已發，下次排程重試；其他 app 的發卡紀錄各自獨立，不會被連帶重發。
+    bq_path = ROOT / "out" / args.app / "crashlytics_bq.json"
+    try:
+        bq = json.loads(bq_path.read_text(encoding="utf-8")) if bq_path.exists() else None
+    except Exception:
+        bq = None
+    if not card_data_is_trustworthy(summary, v2_app, bq):
+        print(f"  [延後] {args.app} 本次資料不完整或無法確認（BigQuery 有平台查詢失敗，或抓不到任何資料），"
+              "不發送卡片，下次排程重試")
+        raise SystemExit(EXIT_DEFERRED)
 
     kpis = (summary or {}).get("kpis")
     if not kpis and v2_app:
@@ -102,12 +174,19 @@ def main() -> None:
             pass
 
     dashboard = os.environ.get("DASHBOARD_URL", "")
+    weekly_trend = build_weekly_trend(summary)
+    if not weekly_trend and v2_app:
+        # 沒有月摘要、改由 V2 聚合資料組卡時，週趨勢同樣由 daily_trend 換算，不讓趨勢圖整塊消失
+        daily = [{"date": r.get("date"), "events": r.get("crash_events", 0)} for r in v2_app.get("daily_trend") or []]
+        weekly_trend = build_weekly_trend({"weekly_trend": weekly_from_daily(daily)})
     payload = {
         "app": args.app,
         "display_name": app.get("display_name", args.app),
         "month": month,
-        # 帶 #<app> 錨點：儀表板讀 hash 直接切到該 app 分頁
-        "dashboard_url": f"{dashboard}#{args.app}" if dashboard else "",
+        # canonical deep link（#overview?app=<app>）：儀表板據此切到該 app。
+        # 舊格式 #<app> 會被當成未知頁面而退回預設 app，卡片按鈕會開錯 app。
+        "dashboard_url": build_deep_link(app=args.app, base_url=dashboard) if dashboard else "",
+        "weekly_trend": weekly_trend,
         "kpis": kpis or {},
         "prev_kpis": prev_kpis,
         "top_issues": (top_issues or [])[:10],

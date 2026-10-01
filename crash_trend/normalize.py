@@ -32,9 +32,76 @@ def norm_error_type(raw: str, fatal: bool) -> str:
     return et if et in ("FATAL", "ANR", "NON_FATAL") else ("FATAL" if fatal else "NON_FATAL")
 
 
+def bq_has_results(bq: dict | None) -> bool:
+    """BigQuery 來源是否真的取得資料：至少一張表有一個查詢成功（即使 0 列）。
+
+    只看「有沒有表」不夠：抓取端會先為每張表建空位，查詢成功才填入結果；全部查詢失敗或
+    逾時時會留下 ``{"x_IOS": {}}``，錯誤另記在 ``errors``。把它當成可用，下游就會把
+    「查詢全失敗」呈現成「本月 0 次當機」。
+    """
+    return any(bool(t) for t in ((bq or {}).get("tables") or {}).values())
+
+
+def bq_kpi_queries_succeeded(bq: dict | None) -> bool:
+    """月摘要的當機數能不能如實代表「0 次」。
+
+    ``kpis.events`` 由各表 ``top_issues`` 加總而來。抓取端每個查詢獨立成敗，``top_issues``
+    失敗、但 ``by_device`` 之類無關查詢成功時，表內容仍非空——``bq_has_results`` 會說有資料，
+    當機數卻因少了一個平台而偏低（甚至為 0）。所以要每張表的 ``top_issues`` 都查詢成功
+    （即使 0 列），加總出來的 0 才是真的 0。
+    """
+    tables = (bq or {}).get("tables") or {}
+    return bool(tables) and all("top_issues" in (t or {}) for t in tables.values())
+
+
+def weekly_from_daily(daily: list[dict] | None) -> list[dict]:
+    """daily_trend → weekly_trend（僅事件數）。
+
+    BigQuery 抓取端不再另跑週彙總查詢，月摘要的 weekly_trend 因此一直是空的，月報卡片的
+    週趨勢圖就畫不出來。週 key 與 check_surge.weekly_totals_from_daily 相同：取該週週一的
+    ``%Y-%W``。不直接用每一天自己的 ``%W``，是因為跨年那週會被拆成兩個不完整的點
+    （例如 2025-52 與 2026-00）。
+
+    受影響人數刻意不加總：同一人在不同天出現會被重複計算，週層級的去重人數無法由日資料還原。
+    """
+    by_week: dict[str, int] = {}
+    for row in daily or []:
+        try:
+            day = dt.date.fromisoformat(str(row.get("date"))[:10])
+        except (TypeError, ValueError):
+            continue
+        key = (day - dt.timedelta(days=day.weekday())).strftime("%Y-%W")
+        by_week[key] = by_week.get(key, 0) + int(row.get("events") or 0)
+    return [{"week": k, "events": v} for k, v in sorted(by_week.items())]
+
+
+def _widest_daily_trend(bq: dict, table: str, data: dict) -> list[dict] | None:
+    """取涵蓋期間最長的 daily_trend：優先多期間快照裡天數最大的那期，否則用頂層。
+
+    回傳 None 代表這張表的 daily_trend 查詢從未成功（各處都沒有這個欄位）；
+    回傳 [] 代表查詢成功但沒有資料。呼叫端要靠這個區分判斷趨勢是否完整。
+    """
+    periods = (bq or {}).get("periods") or {}
+    found_empty = False
+    for key in sorted(periods, key=lambda k: int(k) if str(k).isdigit() else -1, reverse=True):
+        table_data = ((periods.get(key) or {}).get("tables") or {}).get(table) or {}
+        if "daily_trend" in table_data:
+            if table_data["daily_trend"]:
+                return table_data["daily_trend"]
+            found_empty = True
+    if "daily_trend" in data:
+        return data["daily_trend"] or []
+    return [] if found_empty else None
+
+
 def bq_issues_to_unified(bq: dict) -> tuple[list[dict], dict, list[dict], list[dict]]:
     issues, dists, custom_keys, weekly = [], {}, [], []
-    for table, data in (bq or {}).get("tables", {}).items():
+    tables = (bq or {}).get("tables", {})
+    # 由 daily_trend 換算週趨勢時，每張表的 daily_trend 都要查詢成功；缺一個平台就整份不換算，
+    # 否則趨勢圖會只畫出部分平台、看起來卻像完整的總量（抓取端每個查詢獨立成敗）。
+    daily_by_table = {t: _widest_daily_trend(bq, t, d) for t, d in tables.items()}
+    daily_complete = bool(daily_by_table) and all(rows is not None for rows in daily_by_table.values())
+    for table, data in tables.items():
         platform = "ios" if table.endswith("_IOS") else "android"
         ver_by_issue: dict[str, list[dict]] = {}
         for r in data.get("issue_versions", []):
@@ -67,7 +134,8 @@ def bq_issues_to_unified(bq: dict) -> tuple[list[dict], dict, list[dict], list[d
         d["os"] = [{"label": r.get("os_version", "?"), "events": int(r.get("events", 0)), "users": int(r.get("users", 0))} for r in data.get("by_os", [])]
         d["app_version"] = [{"label": r.get("app_version", "?"), "events": int(r.get("events", 0)), "users": int(r.get("users", 0))} for r in data.get("by_app_version", [])]
         custom_keys += [{**r, "platform": platform} for r in data.get("custom_keys", [])]
-        weekly += [{**r, "platform": platform} for r in data.get("weekly_trend", [])]
+        weekly_rows = data.get("weekly_trend") or (weekly_from_daily(daily_by_table[table]) if daily_complete else [])
+        weekly += [{**r, "platform": platform} for r in weekly_rows]
     return issues, dists, custom_keys, weekly
 
 
@@ -235,7 +303,7 @@ def main() -> None:
         "generated_at": dt.date.today().isoformat(),
         "period_days": args.days,
         "sources": {
-            "crashlytics_bq": bool(bq and bq.get("tables")),
+            "crashlytics_bq": bq_has_results(bq),
             "mcp_report": bool(mcp_issues),  # BQ 未接時的 issue 來源（fetch_stacktraces.py MCP 報表模式）
             "manual_console": bool(manual),
             # 真實 stack trace（fetch_stacktraces.py）；內容不進 unified，analyze_gemini 直接讀原檔
