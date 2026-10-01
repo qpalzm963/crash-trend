@@ -8,7 +8,9 @@ per-app 覆寫全域、adc/none/空值走 ADC、指定的檔案不存在時大�
 
 from __future__ import annotations
 
+import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -116,6 +118,39 @@ class TestMakeBQClient(unittest.TestCase):
             make_bq_client("my-project-id", {"bq_service_account": self.existing}, cfg={})
         from_file.assert_called_once_with(self.existing)
         client_cls.assert_called_once_with(project="my-project-id", credentials=fake_creds)
+
+    def test_authorized_user_file_builds_client_with_user_credentials(self) -> None:
+        """服務帳號拿不到權限的 App 改用個人帳號檔；若誤當 SA 載入會直接失敗，
+        若退回 ADC 則會用到部署機上別的身分——兩者都讓該 App 的資料沉默地抓不到。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            user_file = Path(tmp) / "user.json"
+            user_file.write_text(json.dumps({"type": "authorized_user"}), encoding="utf-8")
+            fake_creds = object()
+            with (
+                patch("google.cloud.bigquery.Client") as client_cls,
+                patch(
+                    "google.oauth2.credentials.Credentials.from_authorized_user_file",
+                    return_value=fake_creds,
+                ) as from_user,
+                patch("google.oauth2.service_account.Credentials.from_service_account_file") as from_sa,
+            ):
+                make_bq_client("my-project-id", {"bq_service_account": str(user_file)}, cfg={})
+        from_user.assert_called_once_with(str(user_file))
+        from_sa.assert_not_called()
+        client_cls.assert_called_once_with(project="my-project-id", credentials=fake_creds)
+
+    def test_service_account_json_still_uses_service_account_loader(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            sa_file = Path(tmp) / "sa.json"
+            sa_file.write_text(json.dumps({"type": "service_account"}), encoding="utf-8")
+            with (
+                patch("google.cloud.bigquery.Client"),
+                patch("google.oauth2.service_account.Credentials.from_service_account_file") as from_sa,
+                patch("google.oauth2.credentials.Credentials.from_authorized_user_file") as from_user,
+            ):
+                make_bq_client("my-project-id", {"bq_service_account": str(sa_file)}, cfg={})
+        from_sa.assert_called_once_with(str(sa_file))
+        from_user.assert_not_called()
 
     def test_adc_builds_client_without_credentials(self) -> None:
         with patch("google.cloud.bigquery.Client") as client_cls:

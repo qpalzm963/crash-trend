@@ -118,6 +118,7 @@ apps:
     display_name: 外送司機端
     firebase_project: rider-app-67890
     bq_service_account: adc               # 選填：此 App 改用 ADC（本機開發常用），覆寫全域 SA
+    # 也可指向個人帳號的憑證檔（gcloud auth application-default login 產生，type: authorized_user），SA 拿不到權限時使用
     data_sources:
       crashlytics_bigquery: true          # 啟用 Crashlytics 匯出 (錯誤排行、堆疊、每日趨勢、受影響人數)
       sessions: false                     # 停用 Sessions 匯出 (不查詢 firebase_sessions，免額外儲存)
