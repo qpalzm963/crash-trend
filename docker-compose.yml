@@ -16,6 +16,9 @@ services:
       # 容器內 login/logout 才不會改到 host 上其他用途的 firebase 帳號。
       # rw：CLI 會寫回 token 更新；首次在容器內 `firebase login --no-localhost`
       - ~/.config/crash-trend/configstore:/root/.config/configstore
+      # rclone 雲端硬碟授權（scripts/backup.sh 用）；rw：rclone 會寫回更新後的 token。
+      # 未設定 BACKUP_RCLONE_REMOTE 時不會用到
+      - ~/.config/crash-trend/rclone:/root/.config/rclone
     # GEMINI_API_KEY / GEMINI_MODEL 放 repo 根目錄 .env（gitignored），
     # weekly_sync.sh 會自行 source，不需在此宣告
 

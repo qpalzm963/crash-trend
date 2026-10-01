@@ -1,2 +1,4 @@
-# 每週三 10:00（Asia/Taipei，由容器 TZ 決定）
-0 10 * * 3 /bin/bash /app/scripts/weekly_sync.sh
+# 每天 10:00（Asia/Taipei，由容器 TZ 決定）
+# Crashlytics 匯出到 BigQuery 一天更新一次，一天跑多次拿到的是同一份資料；
+# 每次重算 7/30/90 天區間，BigQuery 查詢量約為每週跑的 7 倍
+0 10 * * * /bin/bash /app/scripts/weekly_sync.sh

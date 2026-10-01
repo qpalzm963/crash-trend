@@ -1,6 +1,7 @@
 #!/bin/bash
-# 每週 crash 資料同步（launchd 或容器內 supercronic 呼叫；手動跑也行）
-# 自動部分：各 app 的 BigQuery 拉取 → normalize →（有 Gemini key 時）Gemini 月報 → 儀表板 → commit
+# crash 資料同步（launchd 或容器內 supercronic 呼叫；手動跑也行；檔名沿用舊稱，排程見 docker/crontab）
+# 自動部分：各 app 的 BigQuery 拉取 → normalize →（有 Gemini key 時）Gemini 月報 → 儀表板
+#           → 月報卡 → commit → 備份（backup.sh）→ 健康檢查（health_check.py，有問題才通知聊天室）
 # 無法自動的：console 快照（需使用者登入態）→ macOS 上發通知提醒（容器內自動略過）
 set -u
 # 變數後面緊接全形字時一律寫成 ${var}：macOS 內建 bash 3.2 會把全形字的第一個位元組當成變數名的一部分，
@@ -36,9 +37,12 @@ $PY "$CT/crash_trend/pipeline_run.py" || FAILED="$FAILED pipeline_run"
 #   post_report 結束碼：0＝已發送 → 記標記；3＝資料不完整或無法確認 → 延後重試；其他＝發送失敗
 # 舊版是單一的 out/.card_sent_month（全部成功才記）。升級當月若它已記本月，視為所有 app 都發過，
 # 避免重複發卡；之後只看各 app 自己的標記。
+# MONTHLY_CARD=off：不發月報卡（改由其他定期彙整取代時使用）；暴增告警不受影響
 LEGACY_CARD_MARK="$CT/out/.card_sent_month"
 THIS_MONTH="$(date '+%Y-%m')"
-if [ -n "${CRASH_REPORT_URL:-}" ]; then
+if [ "${MONTHLY_CARD:-on}" = "off" ]; then
+  echo "--- post_report: MONTHLY_CARD=off，不發月報卡"
+elif [ -n "${CRASH_REPORT_URL:-}" ]; then
   LEGACY_SENT=""
   [ "$(cat "$LEGACY_CARD_MARK" 2>/dev/null)" = "$THIS_MONTH" ] && LEGACY_SENT=1
   for app in $apps; do
@@ -71,6 +75,12 @@ if [ -n "$(git status --porcelain)" ]; then
       -c user.email="${GIT_EMAIL:-$(git config user.email || echo crash-trend@localhost)}" \
       commit -q -m "chore: weekly sync $(date '+%F')" && echo "--- committed"
 fi
+
+# 備份在管線之後（備到的是今天更新完的資料）；健康檢查最後跑，才看得到今天的備份結果
+echo "--- backup"
+/bin/bash "$CT/scripts/backup.sh" || FAILED="$FAILED backup"
+echo "--- health_check"
+$PY "$CT/crash_trend/health_check.py" || FAILED="$FAILED health"
 
 if [ -n "$FAILED" ]; then
   MSG="crash-trend 週同步有步驟失敗：${FAILED}（詳見 logs/weekly_sync.log）"
