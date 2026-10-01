@@ -9,7 +9,7 @@
 2. **Gemini API key**：至 Google AI Studio 產生。
 3. **推到私有 Git**：將你的 instance repo（含 `apps.yaml`）推到私有 Git。
 4. **（可選）MCP 補強與真實 stack trace 登入**：
-   預設 `mcp.mode: manual`（伺服器排程預設不自動呼叫 MCP，零 quota 消耗）。若希望 weekly 自動刷新，可在 `apps.yaml` 設為 `mcp.mode: weekly` 並在主機上執行一次 `firebase login`（user token，**非** service account——SA 打 Crashlytics 會 404），token 存於 `~/.config/configstore/firebase-tools.json`，由 compose 掛入容器。若未登入或 MCP 失敗，管線會自動以 BigQuery 頂層 sample events 或 subtitle 啟發式解析 Blame Frame，完全不中斷管線。若要完全關閉 MCP 亦可設定 `mcp.mode: off`。
+   預設 `mcp.mode: manual`（伺服器排程預設不自動呼叫 MCP，零 quota 消耗）。若希望 weekly 自動刷新，可在 `apps.yaml` 設為 `mcp.mode: weekly` 並在容器內執行一次 `docker exec -it crash-trend firebase login --no-localhost`（user token，**非** service account——SA 打 Crashlytics 會 404），token 存於主機的 `~/.config/crash-trend/configstore/firebase-tools.json`（crash-trend 專屬，不影響主機本身的 firebase 登入），容器重建後仍保留。登入後以 `docker exec crash-trend firebase projects:list` 驗證（`login:list` 只看檔案、不驗 token）。若未登入或 MCP 失敗，管線會自動以 BigQuery 頂層 sample events 或 subtitle 啟發式解析 Blame Frame，完全不中斷管線。若要完全關閉 MCP 亦可設定 `mcp.mode: off`。
 
 ---
 

@@ -12,8 +12,10 @@ services:
       # host 端放：~/.config/crash-trend/sa.json（BigQuery SA）
       - ~/.config/crash-trend:/root/.config/crash-trend:ro
       # firebase user token（fetch_stacktraces.py 用；SA 打 Crashlytics 一律 404 只能 user token）。
-      # rw：CLI 會寫回 motd 快取／token 更新；host 端此目錄只放 firebase-tools.json
-      - ~/.config/configstore:/root/.config/configstore
+      # 用 crash-trend 專屬目錄，不共用 host 的 ~/.config/configstore：
+      # 容器內 login/logout 才不會改到 host 上其他用途的 firebase 帳號。
+      # rw：CLI 會寫回 token 更新；首次在容器內 `firebase login --no-localhost`
+      - ~/.config/crash-trend/configstore:/root/.config/configstore
     # GEMINI_API_KEY / GEMINI_MODEL 放 repo 根目錄 .env（gitignored），
     # weekly_sync.sh 會自行 source，不需在此宣告
 

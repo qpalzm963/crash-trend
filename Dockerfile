@@ -17,7 +17,7 @@ COPY --from=node:22-slim /usr/local/lib/node_modules /usr/local/lib/node_modules
 RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
     && npm install -g firebase-tools@latest \
     && npm cache clean --force
-# 認證：host 的 ~/.config/configstore/firebase-tools.json（user token）由 compose 掛入，不進 image
+# 認證：host 的 ~/.config/crash-trend/configstore/firebase-tools.json（user token）由 compose 掛入，不進 image
 
 WORKDIR /app
 # requirements.txt 由 uv.lock 導出（包含所有 pinned runtime 依賴，CI 具備 drift check 保證一致）
