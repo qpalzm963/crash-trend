@@ -6,10 +6,15 @@
   per-app 明確寫成空值即可在全域有 SA 的情況下把單一 App 切回 ADC。
 - 指定了路徑但檔案不存在 → 拋 BQCredentialsError，絕不靜默退回 ADC
   （憑證比預期弱會讓查詢結果沉默地不完整，必須大聲失敗）。
+- 指定的檔案可以是 service account json，也可以是使用者憑證
+  （`"type": "authorized_user"`，即 `gcloud auth application-default login` 產生的檔案）。
+  用於服務帳號拿不到權限、改用個人帳號的 App；以檔案指定可讓單一 App 用個人帳號，
+  不影響其他 App，也不必在部署機上設定全域 ADC。
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -65,7 +70,22 @@ def make_bq_client(
     if sa_file is None:
         return bigquery.Client(project=project)  # ADC
 
+    if _credentials_type(sa_file) == "authorized_user":
+        from google.oauth2 import credentials as user_credentials
+
+        creds = user_credentials.Credentials.from_authorized_user_file(str(sa_file))
+        return bigquery.Client(project=project, credentials=creds)
+
     from google.oauth2 import service_account
 
     creds = service_account.Credentials.from_service_account_file(str(sa_file))
     return bigquery.Client(project=project, credentials=creds)
+
+
+def _credentials_type(path: Path) -> str | None:
+    """讀憑證檔的 `type` 欄位；讀不到就回 None，交給 service account 載入器報錯。"""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data.get("type") if isinstance(data, dict) else None
