@@ -28,5 +28,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 ENV TZ=Asia/Taipei
+# image 只裝 requirements.txt 的相依套件，不安裝 crash_trend 本身；排程以
+# `python crash_trend/<stage>.py` 逐步執行時，sys.path[0] 是 /app/crash_trend 而非 /app，
+# 各模組 `from crash_trend.x import ...` 的 fallback 會找不到套件而中止。開發機與 CI 因為
+# editable install（.pth）而看不出這個問題，見 tests/test_docker_runtime_imports.py。
+ENV PYTHONPATH=/app
 # 絕對路徑必要：supercronic 為 PID 1 時以 argv[0] re-exec 自身（raw syscall 不查 PATH）
 CMD ["/usr/local/bin/supercronic", "-passthrough-logs", "/app/docker/crontab"]
