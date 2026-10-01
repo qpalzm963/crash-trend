@@ -28,21 +28,29 @@ from crash_trend.dashboard.navigation import build_deep_link  # noqa: E402
 WEEKLY_TREND_WEEKS = 12
 
 
-def has_any_data_source(summary: dict | None, v2_app: dict | None) -> bool:
-    """月摘要（或 V2 聚合資料）是否至少有一個資料來源成功取得資料。
+def card_data_is_trustworthy(summary: dict | None, v2_app: dict | None) -> bool:
+    """這張卡的數字能不能如實呈現給團隊。
 
-    月摘要的 ``sources`` 是各來源的布林旗標；全為 False 代表這個月什麼都沒抓到。
-    舊摘要沒有 ``sources`` 欄位時視為有資料（維持向後相容，不擋發卡）。
+    要擋的只有一種情況：卡片寫「本月 0 次當機」，實際上是什麼都沒抓到。所以：
+
+    - 當機數 > 0：數字來自實際取得的資料，照發。
+    - 當機數為 0：只有在能確認本次有 KPI 來源成功時才發——BigQuery 至少一個查詢成功
+      （``sources.crashlytics_bq``，由 normalize.bq_has_results 判定），或有手動匯出。
+
+    刻意「不」採信的來源：``mcp_crashlytics`` 是上次成功留下的 stack trace 快取，不提供 KPI；
+    ``mcp_report`` 記的是「有沒有 issue」而非「抓取是否成功」，且其檔案跨次保留，0 筆時無從分辨
+    是健康的空結果還是舊檔；V2 fallback 的 ``crashlytics_bq.status`` 只看表是否存在。這三種情況
+    寧可少發一張「0 次當機」的好消息卡，也不發一張可能是假的。
     """
     if summary is not None:
-        sources = summary.get("sources")
-        if isinstance(sources, dict) and sources:
-            return any(bool(v) for v in sources.values())
-        return True
+        events = (summary.get("kpis") or {}).get("events")
+        if isinstance(events, (int, float)) and events > 0:
+            return True
+        sources = summary.get("sources") or {}
+        return bool(sources.get("crashlytics_bq") or sources.get("manual_console"))
     if v2_app is not None:
-        bq = ((v2_app.get("sources") or {}).get("crashlytics_bq") or {}).get("status")
-        mcp = ((v2_app.get("sources") or {}).get("mcp_crashlytics") or {}).get("status")
-        return "available" in (bq, mcp)
+        events = ((v2_app.get("kpi") or {}).get("crash_events") or {}).get("value")
+        return isinstance(events, (int, float)) and events > 0
     return False
 
 
@@ -95,10 +103,10 @@ def main() -> None:
     if not summary and not v2_app:
         sys.exit(f"[錯誤] 找不到 {summary_path} 或 V2 聚合資料，先跑 weekly_sync.sh")
 
-    # 沒有任何資料來源時不發卡：「抓不到資料」會被呈現成「本月 0 次當機」，
-    # 對看卡片的人而言是錯誤資訊。以 0 結束（不算失敗），避免同月其他 app 的卡被重發。
-    if not has_any_data_source(summary, v2_app):
-        print(f"  [略過] {args.app} 本月沒有任何可用的資料來源（BigQuery / MCP / 手動匯出皆無），不發送卡片")
+    # 「抓不到資料」不得呈現成「本月 0 次當機」：對看卡片的人而言是錯誤資訊。
+    # 以 0 結束（不算失敗），避免同月其他 app 的卡被重發。
+    if not card_data_is_trustworthy(summary, v2_app):
+        print(f"  [略過] {args.app} 本月當機數為 0，但無法確認有資料來源成功取得資料，不發送卡片（避免把「抓不到」顯示成「0 次當機」）")
         return
 
     kpis = (summary or {}).get("kpis")

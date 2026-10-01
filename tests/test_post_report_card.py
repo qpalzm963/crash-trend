@@ -109,27 +109,45 @@ class TestCardPayload(_CardSender, unittest.TestCase):
 
 
 class TestNoDataNoCard(_CardSender, unittest.TestCase):
-    """全部資料來源都失敗時，摘要數字全是 0；發卡等於對全團隊宣稱「本月 0 次當機」。"""
+    """要擋的只有一種情況：卡片寫「本月 0 次當機」，實際上是什麼都沒抓到。
+
+    規則：當機數 > 0 照發；為 0 時只有確認 BigQuery 有查詢成功（或有手動匯出）才發。
+    下方各測試對應這條規則被繞過的實際路徑，包含 code review 指出的三種。
+    """
+
+    ZERO = {"kpis": {"events": 0, "users": 0}, "top_issues": [], "priority_list": []}
+
+    def _zero(self, **sources):
+        return {**self.ZERO, "sources": sources}
 
     def test_all_sources_failed_skips_the_card(self):
-        summary = {
-            "kpis": {"events": 0, "users": 0},
-            "top_issues": [], "priority_list": [],
-            "sources": {"crashlytics_bq": False, "mcp_report": False, "manual_console": False},
-        }
+        summary = self._zero(crashlytics_bq=False, mcp_report=False, manual_console=False)
         self.assertIsNone(self._send("blind_app", summary))
 
-    def test_any_working_source_still_posts(self):
-        summary = {
-            "kpis": {"events": 0, "users": 0},
-            "top_issues": [], "priority_list": [],
-            "sources": {"crashlytics_bq": True, "mcp_report": False},
-        }
-        # 真的 0 次當機（來源正常、只是沒事件）仍然要發——那是好消息，不是缺資料
-        self.assertIsNotNone(self._send("quiet_app", summary))
+    def test_genuinely_quiet_month_with_working_bigquery_still_posts(self):
+        """來源正常、只是真的沒事件——那是好消息，要發。"""
+        self.assertIsNotNone(self._send("quiet_app", self._zero(crashlytics_bq=True, mcp_report=False)))
+
+    def test_cached_stack_traces_do_not_count_as_data(self):
+        """stack trace 檔是上次成功留下的快取、不提供 KPI；不能讓它替一張全 0 的卡背書。"""
+        summary = self._zero(crashlytics_bq=False, mcp_report=False, manual_console=False, mcp_crashlytics=True)
+        self.assertIsNone(self._send("stale_app", summary))
+
+    def test_zero_issue_mcp_report_is_not_trusted(self):
+        """刻意的取捨：mcp_report 為 0 筆時，無法分辨是健康的空結果還是跨次保留的舊檔。
+
+        寧可少發一張「0 次當機」的好消息卡，也不發一張可能是假的。
+        """
+        self.assertIsNone(self._send("mcp_only_app", self._zero(crashlytics_bq=False, mcp_report=False)))
+
+    def test_nonzero_events_always_post(self):
+        """有當機數代表確實取得了資料；來源旗標怎麼記都不影響發卡。"""
+        summary = {"kpis": {"events": 3, "users": 1}, "top_issues": [], "priority_list": [],
+                   "sources": {"crashlytics_bq": False}}
+        self.assertIsNotNone(self._send("busy_app", summary))
 
     def test_legacy_summary_without_sources_still_posts(self):
-        """舊月摘要沒有 sources 欄位：不能因為新增的檢查就讓既有部署停止發卡。"""
+        """舊月摘要沒有 sources 欄位：有當機數就照發，不因新增的檢查讓既有部署停止發卡。"""
         summary = {"kpis": {"events": 3, "users": 1}, "top_issues": [], "priority_list": []}
         self.assertIsNotNone(self._send("legacy_app", summary))
 
@@ -142,11 +160,15 @@ class TestNoDataNoCard(_CardSender, unittest.TestCase):
         self.assertTrue(normalize.bq_has_results(zero_rows))
         self.assertFalse(normalize.bq_has_results(None))
 
-    def test_v2_fallback_uses_source_status(self):
-        dead = {"sources": {"crashlytics_bq": {"status": "error"}, "mcp_crashlytics": {"status": "unavailable"}}}
-        alive = {"sources": {"crashlytics_bq": {"status": "available"}}}
-        self.assertFalse(post_report.has_any_data_source(None, dead))
-        self.assertTrue(post_report.has_any_data_source(None, alive))
+    def test_v2_fallback_zero_events_is_not_trusted(self):
+        """V2 bundle 的 crashlytics_bq.status 只看表是否存在，查詢全失敗時仍是 available。"""
+        failed_but_available = {
+            "sources": {"crashlytics_bq": {"status": "available"}},
+            "kpi": {"crash_events": {"value": 0}, "affected_users": {"value": 0}},
+            "top_issues": [], "daily_trend": [],
+        }
+        self.assertIsNone(self._send("v2_blind_app", v2_app=failed_but_available))
+        self.assertTrue(post_report.card_data_is_trustworthy(None, {"kpi": {"crash_events": {"value": 4}}}))
 
 
 class TestV2FallbackCard(_CardSender, unittest.TestCase):
