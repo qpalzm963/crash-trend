@@ -9,7 +9,8 @@
 3. 發卡前要先產生 TOP 1 的白話說明（pm_note），卡片才有給非工程師看的那一行。
 4. 週趨勢的資料來源要真的存在。抓取端不再跑週彙總查詢，月摘要的 weekly_trend 必須由
    daily_trend 換算，否則第 1 點只是送出一個永遠空的清單。
-5. 什麼資料都沒抓到時不發卡。全部來源失敗時摘要的數字全是 0，發出去就變成「本月 0 次當機」。
+5. 數字會誤導時不發卡、延後重試：什麼都沒抓到（會變成「本月 0 次當機」），或某平台查詢失敗而少算。
+6. 發卡紀錄每個 app 各自獨立：某個 app 延後或失敗，不會讓已發過的其他 app 被重發。
 """
 
 from __future__ import annotations
@@ -57,6 +58,15 @@ class TestBuildWeeklyTrend(unittest.TestCase):
         self.assertEqual(post_report.build_weekly_trend({"weekly_trend": [{"events": 3}]}), [])
 
 
+#: 每個平台的 top_issues 都查詢成功（即使 0 列）的 BigQuery 結果
+BQ_OK = {"tables": {"x_IOS": {"top_issues": [], "by_device": []}, "x_ANDROID": {"top_issues": []}}}
+#: iOS 的 top_issues 逾時、其他查詢成功：總數會少算整個 iOS
+BQ_PARTIAL = {
+    "tables": {"x_IOS": {"by_device": [{"device_model": "d", "events": 3}]}, "x_ANDROID": {"top_issues": []}},
+    "errors": {"x_IOS.top_issues": "timeout"},
+}
+
+
 class _CardSender:
     """以實際 main() 組卡的共用輔助：卡片漏欄位的問題就出在組裝處，不能只測輔助函式。"""
 
@@ -91,13 +101,22 @@ class _CardSender:
             response.json.return_value = {"space": "s"}
             env = {"CRASH_REPORT_URL": "http://chat/api/crash-report", "INTERNAL_API_TOKEN": "t",
                    "DASHBOARD_URL": "http://dash:8787"}
+            self.last_exit = 0
             with patch.object(post_report, "ROOT", root), \
                  patch.object(post_report, "get_app", return_value={"display_name": app_id}), \
                  patch.object(post_report.requests, "post", return_value=response) as post, \
                  patch.dict(os.environ, env, clear=False), \
                  patch.object(sys, "argv", ["post_report.py", "--app", app_id]):
-                post_report.main()
+                try:
+                    post_report.main()
+                except SystemExit as e:
+                    self.last_exit = e.code
             return post.call_args.kwargs["json"] if post.called else None
+
+    def assertDeferred(self, payload):
+        """沒送出，而且以 EXIT_DEFERRED 結束——weekly_sync 才會不記標記、下週重試。"""
+        self.assertIsNone(payload)
+        self.assertEqual(self.last_exit, post_report.EXIT_DEFERRED)
 
 
 class TestCardPayload(_CardSender, unittest.TestCase):
@@ -112,83 +131,76 @@ class TestCardPayload(_CardSender, unittest.TestCase):
         self.assertNotIn("#second_app", payload["dashboard_url"])
 
 
-class TestNoDataNoCard(_CardSender, unittest.TestCase):
-    """要擋的只有一種情況：卡片寫「本月 0 次當機」，實際上是什麼都沒抓到。
+class TestUntrustworthyCardIsDeferred(_CardSender, unittest.TestCase):
+    """數字會誤導看卡片的人時不發，延後到下次排程重試。
 
-    規則：當機數 > 0 照發；為 0 時只有確認算出這個 0 的查詢（每個平台的 top_issues）都成功，
-    或有手動匯出，才發。下方各測試對應這條規則曾被繞過的實際路徑。
+    兩種情況：寫「0 次當機」但其實什麼都沒抓到；某平台 top_issues 查詢失敗、總數少算整個平台。
+    規則：數字來自 BigQuery 時，每個平台的 top_issues 都查詢成功才發（不論當機數多少）；
+    不是來自 BigQuery 時，當機數 > 0 照發，為 0 只有手動匯出能背書。
     """
 
     ZERO = {"kpis": {"events": 0, "users": 0}, "top_issues": [], "priority_list": []}
 
-    def _zero(self, **sources):
-        return {**self.ZERO, "sources": sources}
+    def _summary(self, events=0, **sources):
+        return {"kpis": {"events": events, "users": 0}, "top_issues": [], "priority_list": [], "sources": sources}
 
-    def test_all_sources_failed_skips_the_card(self):
-        summary = self._zero(crashlytics_bq=False, mcp_report=False, manual_console=False)
-        self.assertIsNone(self._send("blind_app", summary))
+    def test_all_sources_failed_is_deferred(self):
+        self.assertDeferred(self._send("blind_app", self._summary(crashlytics_bq=False, mcp_report=False)))
 
-    BQ_OK = {"tables": {"x_IOS": {"top_issues": [], "by_device": []}, "x_ANDROID": {"top_issues": []}}}
-
-    def test_genuinely_quiet_month_with_working_bigquery_still_posts(self):
+    def test_genuinely_quiet_month_with_working_bigquery_posts(self):
         """每個平台的 top_issues 都查詢成功、只是真的沒事件——那是好消息，要發。"""
-        self.assertIsNotNone(self._send("quiet_app", self._zero(crashlytics_bq=True), bq=self.BQ_OK))
+        self.assertIsNotNone(self._send("quiet_app", self._summary(crashlytics_bq=True), bq=BQ_OK))
 
-    def test_partial_bigquery_failure_does_not_vouch_for_zero(self):
-        """一個平台的 top_issues 失敗、其他查詢成功：當機數少算一整個平台，0 不可信。"""
-        partial = {
-            "tables": {"x_IOS": {"by_device": [{"device_model": "d", "events": 3}]}, "x_ANDROID": {"top_issues": []}},
-            "errors": {"x_IOS.top_issues": "timeout"},
-        }
-        self.assertIsNone(self._send("partial_app", self._zero(crashlytics_bq=True), bq=partial))
+    def test_partial_bigquery_failure_with_zero_is_deferred(self):
+        self.assertDeferred(self._send("partial_app", self._summary(crashlytics_bq=True), bq=BQ_PARTIAL))
 
-    def test_kpi_query_success_requires_top_issues_on_every_table(self):
-        self.assertTrue(normalize.bq_kpi_queries_succeeded(self.BQ_OK))
-        self.assertFalse(normalize.bq_kpi_queries_succeeded({"tables": {"x_IOS": {"by_device": []}}}))
-        self.assertFalse(normalize.bq_kpi_queries_succeeded({"tables": {}}))
-        self.assertFalse(normalize.bq_kpi_queries_succeeded(None))
+    def test_partial_bigquery_failure_with_events_is_deferred(self):
+        """iOS 逾時、Android 有 5 次：卡片若發出就是「本月 5 次」，實際上 iOS 的數字未知。"""
+        summary = self._summary(5, crashlytics_bq=True)
+        self.assertDeferred(self._send("undercount_app", summary, bq=BQ_PARTIAL))
 
-    def test_cached_stack_traces_do_not_count_as_data(self):
+    def test_complete_bigquery_with_events_posts(self):
+        self.assertIsNotNone(self._send("busy_app", self._summary(5, crashlytics_bq=True), bq=BQ_OK))
+
+    def test_cached_stack_traces_do_not_vouch_for_zero(self):
         """stack trace 檔是上次成功留下的快取、不提供 KPI；不能讓它替一張全 0 的卡背書。"""
-        summary = self._zero(crashlytics_bq=False, mcp_report=False, manual_console=False, mcp_crashlytics=True)
-        self.assertIsNone(self._send("stale_app", summary))
+        summary = self._summary(crashlytics_bq=False, mcp_report=False, mcp_crashlytics=True)
+        self.assertDeferred(self._send("stale_app", summary))
 
     def test_zero_issue_mcp_report_is_not_trusted(self):
-        """刻意的取捨：mcp_report 為 0 筆時，無法分辨是健康的空結果還是跨次保留的舊檔。
+        """刻意的取捨：mcp_report 為 0 筆時，無法分辨是健康的空結果還是跨次保留的舊檔。"""
+        self.assertDeferred(self._send("mcp_only_app", self._summary(crashlytics_bq=False, mcp_report=False)))
 
-        寧可少發一張「0 次當機」的好消息卡，也不發一張可能是假的。
-        """
-        self.assertIsNone(self._send("mcp_only_app", self._zero(crashlytics_bq=False, mcp_report=False)))
-
-    def test_nonzero_events_always_post(self):
-        """有當機數代表確實取得了資料；來源旗標怎麼記都不影響發卡。"""
-        summary = {"kpis": {"events": 3, "users": 1}, "top_issues": [], "priority_list": [],
-                   "sources": {"crashlytics_bq": False}}
-        self.assertIsNotNone(self._send("busy_app", summary))
+    def test_non_bigquery_numbers_post(self):
+        """非 BigQuery 來源（MCP 報表／手動匯出）給出當機數時照發——那是實際取得的數字。"""
+        self.assertIsNotNone(self._send("mcp_app", self._summary(3, crashlytics_bq=False, mcp_report=True)))
 
     def test_legacy_summary_without_sources_still_posts(self):
         """舊月摘要沒有 sources 欄位：有當機數就照發，不因新增的檢查讓既有部署停止發卡。"""
         summary = {"kpis": {"events": 3, "users": 1}, "top_issues": [], "priority_list": []}
         self.assertIsNotNone(self._send("legacy_app", summary))
 
+    def test_kpi_query_success_requires_top_issues_on_every_table(self):
+        self.assertTrue(normalize.bq_kpi_queries_succeeded(BQ_OK))
+        self.assertFalse(normalize.bq_kpi_queries_succeeded(BQ_PARTIAL))
+        self.assertFalse(normalize.bq_kpi_queries_succeeded({"tables": {}}))
+        self.assertFalse(normalize.bq_kpi_queries_succeeded(None))
+
     def test_all_bq_queries_failed_is_not_a_source(self):
-        """抓取端在查詢全失敗時仍會留下空的表位置；那不是「有資料」，下游不得據此發卡。"""
+        """抓取端在查詢全失敗時仍會留下空的表位置；那不是「有資料」。"""
         failed = {"tables": {"x_IOS": {}, "x_ANDROID": {}}, "errors": {"x_IOS.top_issues": "timeout"}}
         zero_rows = {"tables": {"x_IOS": {"top_issues": [], "daily_trend": []}}}
         self.assertFalse(normalize.bq_has_results(failed))
-        # 查詢成功但 0 列＝真的沒當機，仍算可用（該發卡報好消息）
         self.assertTrue(normalize.bq_has_results(zero_rows))
         self.assertFalse(normalize.bq_has_results(None))
 
-    def test_v2_fallback_zero_events_is_not_trusted(self):
-        """V2 bundle 的 crashlytics_bq.status 只看表是否存在，查詢全失敗時仍是 available。"""
-        failed_but_available = {
-            "sources": {"crashlytics_bq": {"status": "available"}},
-            "kpi": {"crash_events": {"value": 0}, "affected_users": {"value": 0}},
-            "top_issues": [], "daily_trend": [],
-        }
-        self.assertIsNone(self._send("v2_blind_app", v2_app=failed_but_available))
-        self.assertTrue(post_report.card_data_is_trustworthy(None, {"kpi": {"crash_events": {"value": 4}}}))
+    def test_v2_fallback_follows_bigquery_completeness(self):
+        """V2 bundle 一律由 BigQuery 轉出，但它的 crashlytics_bq.status 只看表是否存在；要看原始結果。"""
+        v2 = {"sources": {"crashlytics_bq": {"status": "available"}},
+              "kpi": {"crash_events": {"value": 4}}, "top_issues": [], "daily_trend": []}
+        self.assertDeferred(self._send("v2_partial_app", v2_app=v2, bq=BQ_PARTIAL))
+        self.assertTrue(post_report.card_data_is_trustworthy(None, v2, BQ_OK))
+        self.assertFalse(post_report.card_data_is_trustworthy(None, v2, None))
 
 
 class TestV2FallbackCard(_CardSender, unittest.TestCase):
@@ -203,7 +215,7 @@ class TestV2FallbackCard(_CardSender, unittest.TestCase):
                 {"date": "2026-09-22", "crash_events": 5},
             ],
         }
-        payload = self._send("v2_app", v2_app=v2_app)
+        payload = self._send("v2_app", v2_app=v2_app, bq=BQ_OK)
         self.assertIsNotNone(payload)
         self.assertEqual(payload["weekly_trend"], [{"week": "2026-37", "events": 2}, {"week": "2026-38", "events": 5}])
 

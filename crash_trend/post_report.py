@@ -27,32 +27,41 @@ from crash_trend.dashboard.navigation import build_deep_link  # noqa: E402
 #: 卡片週趨勢迷你圖最多畫幾週
 WEEKLY_TREND_WEEKS = 12
 
+#: 資料不可信、本次不發卡的結束碼。weekly_sync 據此不記「本月已發」，下次排程重試；
+#: 與一般失敗（1）分開，才不會被當成發送錯誤，也不會讓已發的其他 app 重發。
+EXIT_DEFERRED = 3
+
 
 def card_data_is_trustworthy(summary: dict | None, v2_app: dict | None, bq: dict | None = None) -> bool:
-    """這張卡的數字能不能如實呈現給團隊。
+    """這張卡的數字能不能如實呈現給團隊；不可信時延後到下次排程重試（見 EXIT_DEFERRED）。
 
-    要擋的只有一種情況：卡片寫「本月 0 次當機」，實際上是什麼都沒抓到。所以：
+    會誤導看卡片的人的兩種情況：
 
-    - 當機數 > 0：數字來自實際取得的資料，照發。
-    - 當機數為 0：只有在能確認算出這個 0 的查詢都成功時才發——本次 BigQuery 結果（``bq``，
-      即 out/<app>/crashlytics_bq.json）裡每張表的 ``top_issues`` 都查詢成功
-      （normalize.bq_kpi_queries_succeeded），或有手動匯出。只看「有沒有任何查詢成功」不夠：
-      ``top_issues`` 失敗、其他查詢成功時，當機數會少算一整個平台。
+    1. 寫「本月 0 次當機」，實際上是什麼都沒抓到。
+    2. 數字偏低：某個平台的 ``top_issues`` 查詢失敗或逾時，總數少算一整個平台
+       （例如 iOS 5 次＋Android 查詢逾時，卡片卻寫「本月 5 次」）。
 
-    刻意「不」採信的來源：``mcp_crashlytics`` 是上次成功留下的 stack trace 快取，不提供 KPI；
+    規則：
+
+    - 數字來自 BigQuery 時（月摘要 ``sources.crashlytics_bq``，或 V2 fallback——V2 bundle 一律由
+      BigQuery 結果轉出）：本次結果 ``bq``（out/<app>/crashlytics_bq.json）裡每張表的
+      ``top_issues`` 都查詢成功才可信，不論當機數多少（normalize.bq_kpi_queries_succeeded）。
+    - 不是來自 BigQuery 時：當機數 > 0 照發；為 0 時只有手動匯出能背書。
+
+    刻意「不」採信的 0：``mcp_crashlytics`` 是上次成功留下的 stack trace 快取，不提供 KPI；
     ``mcp_report`` 記的是「有沒有 issue」而非「抓取是否成功」，且其檔案跨次保留，0 筆時無從分辨
-    是健康的空結果還是舊檔；V2 fallback 的 ``crashlytics_bq.status`` 只看表是否存在。這三種情況
-    寧可少發一張「0 次當機」的好消息卡，也不發一張可能是假的。
+    是健康的空結果還是舊檔。寧可晚一點發、或少發一張「0 次當機」的好消息卡，也不發一張可能是假的。
     """
     if summary is not None:
+        sources = summary.get("sources") or {}
+        if sources.get("crashlytics_bq"):
+            return bq_kpi_queries_succeeded(bq)
         events = (summary.get("kpis") or {}).get("events")
         if isinstance(events, (int, float)) and events > 0:
             return True
-        sources = summary.get("sources") or {}
-        return bool(sources.get("manual_console")) or bq_kpi_queries_succeeded(bq)
+        return bool(sources.get("manual_console"))
     if v2_app is not None:
-        events = ((v2_app.get("kpi") or {}).get("crash_events") or {}).get("value")
-        return isinstance(events, (int, float)) and events > 0
+        return bq_kpi_queries_succeeded(bq)
     return False
 
 
@@ -105,16 +114,17 @@ def main() -> None:
     if not summary and not v2_app:
         sys.exit(f"[錯誤] 找不到 {summary_path} 或 V2 聚合資料，先跑 weekly_sync.sh")
 
-    # 「抓不到資料」不得呈現成「本月 0 次當機」：對看卡片的人而言是錯誤資訊。
-    # 以 0 結束（不算失敗），避免同月其他 app 的卡被重發。
+    # 數字不可信（抓不到、或某平台查詢失敗而少算）就不發，以 EXIT_DEFERRED 結束：
+    # weekly_sync 不記本月已發，下次排程重試；其他 app 的發卡紀錄各自獨立，不會被連帶重發。
     bq_path = ROOT / "out" / args.app / "crashlytics_bq.json"
     try:
         bq = json.loads(bq_path.read_text(encoding="utf-8")) if bq_path.exists() else None
     except Exception:
         bq = None
     if not card_data_is_trustworthy(summary, v2_app, bq):
-        print(f"  [略過] {args.app} 本月當機數為 0，但無法確認有資料來源成功取得資料，不發送卡片（避免把「抓不到」顯示成「0 次當機」）")
-        return
+        print(f"  [延後] {args.app} 本次資料不完整或無法確認（BigQuery 有平台查詢失敗，或抓不到任何資料），"
+              "不發送卡片，下次排程重試")
+        raise SystemExit(EXIT_DEFERRED)
 
     kpis = (summary or {}).get("kpis")
     if not kpis and v2_app:
