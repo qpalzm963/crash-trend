@@ -605,7 +605,10 @@ class TestBigQueryEdgeCases(unittest.TestCase):
                 }
             }
         }
-        res = transform_bq_to_v2(mock_bq_no_ov, {"app_id": "app1", "firebase_project": "p1"}, days=30)
+        # 固定期間終點：transform_bq_to_v2 只取 end_time 往回 days 天的 daily_trend，寫死的日期
+        # 會隨時間掉出視窗（2026-10-01 起 9/1 掉出 30 天窗，加總從 500 變 300）。
+        end_time = dt.datetime(2026, 9, 2, 23, 59, 59, tzinfo=dt.UTC)
+        res = transform_bq_to_v2(mock_bq_no_ov, {"app_id": "app1", "firebase_project": "p1"}, days=30, end_time=end_time)
         self.assertEqual(res["kpi"]["crash_events"]["value"], 500)
         self.assertEqual(res["kpi"]["events_by_error_type"]["fatal"], 350)
         self.assertEqual(res["kpi"]["events_by_error_type"]["anr"], 50)

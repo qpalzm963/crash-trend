@@ -16,6 +16,27 @@ import sys
 import requests
 from config import ROOT, app_argparser, get_app
 
+# 直接以腳本執行時，確保能 import crash_trend 套件（產生 canonical deep link 用）
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from crash_trend.dashboard.navigation import build_deep_link  # noqa: E402
+
+#: 卡片週趨勢迷你圖最多畫幾週
+WEEKLY_TREND_WEEKS = 12
+
+
+def build_weekly_trend(summary: dict | None, weeks: int = WEEKLY_TREND_WEEKS) -> list[dict]:
+    """月摘要的 weekly_trend（各平台分列）→ 跨平台加總、依週排序的最近 ``weeks`` 週。
+
+    聊天服務據此畫 unicode 迷你圖；缺欄或空清單時該區塊不渲染（向後相容）。
+    """
+    by_week: dict[str, int] = {}
+    for row in (summary or {}).get("weekly_trend") or []:
+        if isinstance(row, dict) and row.get("week"):
+            by_week[row["week"]] = by_week.get(row["week"], 0) + int(row.get("events") or 0)
+    return [{"week": k, "events": by_week[k]} for k in sorted(by_week)][-weeks:]
+
 
 def main() -> None:
     args = app_argparser("發送當月摘要到聊天室").parse_args()
@@ -106,8 +127,10 @@ def main() -> None:
         "app": args.app,
         "display_name": app.get("display_name", args.app),
         "month": month,
-        # 帶 #<app> 錨點：儀表板讀 hash 直接切到該 app 分頁
-        "dashboard_url": f"{dashboard}#{args.app}" if dashboard else "",
+        # canonical deep link（#overview?app=<app>）：儀表板據此切到該 app。
+        # 舊格式 #<app> 會被當成未知頁面而退回預設 app，卡片按鈕會開錯 app。
+        "dashboard_url": build_deep_link(app=args.app, base_url=dashboard) if dashboard else "",
+        "weekly_trend": build_weekly_trend(summary),
         "kpis": kpis or {},
         "prev_kpis": prev_kpis,
         "top_issues": (top_issues or [])[:10],

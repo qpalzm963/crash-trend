@@ -40,6 +40,9 @@ if [ -n "${CRASH_REPORT_URL:-}" ]; then
   else
     CARD_OK=1
     for app in $apps; do
+      # 發卡前先為 TOP 1 補白話說明（pm_note 快取進月快照，卡片顯示給非工程師看）；
+      # 失敗只影響卡片少一行白話，不擋發卡
+      $PY "$CT/crash_trend/pm_brief.py" --app "$app" --top 1 >/dev/null 2>&1 || echo "    （$app pm_note 生成失敗，卡片不帶白話）"
       echo "--- post_report: $app（每月一次）"
       $PY "$CT/crash_trend/post_report.py" --app "$app" || { FAILED="$FAILED post:$app"; CARD_OK=0; }
     done
