@@ -49,9 +49,9 @@ REMOTE_MD5="$("$RCLONE" md5sum "$REMOTE/daily/$NAME" 2>/dev/null | awk '{print $
 if [ "$(date '+%u')" = 1 ]; then
   "$RCLONE" copyto "$REMOTE/daily/$NAME" "$REMOTE/weekly/$NAME" || fail "每週備份複製失敗"
 fi
-# 清舊檔失敗不影響這次備份的成功（下次會再清）
-"$RCLONE" delete "$REMOTE/daily" --min-age 30d 2>&1 | tail -2 || true
-"$RCLONE" delete "$REMOTE/weekly" --min-age 84d 2>&1 | tail -2 || true
+# 清舊檔失敗不影響這次備份的成功（下次會再清）；weekly/ 在第一個週一前不存在，錯誤訊息只是雜訊
+"$RCLONE" delete "$REMOTE/daily" --min-age 30d >/dev/null 2>&1 || true
+"$RCLONE" delete "$REMOTE/weekly" --min-age 84d >/dev/null 2>&1 || true
 
 printf '{"ok": true, "at": "%s", "file": "%s", "bytes": %s, "md5": "%s", "remote": "%s"}\n' \
   "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$NAME" "$BYTES" "$MD5" "$REMOTE" > "$STATUS"
