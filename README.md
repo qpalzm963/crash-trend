@@ -237,7 +237,7 @@ python3 crash_trend/pipeline_run.py --app shop_app --days 30
 docker compose up -d --build
 ```
 
-- `crash-trend`：依 `docker/crontab` 每週三 10:00（Asia/Taipei）執行 `weekly_sync.sh`。
+- `crash-trend`：依 `docker/crontab` 每天 10:00（Asia/Taipei）執行 `weekly_sync.sh`（同步 → 每日暴增檢查 → 備份 → 健康檢查，設定見 DEPLOY.md）。
 - `dashboard`：Nginx 靜態服務，預設 port `8787`。
 
 手動驗證排程流程：

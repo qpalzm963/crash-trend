@@ -36,6 +36,16 @@ if code == 0:
 sys.exit(code)
 '''
 
+# 備份與健康檢查：記下執行順序，結束碼由 behavior.json 的 "backup" / "health" 決定
+STUB_STAGE = '''import json, sys
+from pathlib import Path
+ct = Path(__file__).resolve().parents[1]
+name = Path(__file__).stem
+with open(ct / "stages.log", "a") as f:
+    f.write(name + "\\n")
+sys.exit(json.loads((ct / "behavior.json").read_text()).get(name, 0))
+'''
+
 
 @unittest.skipUnless(shutil.which("bash"), "需要 bash")
 class TestWeeklySyncPerAppCardMarks(unittest.TestCase):
@@ -58,6 +68,11 @@ class TestWeeklySyncPerAppCardMarks(unittest.TestCase):
         (ct_pkg / "pipeline_run.py").write_text(STUB_OK, encoding="utf-8")
         (ct_pkg / "pm_brief.py").write_text(STUB_OK, encoding="utf-8")
         (ct_pkg / "post_report.py").write_text(STUB_POST, encoding="utf-8")
+        (ct_pkg / "health_check.py").write_text(STUB_STAGE.replace("Path(__file__).stem", '"health"'), encoding="utf-8")
+        # backup.sh 由腳本以 bash 呼叫：stub 轉給 python 執行同一份記錄邏輯
+        backup_py = self.ct / "scripts" / "backup_stub.py"
+        backup_py.write_text(STUB_STAGE.replace("Path(__file__).stem", '"backup"'), encoding="utf-8")
+        (self.ct / "scripts" / "backup.sh").write_text(f'exec "{sys.executable}" "{backup_py}"\n', encoding="utf-8")
         self.month = dt.date.today().strftime("%Y-%m")
 
     def tearDown(self):
@@ -115,6 +130,31 @@ class TestWeeklySyncPerAppCardMarks(unittest.TestCase):
         (self.ct / "out" / ".card_sent_month").write_text("1999-01\n", encoding="utf-8")
         self._run({"app_a": 0, "app_b": 0})
         self.assertEqual(sorted(self._posted()), ["app_a", "app_b"])
+
+    def _stages(self) -> list[str]:
+        f = self.ct / "stages.log"
+        return f.read_text().split() if f.exists() else []
+
+    def test_monthly_card_off_sends_nothing_and_marks_nothing(self):
+        """改由定期彙整取代月報卡時，不能還偷偷發卡，也不能記成已發（日後切回來才會正常發）。"""
+        with open(self.ct / ".env", "a", encoding="utf-8") as f:
+            f.write("MONTHLY_CARD=off\n")
+        log = self._run({"app_a": 0, "app_b": 0})
+        self.assertEqual(self._posted(), [])
+        self.assertFalse(self._marked("app_a"))
+        self.assertIn("MONTHLY_CARD=off", log)
+
+    def test_backup_then_health_check_run_every_time(self):
+        """健康檢查要看得到今天的備份結果，所以必須在備份之後。"""
+        self._run({"app_a": 0, "app_b": 0})
+        self.assertEqual(self._stages(), ["backup", "health"])
+
+    def test_backup_and_health_failures_are_reported(self):
+        log = self._run({"app_a": 0, "app_b": 0, "backup": 1, "health": 1})
+        self.assertIn("backup", log.split("failed:")[-1])
+        self.assertIn("health", log.split("failed:")[-1])
+        # 備份失敗仍要跑健康檢查，否則沒人會被通知
+        self.assertEqual(self._stages(), ["backup", "health"])
 
 
 if __name__ == "__main__":
