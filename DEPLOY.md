@@ -27,7 +27,7 @@ tail -30 logs/weekly_sync.log
 
 - **修改排程**：編輯 `docker/crontab` 後執行 `docker compose restart`。
 - **每日通知與備份（選填，皆放 `.env`）**：
-  - `CHAT_WEBHOOK_<APP>`：該 app 聊天室的 Google Chat Webhook（app 名轉大寫、非英數轉 `_`）。設了才會發每日暴增告警（某平台單日 ≥ `DAILY_SURGE_RATIO`=3 倍前 7 天平均且 ≥ `DAILY_SURGE_MIN_EVENTS`=50）與健康檢查通知（資料沒更新、步驟失敗、備份失敗、Firebase 登入失效；正常時不發）。
+  - `CHAT_WEBHOOK_<APP>`：該 app 聊天室的 Google Chat Webhook（app 名轉大寫、非英數轉 `_`）。設了才會發每日暴增告警（某平台單日 ≥ `DAILY_SURGE_RATIO`=3 倍前 7 天平均且 ≥ `DAILY_SURGE_MIN_EVENTS`=50）。健康檢查通知（資料沒更新、步驟失敗、備份失敗、Firebase 登入失效）暫停中：Firebase 權限補上後再於 `weekly_sync.sh` 加回。
   - `BACKUP_RCLONE_REMOTE`：例如 `gdrive:crash-trend-backup`。每天上傳 `out/`＋`reports/`＋`apps.yaml`，回讀雲端 md5 比對才算成功；daily 留 30 天、每週一另存 weekly 留 12 週。rclone 設定放 `~/.config/crash-trend/rclone/rclone.conf`（compose 掛入）。
   - `MONTHLY_CARD=off`：不發月報卡（改用其他定期彙整時）。
 - **憑證安全**：憑證以 read-only bind mount 掛入容器（`docker-compose.yml`），**不進 image、不進 git**。

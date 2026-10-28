@@ -144,17 +144,14 @@ class TestWeeklySyncPerAppCardMarks(unittest.TestCase):
         self.assertFalse(self._marked("app_a"))
         self.assertIn("MONTHLY_CARD=off", log)
 
-    def test_backup_then_health_check_run_every_time(self):
-        """健康檢查要看得到今天的備份結果，所以必須在備份之後。"""
+    def test_backup_runs_but_health_check_is_paused(self):
+        """Firebase 沒有權限前，健康檢查每天都會發「登入失效」通知，所以暫停不跑；備份照常。"""
         self._run({"app_a": 0, "app_b": 0})
-        self.assertEqual(self._stages(), ["backup", "health"])
+        self.assertEqual(self._stages(), ["backup"])
 
-    def test_backup_and_health_failures_are_reported(self):
-        log = self._run({"app_a": 0, "app_b": 0, "backup": 1, "health": 1})
+    def test_backup_failure_is_reported(self):
+        log = self._run({"app_a": 0, "app_b": 0, "backup": 1})
         self.assertIn("backup", log.split("failed:")[-1])
-        self.assertIn("health", log.split("failed:")[-1])
-        # 備份失敗仍要跑健康檢查，否則沒人會被通知
-        self.assertEqual(self._stages(), ["backup", "health"])
 
 
 if __name__ == "__main__":

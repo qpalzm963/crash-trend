@@ -1,7 +1,7 @@
 #!/bin/bash
 # crash 資料同步（launchd 或容器內 supercronic 呼叫；手動跑也行；檔名沿用舊稱，排程見 docker/crontab）
 # 自動部分：各 app 的 BigQuery 拉取 → normalize →（有 Gemini key 時）Gemini 月報 → 儀表板
-#           → 月報卡 → commit → 備份（backup.sh）→ 健康檢查（health_check.py，有問題才通知聊天室）
+#           → 月報卡 → commit → 備份（backup.sh）
 # 無法自動的：console 快照（需使用者登入態）→ macOS 上發通知提醒（容器內自動略過）
 set -u
 # 變數後面緊接全形字時一律寫成 ${var}：macOS 內建 bash 3.2 會把全形字的第一個位元組當成變數名的一部分，
@@ -76,11 +76,11 @@ if [ -n "$(git status --porcelain)" ]; then
       commit -q -m "chore: weekly sync $(date '+%F')" && echo "--- committed"
 fi
 
-# 備份在管線之後（備到的是今天更新完的資料）；健康檢查最後跑，才看得到今天的備份結果
+# 備份在管線之後（備到的是今天更新完的資料）
 echo "--- backup"
 /bin/bash "$CT/scripts/backup.sh" || FAILED="$FAILED backup"
-echo "--- health_check"
-$PY "$CT/crash_trend/health_check.py" || FAILED="$FAILED health"
+# 健康檢查（crash_trend/health_check.py）暫停：Firebase 目前沒有權限，每天都會發「登入失效」通知。
+# 權限補上後在備份之後加回：$PY "$CT/crash_trend/health_check.py" || FAILED="$FAILED health"
 
 if [ -n "$FAILED" ]; then
   MSG="crash-trend 週同步有步驟失敗：${FAILED}（詳見 logs/weekly_sync.log）"
